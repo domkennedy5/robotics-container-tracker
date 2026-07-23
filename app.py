@@ -5,7 +5,7 @@ import sqlite3
 import openpyxl
 import io
 import os
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 
 from utils import (
     normalize_container, containers_match,
@@ -174,7 +174,22 @@ def init_db():
             source_file         TEXT,
             imported_at         TEXT
         );
-        CREATE TABLE IF NOT EXISTS inbound_loads (
+        CREATE TABLE IF NOT EXISTS delivery_plan (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            week_start   TEXT NOT NULL,
+            appt_date    TEXT,
+            appt_time    TEXT,
+            slot_num     INTEGER,
+            container_id TEXT NOT NULL,
+            carrier      TEXT NOT NULL,
+            product_type TEXT DEFAULT 'SHELF, HDTP',
+            qty          INTEGER,
+            notes        TEXT,
+            status       TEXT DEFAULT 'SCHEDULED',
+            created_at   TEXT,
+            updated_at   TEXT
+        );
+                CREATE TABLE IF NOT EXISTS inbound_loads (
             id                       INTEGER PRIMARY KEY AUTOINCREMENT,
             container_id             TEXT,
             supplier                 TEXT,
@@ -496,7 +511,7 @@ with st.sidebar:
 
 # ── tabs ───────────────────────────────────────────────────────────────────────
 st.title("🚢 Robotics Container Tracker")
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["🔍 Container Lookup", "📤 Carrier Submission", "📋 Empty Returns", "📊 Carrier Data", "🎛️ Allocation", "📈 Insights"])
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["🔍 Container Lookup", "📤 Carrier Submission", "📋 Empty Returns", "📊 Carrier Data", "🎛️ Allocation", "📈 Insights", "📅 Planning"])
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1556,3 +1571,424 @@ with tab6:
                 pr_col, txt_col = st.columns([1, 5])
                 pr_col.markdown(f"**{priority}**")
                 txt_col.markdown(f"**{title}**  \n{detail}")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 7 — Planning / Scheduler
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ── planning constants ────────────────────────────────────────────────────────
+_PLAN_TIME_SLOTS = [
+    ("7:30 AM", 1), ("8:30 AM", 2), ("9:30 AM", 3),
+    ("10:30 AM", 4), ("11:30 AM", 5),
+    ("1:00 PM", 6), ("2:00 PM", 7), ("3:00 PM", 8), ("3:30 PM", 9),
+]
+_PLAN_CARRIERS = ["ATMI", "ARVY", "HUDD"]
+_PLAN_PRODUCTS = ["SHELF, HDTP", "STRAP, HDTP", "SHELF, CLDTP", "OTHER"]
+_CARRIER_COLOR = {"ATMI": "#E8A020", "ARVY": "#4285F4", "HUDD": "#34A853"}
+_STATUS_EMOJI  = {
+    "SCHEDULED":   "🔵",
+    "DELIVERED":   "✅",
+    "REJECTED":    "❌",
+    "RESCHEDULED": "🔄",
+    "HOLD":        "⏸️",
+    "PENDING":     "⏳",
+}
+
+def _plan_week_start(d: date) -> date:
+    return d - timedelta(days=d.weekday())
+
+def _get_plan(week_start: date) -> pd.DataFrame:
+    conn = get_db()
+    df = pd.read_sql_query(
+        "SELECT * FROM delivery_plan WHERE week_start=? ORDER BY appt_date, slot_num, id",
+        conn, params=(week_start.isoformat(),)
+    )
+    conn.close()
+    return df
+
+def _add_plan_entry(week_start, appt_date, appt_time, slot_num,
+                    container_id, carrier, product_type, qty, notes, status):
+    db_write(
+        """INSERT INTO delivery_plan
+           (week_start, appt_date, appt_time, slot_num, container_id, carrier,
+            product_type, qty, notes, status, created_at, updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (week_start.isoformat(),
+         appt_date.isoformat() if appt_date else None,
+         appt_time, slot_num,
+         container_id.upper().strip(), carrier, product_type,
+         qty, notes, status,
+         datetime.utcnow().isoformat(), datetime.utcnow().isoformat())
+    )
+
+def _update_plan_status(row_id: int, new_status: str):
+    conn = get_db()
+    conn.execute(
+        "UPDATE delivery_plan SET status=?, updated_at=? WHERE id=?",
+        (new_status, datetime.utcnow().isoformat(), row_id)
+    )
+    conn.commit()
+    conn.close()
+    if S3_ENABLED:
+        data_sync.push_db_to_s3(AWS_KEY, AWS_SECRET, AWS_REGION, S3_BUCKET)
+
+def _delete_plan_entry(row_id: int):
+    conn = get_db()
+    conn.execute("DELETE FROM delivery_plan WHERE id=?", (row_id,))
+    conn.commit()
+    conn.close()
+    if S3_ENABLED:
+        data_sync.push_db_to_s3(AWS_KEY, AWS_SECRET, AWS_REGION, S3_BUCKET)
+
+def _export_plan_excel(plan_df: pd.DataFrame, week_days: list) -> bytes:
+    """Generate Excel matching the carrier DBR plan format."""
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+
+    COLS = ["#", "Day", "Appt Time", "Container #", "Carrier", "Product Type", "Qty (units)", "Notes"]
+    HDR_FILL = PatternFill("solid", fgColor="1F3864")
+    HDR_FONT = Font(bold=True, color="FFFFFF", size=10)
+    CARRIER_FILLS = {
+        "ATMI": PatternFill("solid", fgColor="FFF2CC"),
+        "ARVY": PatternFill("solid", fgColor="DEEAF1"),
+        "HUDD": PatternFill("solid", fgColor="E2EFDA"),
+    }
+    thin = Side(style="thin")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    def write_header(ws):
+        ws.append(COLS)
+        for cell in ws[1]:
+            cell.font = HDR_FONT
+            cell.fill = HDR_FILL
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+            cell.border = border
+        ws.row_dimensions[1].height = 18
+
+    def col_widths(ws):
+        widths = [4, 12, 10, 16, 8, 14, 12, 28]
+        for i, w in enumerate(widths, 1):
+            ws.column_dimensions[get_column_letter(i)].width = w
+
+    wb = openpyxl.Workbook()
+    wb.remove(wb.active)  # remove default Sheet
+
+    day_abbr = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+
+    # ── Day sheets ──────────────────────────────────────────────────────────
+    for day_date, abbr in zip(week_days, day_abbr):
+        day_iso   = day_date.isoformat()
+        sheet_lbl = f"{abbr} {day_date.month}-{day_date.day}"
+        ws = wb.create_sheet(sheet_lbl)
+        write_header(ws)
+
+        day_df = plan_df[
+            (plan_df["appt_date"] == day_iso) &
+            (plan_df["status"] != "PENDING")
+        ].sort_values("slot_num")
+
+        if day_df.empty:
+            col_widths(ws)
+            continue
+
+        day_name = day_date.strftime("%A")
+        for num, row in enumerate(day_df.itertuples(), 1):
+            r = [num, day_name, row.appt_time, row.container_id,
+                 row.carrier, row.product_type or "", row.qty or "", row.notes or ""]
+            ws.append(r)
+            fill = CARRIER_FILLS.get(row.carrier)
+            for cell in ws[ws.max_row]:
+                cell.border = border
+                cell.alignment = Alignment(vertical="center")
+                if fill:
+                    cell.fill = fill
+        col_widths(ws)
+
+    # ── Carrier sheets ───────────────────────────────────────────────────────
+    for carrier in _PLAN_CARRIERS:
+        ws   = wb.create_sheet(f"{carrier} Schedule")
+        write_header(ws)
+        fill = CARRIER_FILLS.get(carrier)
+
+        sched_df = plan_df[
+            (plan_df["carrier"] == carrier) &
+            (plan_df["status"] != "PENDING")
+        ].sort_values(["appt_date", "slot_num"])
+
+        pend_df = plan_df[
+            (plan_df["carrier"] == carrier) &
+            (plan_df["status"] == "PENDING")
+        ]
+
+        num = 1
+        prev_day = None
+        for row in sched_df.itertuples():
+            try:
+                d = date.fromisoformat(str(row.appt_date))
+                day_name = d.strftime("%A")
+                slot_num_local = row.slot_num  # slot within the day
+            except Exception:
+                day_name, slot_num_local = "TBD", row.slot_num
+
+            if day_name != prev_day:
+                num = 1  # reset numbering per day (matches original format)
+                prev_day = day_name
+
+            r = [num, day_name, row.appt_time, row.container_id,
+                 row.carrier, row.product_type or "", row.qty or "", row.notes or ""]
+            ws.append(r)
+            for cell in ws[ws.max_row]:
+                cell.border = border
+                cell.alignment = Alignment(vertical="center")
+                if fill:
+                    cell.fill = fill
+            num += 1
+
+        if not pend_df.empty:
+            # separator row
+            ws.append(["PENDING — confirm availability:"] + [""] * 7)
+            sep_row = ws[ws.max_row]
+            for cell in sep_row:
+                cell.font = Font(bold=True, italic=True, color="7F7F7F")
+                cell.border = border
+
+            for row in pend_df.itertuples():
+                r = [None, "TBD", "TBD", row.container_id,
+                     row.carrier, row.product_type or "", None, row.notes or ""]
+                ws.append(r)
+                for cell in ws[ws.max_row]:
+                    cell.border = border
+                    cell.alignment = Alignment(vertical="center")
+
+        col_widths(ws)
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def _render_carrier_view(plan_df: pd.DataFrame, carrier: str):
+    """Render a per-carrier table with inline status updater."""
+    c_df = plan_df[plan_df["carrier"] == carrier].copy()
+    sched = c_df[c_df["status"] != "PENDING"]
+    pend  = c_df[c_df["status"] == "PENDING"]
+
+    if c_df.empty:
+        st.info(f"No {carrier} containers this week.")
+        return
+
+    def _table(df, label):
+        if df.empty:
+            return
+        if label == "Pending / TBD":
+            st.caption("**Pending / TBD**")
+        rows, ids = [], []
+        for i, row in enumerate(df.itertuples(), 1):
+            try:
+                d = date.fromisoformat(str(row.appt_date))
+                day_str = d.strftime("%A")
+                time_str = row.appt_time
+            except Exception:
+                day_str, time_str = "TBD", "TBD"
+            rows.append({
+                "#": i,
+                "Day": day_str if label != "Pending / TBD" else "TBD",
+                "Appt Time": time_str if label != "Pending / TBD" else "TBD",
+                "Container #": row.container_id,
+                "Product Type": row.product_type or "",
+                "Qty": row.qty or "",
+                "Notes": row.notes or "",
+                "Status": _STATUS_EMOJI.get(row.status, row.status),
+            })
+            ids.append(row.id)
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        return ids, [r["Container #"] + " — " + r["Appt Time"] + " (" + r["Status"] + ")" for r in rows]
+
+    result = _table(sched, "Scheduled")
+    pend_result = _table(pend, "Pending / TBD")
+
+    all_ids, all_labels = [], []
+    if result:
+        all_ids += result[0]; all_labels += result[1]
+    if pend_result:
+        all_ids += pend_result[0]; all_labels += pend_result[1]
+
+    if all_ids:
+        with st.expander(f"✏️ Update {carrier} container status", expanded=False):
+            sel = st.selectbox("Container", all_labels, key=f"upd_sel_{carrier}")
+            sel_id = all_ids[all_labels.index(sel)]
+            upd_col1, upd_col2 = st.columns([2, 1])
+            with upd_col1:
+                new_stat = st.selectbox("New status", list(_STATUS_EMOJI.keys()), key=f"upd_stat_{carrier}")
+            with upd_col2:
+                del_flag = st.checkbox("Delete instead", key=f"upd_del_{carrier}")
+            if st.button("Apply", key=f"upd_btn_{carrier}", type="primary"):
+                if del_flag:
+                    _delete_plan_entry(sel_id)
+                    st.success("Entry deleted.")
+                else:
+                    _update_plan_status(sel_id, new_stat)
+                    st.success(f"Updated → {new_stat}")
+                st.rerun()
+
+
+# ── Tab 7 body ────────────────────────────────────────────────────────────────
+with tab7:
+    st.subheader("Delivery Plan Scheduler")
+    st.caption("Build weekly delivery plans, track container status, and export carrier-ready Excel files.")
+
+    # ── week selector + export ────────────────────────────────────────────────
+    wk_col1, wk_col2, wk_col3 = st.columns([2, 2, 2])
+    with wk_col1:
+        _today = date.today()
+        _wk_input = st.date_input(
+            "Week (pick any day)",
+            value=_plan_week_start(_today),
+            key="plan_week_selector"
+        )
+        _week_start = _plan_week_start(_wk_input)
+        _week_days  = [_week_start + timedelta(days=i) for i in range(6)]  # Mon–Sat
+        st.caption(f"Week of **{_week_start.strftime('%b %d')} – {(_week_start + timedelta(days=5)).strftime('%b %d, %Y')}**")
+
+    _plan_df = _get_plan(_week_start)
+
+    with wk_col2:
+        st.metric("Total loads", len(_plan_df[_plan_df["status"] != "PENDING"]))
+    with wk_col3:
+        if not _plan_df.empty:
+            _xl_bytes = _export_plan_excel(_plan_df, _week_days)
+            _wk_label = _week_start.strftime("%m.%d.%y")
+            st.download_button(
+                "📥 Export to Excel",
+                data=_xl_bytes,
+                file_name=f"RIC6 Delivery Plan {_wk_label}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
+        else:
+            st.info("No entries yet — add containers below.")
+
+    # ── add container form ────────────────────────────────────────────────────
+    with st.expander("➕ Add Container to Plan", expanded=_plan_df.empty):
+        fa1, fa2, fa3 = st.columns(3)
+        with fa1:
+            _add_carrier  = st.selectbox("Carrier", _PLAN_CARRIERS, key="plan_carrier")
+            _add_cid      = st.text_input("Container #", placeholder="TCNU3773041", key="plan_cid")
+            _add_status   = st.selectbox("Status", ["SCHEDULED", "PENDING", "HOLD"], key="plan_status")
+        with fa2:
+            _add_date = st.date_input("Delivery Date", value=_today, key="plan_date")
+            # HUDD default → 7:30 AM; others → 8:30 AM
+            _default_slot_idx = 0 if _add_carrier == "HUDD" else 1
+            _add_time = st.selectbox(
+                "Appointment Time",
+                [t for t, _ in _PLAN_TIME_SLOTS],
+                index=_default_slot_idx,
+                key="plan_time"
+            )
+            _add_slot_num = dict(_PLAN_TIME_SLOTS)[_add_time]
+        with fa3:
+            _add_product = st.selectbox("Product Type", _PLAN_PRODUCTS, key="plan_product")
+            _add_qty     = st.number_input("Qty (units)", value=1190, step=10, min_value=0, key="plan_qty")
+            _add_notes   = st.text_input("Notes", placeholder="Optional", key="plan_notes")
+
+        if st.button("Add to Plan", type="primary", key="plan_add_btn"):
+            if _add_cid.strip():
+                _appt_date_arg = _add_date if _add_status != "PENDING" else None
+                _appt_time_arg = _add_time if _add_status != "PENDING" else "TBD"
+                _slot_arg      = _add_slot_num if _add_status != "PENDING" else 99
+                _add_plan_entry(
+                    week_start=_plan_week_start(_add_date),
+                    appt_date=_appt_date_arg,
+                    appt_time=_appt_time_arg,
+                    slot_num=_slot_arg,
+                    container_id=_add_cid,
+                    carrier=_add_carrier,
+                    product_type=_add_product,
+                    qty=int(_add_qty),
+                    notes=_add_notes.strip(),
+                    status=_add_status,
+                )
+                _day_lbl = _add_date.strftime("%a %m/%d") if _add_status != "PENDING" else "TBD"
+                st.success(f"✅ {_add_cid.upper().strip()} ({_add_carrier}) → {_day_lbl} @ {_appt_time_arg}")
+                st.rerun()
+            else:
+                st.warning("Container # is required.")
+
+    st.divider()
+
+    # reload after any additions
+    _plan_df = _get_plan(_week_start)
+
+    # ── planning sub-tabs ─────────────────────────────────────────────────────
+    _ptab_week, _ptab_atmi, _ptab_arvy, _ptab_hudd, _ptab_pend = st.tabs(
+        ["📅 Week View", "ATMI", "ARVY", "HUDD", "⏳ Pending"]
+    )
+
+    # ── Week View ─────────────────────────────────────────────────────────────
+    with _ptab_week:
+        if _plan_df.empty:
+            st.info("No entries for this week. Use **Add Container to Plan** above to get started.")
+        else:
+            _day_abbrs = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+            _day_cols  = st.columns(6)
+            for _ci, (_dc, _dd) in enumerate(zip(_day_cols, _week_days)):
+                _day_iso = _dd.isoformat()
+                _day_ent = _plan_df[
+                    (_plan_df["appt_date"] == _day_iso) & (_plan_df["status"] != "PENDING")
+                ].sort_values("slot_num")
+                with _dc:
+                    _day_count = len(_day_ent)
+                    _day_hdr = f"{_dd.month}/{_dd.day}"
+                    st.markdown(f"**{_day_abbrs[_ci]} {_day_hdr}**")
+                    _cap_color = "red" if _day_count >= 9 else "gray"
+                    st.markdown(
+                        f"<small style='color:{_cap_color}'>{_day_count}/9 slots</small>",
+                        unsafe_allow_html=True
+                    )
+                    if _day_ent.empty:
+                        st.markdown("<small style='color:#ccc'>—</small>", unsafe_allow_html=True)
+                    else:
+                        for _, _row in _day_ent.iterrows():
+                            _c = _row["carrier"]
+                            _clr = _CARRIER_COLOR.get(_c, "#888888")
+                            _emj = _STATUS_EMOJI.get(_row["status"], "")
+                            st.markdown(
+                                f"""<div style="background:{_clr}22;border-left:3px solid {_clr};
+                                    padding:4px 6px;margin:3px 0;border-radius:3px;font-size:11px;
+                                    line-height:1.4">
+                                    <b>{_row['appt_time']}</b> {_emj}<br/>
+                                    <code style="font-size:10px">{_row['container_id']}</code><br/>
+                                    <span style="color:{_clr};font-weight:600">{_c}</span>
+                                </div>""",
+                                unsafe_allow_html=True
+                            )
+
+    # ── Carrier views ─────────────────────────────────────────────────────────
+    with _ptab_atmi:
+        _render_carrier_view(_plan_df, "ATMI")
+    with _ptab_arvy:
+        _render_carrier_view(_plan_df, "ARVY")
+    with _ptab_hudd:
+        _render_carrier_view(_plan_df, "HUDD")
+
+    # ── Pending ───────────────────────────────────────────────────────────────
+    with _ptab_pend:
+        _pend_df = _plan_df[_plan_df["status"] == "PENDING"]
+        if _pend_df.empty:
+            st.success("No pending containers this week.")
+        else:
+            st.caption(f"**{len(_pend_df)} containers awaiting scheduling**")
+            for _pc in _PLAN_CARRIERS:
+                _pc_df = _pend_df[_pend_df["carrier"] == _pc]
+                if not _pc_df.empty:
+                    st.markdown(f"**{_pc}** — {len(_pc_df)}")
+                    _pend_rows = []
+                    for _pr in _pc_df.itertuples():
+                        _pend_rows.append({
+                            "Container #": _pr.container_id,
+                            "Product Type": _pr.product_type or "",
+                            "Qty": _pr.qty or "",
+                            "Notes": _pr.notes or "",
+                        })
+                    st.dataframe(pd.DataFrame(_pend_rows), use_container_width=True, hide_index=True)
