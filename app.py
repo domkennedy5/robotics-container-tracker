@@ -166,7 +166,9 @@ def load_dbr(file_bytes: bytes) -> dict:
         rows = list(ws.iter_rows(values_only=True))
         if not rows:
             continue
-        df = pd.DataFrame(rows[1:], columns=rows[0])
+        # pandas 3.x requires no None column names — replace with unique placeholders
+        headers = [str(h).strip() if h is not None else f"_col_{i}" for i, h in enumerate(rows[0])]
+        df = pd.DataFrame(rows[1:], columns=headers)
         cont_col = cfg["container_col"]
         if cont_col in df.columns:
             df = df[df[cont_col].notna()].copy()
