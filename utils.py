@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 utils.py — shared logic used by both app.py and Lambda functions.
 Keeps container parsing, matching, and file parsing in one place.
