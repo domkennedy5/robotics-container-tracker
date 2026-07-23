@@ -157,24 +157,26 @@ SHEET_CFG = {
 
 @st.cache_data(show_spinner="Parsing DBR…", ttl=3600)
 def load_dbr(file_bytes: bytes) -> dict:
-    wb = openpyxl.load_workbook(io.BytesIO(file_bytes), read_only=True)
+    # pd.read_excel handles merged cells, varying row widths, and None headers
     sheets = {}
     for sheet_name, cfg in SHEET_CFG.items():
-        if sheet_name not in wb.sheetnames:
+        try:
+            df = pd.read_excel(
+                io.BytesIO(file_bytes),
+                sheet_name=sheet_name,
+                header=0,
+                dtype=str,
+                engine="openpyxl",
+            )
+        except Exception:
             continue
-        ws = wb[sheet_name]
-        rows = list(ws.iter_rows(values_only=True))
-        if not rows:
-            continue
-        # pandas 3.x requires no None column names — replace with unique placeholders
-        headers = [str(h).strip() if h is not None else f"_col_{i}" for i, h in enumerate(rows[0])]
-        df = pd.DataFrame(rows[1:], columns=headers)
+        df.columns = [str(c).strip() if pd.notna(c) else f"_col_{i}"
+                      for i, c in enumerate(df.columns)]
         cont_col = cfg["container_col"]
         if cont_col in df.columns:
-            df = df[df[cont_col].notna()].copy()
+            df = df[df[cont_col].notna() & (df[cont_col].str.strip() != "")].copy()
             df["_norm"] = df[cont_col].apply(lambda x: normalize_container(str(x)))
         sheets[sheet_name] = df
-    wb.close()
     return sheets
 
 def lookup_containers(dbr_sheets: dict, query_ids: list) -> tuple:
