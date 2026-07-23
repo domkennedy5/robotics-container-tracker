@@ -338,11 +338,25 @@ with tab1:
 with tab2:
     st.subheader("Carrier Submission Portal")
 
-    st.info(
-        "**Two ways to submit:**  \n"
-        "1. Fill the form below and click Submit  \n"
-        "2. Email your status file to the inbound address — it will be processed automatically"
-    )
+    col_info, col_tmpl = st.columns([3, 1])
+    with col_info:
+        st.info(
+            "**Two ways to submit:**  \n"
+            "1. Fill the form below and click Submit  \n"
+            "2. Email your status file to the inbound address — it will be processed automatically"
+        )
+    with col_tmpl:
+        tmpl_path = os.path.join(BASE_DIR, "agl_carrier_template.xlsx")
+        if os.path.exists(tmpl_path):
+            with open(tmpl_path, "rb") as f:
+                st.download_button(
+                    "⬇️ Download Carrier Template",
+                    data=f.read(),
+                    file_name="AGL_Carrier_Template.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                    help="Standard template all carriers should use when submitting status updates"
+                )
 
     if S3_ENABLED:
         try:

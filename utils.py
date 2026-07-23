@@ -39,22 +39,29 @@ def parse_container_list(text: str) -> list:
 # ── carrier file parser ────────────────────────────────────────────────────────
 
 def parse_carrier_file(file_bytes: bytes, filename: str) -> pd.DataFrame:
-    """Parse an ARVY-style carrier submission Excel or CSV.
+    """Parse any carrier submission Excel or CSV.
 
-    Searches every sheet for a header row containing 'Container', extracts
-    container IDs plus whatever status/terminal fields are present.
-    Returns a DataFrame with columns: container_id, sheet_source, terminal,
-    status, notes.
+    Handles multiple formats:
+    - AGL standard template (header on row 2, row 1 is a note)
+    - Legacy ARVY / Carrier DBR formats (header on row 1 or 2)
+    - CSV files
+
+    Searches every sheet for ANY row containing 'Container' to find the header,
+    then extracts container IDs and associated fields.
+    Returns DataFrame with columns: container_id, sheet_source, terminal, status, notes.
     """
     rows_all = []
 
     if filename.lower().endswith(".csv"):
-        df = pd.read_csv(io.BytesIO(file_bytes), dtype=str)
-        cont_col = next((c for c in df.columns if "container" in c.lower()), None)
-        if cont_col:
-            for _, row in df.iterrows():
-                if pd.notna(row[cont_col]) and str(row[cont_col]).strip():
-                    rows_all.append(_extract_row_fields(row.to_dict(), "Sheet1", cont_col))
+        try:
+            df = pd.read_csv(io.BytesIO(file_bytes), dtype=str)
+            cont_col = next((c for c in df.columns if "container" in c.lower()), None)
+            if cont_col:
+                for _, row in df.iterrows():
+                    if pd.notna(row[cont_col]) and str(row[cont_col]).strip():
+                        rows_all.append(_extract_row_fields(row.to_dict(), "Sheet1", cont_col))
+        except Exception:
+            pass
     else:
         wb = openpyxl.load_workbook(io.BytesIO(file_bytes), read_only=True)
         for sname in wb.sheetnames:
@@ -62,23 +69,30 @@ def parse_carrier_file(file_bytes: bytes, filename: str) -> pd.DataFrame:
             rows = list(ws.iter_rows(values_only=True))
             if not rows:
                 continue
+
+            # Find header row — scan first 8 rows for one containing 'Container'
             header_idx = next(
-                (i for i, row in enumerate(rows[:6])
+                (i for i, row in enumerate(rows[:8])
                  if any(c and "container" in str(c).lower() for c in row)),
                 None
             )
             if header_idx is None:
                 continue
-            headers = [str(h).strip() if h else f"col_{i}" for i, h in enumerate(rows[header_idx])]
+
+            headers = [
+                str(h).strip() if h and str(h).strip() else f"_col_{i}"
+                for i, h in enumerate(rows[header_idx])
+            ]
             cont_col = next((h for h in headers if "container" in h.lower()), None)
             if not cont_col:
                 continue
+
             for row in rows[header_idx + 1:]:
-                if not any(row):
+                if not any(c for c in row if c is not None):
                     continue
                 rec = dict(zip(headers, row))
                 val = rec.get(cont_col)
-                if not val or not str(val).strip():
+                if not val or not str(val).strip() or str(val).strip() in ("None", "nan"):
                     continue
                 rows_all.append(_extract_row_fields(rec, sname, cont_col))
         wb.close()
