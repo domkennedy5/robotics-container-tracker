@@ -492,6 +492,7 @@ with st.sidebar:
     st.caption("🚢 **Container Tracker v1.1**")
     if S3_ENABLED:
         st.caption("☁️ S3 sync active")
+    st.page_link("pages/help.py", label="📖 User Guide", icon="📖")
 
 # ── tabs ───────────────────────────────────────────────────────────────────────
 st.title("🚢 Robotics Container Tracker")
