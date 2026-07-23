@@ -9,6 +9,7 @@ from datetime import datetime, date
 from utils import (
     normalize_container, containers_match,
     parse_container_list, parse_carrier_file,
+    parse_carrier_template, TEMPLATE_SHEET_MAP,
 )
 import data_sync
 
@@ -76,15 +77,26 @@ def init_db():
     conn = get_db()
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS carrier_submissions (
-            id           INTEGER PRIMARY KEY AUTOINCREMENT,
-            submitted_at TEXT    NOT NULL,
-            carrier_name TEXT    NOT NULL,
-            container_id TEXT    NOT NULL,
-            terminal     TEXT,
-            status       TEXT,
-            notes        TEXT,
-            source_file  TEXT,
-            source       TEXT DEFAULT 'web'
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            submitted_at     TEXT    NOT NULL,
+            carrier_name     TEXT    NOT NULL,
+            container_id     TEXT    NOT NULL,
+            sheet_type       TEXT,
+            port             TEXT,
+            terminal         TEXT,
+            fc_building      TEXT,
+            flexi_id         TEXT,
+            outgate_date     TEXT,
+            delivery_date    TEXT,
+            status           TEXT,
+            within_sla       TEXT,
+            sla_notes        TEXT,
+            empty_return_due TEXT,
+            appointment_date TEXT,
+            accessorial_type TEXT,
+            notes            TEXT,
+            source_file      TEXT,
+            source           TEXT DEFAULT 'web'
         );
         CREATE TABLE IF NOT EXISTS lookup_log (
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -269,7 +281,7 @@ with st.sidebar:
 
 # ── tabs ───────────────────────────────────────────────────────────────────────
 st.title("🚢 Robotics Container Tracker")
-tab1, tab2, tab3 = st.tabs(["🔍 Container Lookup", "📤 Carrier Submission", "📋 Empty Returns"])
+tab1, tab2, tab3, tab4 = st.tabs(["🔍 Container Lookup", "📤 Carrier Submission", "📋 Empty Returns", "📊 Carrier Data"])
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -342,8 +354,8 @@ with tab2:
     with col_info:
         st.info(
             "**Two ways to submit:**  \n"
-            "1. Fill the form below and click Submit  \n"
-            "2. Email your status file to the inbound address — it will be processed automatically"
+            "1. Upload your filled-out AGL template below  \n"
+            "2. Email your template to the inbound address — it will be processed automatically"
         )
     with col_tmpl:
         tmpl_path = os.path.join(BASE_DIR, "agl_carrier_template.xlsx")
@@ -355,8 +367,83 @@ with tab2:
                     file_name="AGL_Carrier_Template.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True,
-                    help="Standard template all carriers should use when submitting status updates"
+                    help="Fill this out and upload below or email it in"
                 )
+
+    st.divider()
+
+    # ── Template upload + preview ──────────────────────────────────────────────
+    c1, c2 = st.columns([2, 1])
+    with c1:
+        carrier_name_input = st.text_input("Carrier / Company Name *", placeholder="e.g. ARVY, XPO…", key="cn_top")
+    with c2:
+        carrier_file_top = st.file_uploader(
+            "Upload completed template", type=["xlsx", "csv"],
+            help="Upload your filled AGL carrier template",
+            key="cf_top"
+        )
+
+    if carrier_file_top and carrier_name_input.strip():
+        raw_bytes = carrier_file_top.read()
+        parsed = parse_carrier_template(raw_bytes, carrier_file_top.name)
+
+        if not parsed:
+            st.warning("No container data found in this file. Make sure you're using the AGL Carrier Template.")
+        else:
+            # count totals
+            total = sum(len(v) for v in parsed.values())
+            st.success(f"Found **{total} containers** across **{len(parsed)} sheet(s)** — review below then click Submit.")
+
+            # show preview tabs per sheet type
+            sheet_labels = {
+                "delivery":       "📦 Delivery",
+                "delivery_ilm1":  "🏭 ILM1",
+                "delivery_ric6":  "🏭 RIC6",
+                "empty_return":   "🔁 Empty Returns",
+                "ody":            "🏗️ Storage/ODY",
+                "demurrage":      "⚠️ Demurrage",
+                "accessorial":    "💰 Accessorials",
+            }
+            preview_tabs = st.tabs([sheet_labels.get(k, k) for k in parsed.keys()])
+            for ptab, (sheet_type, rows) in zip(preview_tabs, parsed.items()):
+                with ptab:
+                    df_prev = pd.DataFrame(rows).drop(columns=["_raw_container"], errors="ignore")
+                    st.dataframe(df_prev, use_container_width=True, hide_index=True)
+
+            if st.button("✅ Confirm & Submit All", type="primary"):
+                now = datetime.now().isoformat()
+                conn = get_db()
+                count = 0
+                for sheet_type, rows in parsed.items():
+                    for row in rows:
+                        conn.execute(
+                            """INSERT INTO carrier_submissions
+                               (submitted_at, carrier_name, container_id, sheet_type,
+                                port, terminal, fc_building, flexi_id, outgate_date,
+                                delivery_date, status, within_sla, sla_notes,
+                                empty_return_due, appointment_date, accessorial_type,
+                                notes, source_file, source)
+                               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                            (now, carrier_name_input.strip(), row["container_id"],
+                             sheet_type,
+                             row.get("port"), row.get("terminal"), row.get("fc_building"),
+                             row.get("flexi_id"), row.get("outgate_date"),
+                             row.get("delivery_date"), row.get("status"),
+                             row.get("within_sla"), row.get("sla_notes"),
+                             row.get("empty_return_due"), row.get("appointment_date"),
+                             row.get("accessorial_type"), row.get("notes"),
+                             carrier_file_top.name, "web")
+                        )
+                        count += 1
+                conn.commit()
+                conn.close()
+                if S3_ENABLED:
+                    data_sync.push_db_to_s3(AWS_KEY, AWS_SECRET, AWS_REGION, S3_BUCKET)
+                st.success(f"✅ Logged {count} containers from **{carrier_name_input}**")
+                st.rerun()
+
+    elif carrier_file_top and not carrier_name_input.strip():
+        st.warning("Enter your carrier name above before uploading.")
 
     if S3_ENABLED:
         try:
@@ -538,3 +625,79 @@ with tab3:
             term = er_raw[er_raw["Status"].str.upper() == "TERMINATED"] if "Status" in er_raw.columns else pd.DataFrame()
             if not term.empty:
                 st.dataframe(term, use_container_width=True, hide_index=True)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 4 — Carrier Data (structured view of all submissions)
+# ══════════════════════════════════════════════════════════════════════════════
+with tab4:
+    st.subheader("Carrier Submission Data")
+    st.caption("All data submitted by carriers via template upload or email.")
+
+    conn = get_db()
+    all_df = pd.read_sql(
+        """SELECT submitted_at, carrier_name, container_id, sheet_type,
+                  port, terminal, fc_building, delivery_date, status,
+                  within_sla, empty_return_due, appointment_date,
+                  accessorial_type, notes, source
+           FROM carrier_submissions ORDER BY submitted_at DESC LIMIT 1000""",
+        conn
+    )
+    conn.close()
+
+    if all_df.empty:
+        st.info("No carrier submissions yet.")
+    else:
+        # top filters
+        f1, f2, f3 = st.columns(3)
+        with f1:
+            f_carrier = st.multiselect("Carrier", sorted(all_df["carrier_name"].unique()), key="cd_carrier")
+        with f2:
+            f_sheet = st.multiselect("Sheet type", sorted(all_df["sheet_type"].dropna().unique()), key="cd_sheet")
+        with f3:
+            f_sla = st.multiselect("Within SLA?", sorted(all_df["within_sla"].dropna().unique()), key="cd_sla")
+
+        filt = all_df.copy()
+        if f_carrier: filt = filt[filt["carrier_name"].isin(f_carrier)]
+        if f_sheet:   filt = filt[filt["sheet_type"].isin(f_sheet)]
+        if f_sla:     filt = filt[filt["within_sla"].isin(f_sla)]
+
+        # metrics
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Total containers", len(filt))
+        m2.metric("Carriers", filt["carrier_name"].nunique())
+        sla_counts = filt["within_sla"].value_counts()
+        m3.metric("Within SLA", int(sla_counts.get("YES", 0)))
+        m4.metric("Outside SLA", int(sla_counts.get("NO", 0)))
+
+        st.divider()
+
+        # tabbed by sheet type
+        sheet_types = sorted(filt["sheet_type"].dropna().unique())
+        if sheet_types:
+            sheet_labels = {
+                "delivery":       "📦 Delivery",
+                "delivery_ilm1":  "🏭 ILM1",
+                "delivery_ric6":  "🏭 RIC6",
+                "empty_return":   "🔁 Empty Returns",
+                "ody":            "🏗️ ODY/Storage",
+                "demurrage":      "⚠️ Demurrage",
+                "accessorial":    "💰 Accessorials",
+            }
+            stabs = st.tabs([sheet_labels.get(s, s) for s in sheet_types])
+            for stab, stype in zip(stabs, sheet_types):
+                with stab:
+                    sdf = filt[filt["sheet_type"] == stype].copy()
+                    # show only non-empty columns
+                    nonempty = [c for c in sdf.columns if sdf[c].notna().any() and sdf[c].astype(str).str.strip().ne("").any()]
+                    st.dataframe(sdf[nonempty], use_container_width=True, hide_index=True)
+
+        st.divider()
+        buf = io.BytesIO()
+        with pd.ExcelWriter(buf, engine="openpyxl") as w:
+            for stype in filt["sheet_type"].dropna().unique():
+                sdf = filt[filt["sheet_type"] == stype]
+                sdf.to_excel(w, index=False, sheet_name=stype[:31])
+        buf.seek(0)
+        st.download_button("⬇️ Export all carrier data (.xlsx)", data=buf,
+            file_name=f"carrier_data_{date.today()}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
