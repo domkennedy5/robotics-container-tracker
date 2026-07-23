@@ -114,6 +114,12 @@ def init_db():
             sent_at      TEXT NOT NULL,
             recipient    TEXT
         );
+        CREATE TABLE IF NOT EXISTS carrier_rates (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            carrier_name        TEXT NOT NULL UNIQUE,
+            rate_per_container  REAL DEFAULT 0.0,
+            notes               TEXT
+        );
     """)
     conn.commit()
     conn.close()
@@ -308,7 +314,7 @@ with st.sidebar:
 
 # ── tabs ───────────────────────────────────────────────────────────────────────
 st.title("🚢 Robotics Container Tracker")
-tab1, tab2, tab3, tab4 = st.tabs(["🔍 Container Lookup", "📤 Carrier Submission", "📋 Empty Returns", "📊 Carrier Data"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["🔍 Container Lookup", "📤 Carrier Submission", "📋 Empty Returns", "📊 Carrier Data", "🎛️ Allocation"])
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -732,3 +738,223 @@ with tab4:
         st.download_button("⬇️ Export all carrier data (.xlsx)", data=buf,
             file_name=f"carrier_data_{date.today()}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 5 — Allocation & Cost Simulator
+# ══════════════════════════════════════════════════════════════════════════════
+with tab5:
+    st.subheader("Carrier Allocation & Cost Simulator")
+    st.caption("Model current carrier allocation, enter rates, and project costs for any scenario.")
+
+    # ── Load current allocation from DB ───────────────────────────────────────
+    conn = get_db()
+    alloc_df = pd.read_sql(
+        """SELECT carrier_name, COUNT(DISTINCT container_id) AS containers
+           FROM carrier_submissions
+           WHERE carrier_name IS NOT NULL AND carrier_name != ''
+           GROUP BY carrier_name
+           ORDER BY containers DESC""",
+        conn,
+    )
+    rates_df = pd.read_sql(
+        "SELECT carrier_name, rate_per_container, notes FROM carrier_rates ORDER BY carrier_name",
+        conn,
+    )
+    conn.close()
+
+    # ── Rate Configuration ────────────────────────────────────────────────────
+    with st.expander("⚙️ Configure Carrier Rates", expanded=rates_df.empty):
+        st.caption("Enter the per-container rate for each carrier. Saved to the database.")
+
+        carriers_in_db = alloc_df["carrier_name"].tolist() if not alloc_df.empty else []
+        known_in_rates = set(rates_df["carrier_name"].tolist()) if not rates_df.empty else set()
+        missing_carriers = [c for c in carriers_in_db if c not in known_in_rates]
+
+        if rates_df.empty:
+            edit_rates = pd.DataFrame({
+                "carrier_name":       carriers_in_db or [""],
+                "rate_per_container": [0.0] * (len(carriers_in_db) or 1),
+                "notes":              [""]  * (len(carriers_in_db) or 1),
+            })
+        elif missing_carriers:
+            extra = pd.DataFrame({
+                "carrier_name":       missing_carriers,
+                "rate_per_container": [0.0] * len(missing_carriers),
+                "notes":              [""]  * len(missing_carriers),
+            })
+            edit_rates = pd.concat([rates_df, extra], ignore_index=True)
+        else:
+            edit_rates = rates_df.copy()
+
+        edited_rates = st.data_editor(
+            edit_rates,
+            column_config={
+                "carrier_name":       st.column_config.TextColumn("Carrier", width="medium"),
+                "rate_per_container": st.column_config.NumberColumn("Rate / Container ($)", format="$%.2f", width="medium"),
+                "notes":              st.column_config.TextColumn("Notes", width="large"),
+            },
+            num_rows="dynamic",
+            use_container_width=True,
+            hide_index=True,
+            key="rates_editor",
+        )
+
+        if st.button("💾 Save Rates", type="primary", key="save_rates"):
+            conn = get_db()
+            conn.execute("DELETE FROM carrier_rates")
+            saved = 0
+            for _, r in edited_rates.iterrows():
+                name = str(r.get("carrier_name", "") or "").strip()
+                if name:
+                    conn.execute(
+                        "INSERT INTO carrier_rates (carrier_name, rate_per_container, notes) VALUES (?,?,?)",
+                        (name, float(r.get("rate_per_container") or 0), str(r.get("notes") or "")),
+                    )
+                    saved += 1
+            conn.commit()
+            conn.close()
+            if S3_ENABLED:
+                data_sync.push_db_to_s3(AWS_KEY, AWS_SECRET, AWS_REGION, S3_BUCKET)
+            st.success(f"Saved rates for {saved} carrier(s).")
+            st.rerun()
+
+    st.divider()
+
+    # ── Merge allocation + rates ───────────────────────────────────────────────
+    if alloc_df.empty:
+        st.info(
+            "No carrier submissions in the database yet. "
+            "Use the **Carrier Submission** tab to log data, then come back here."
+        )
+        st.stop()
+
+    if not rates_df.empty:
+        sim_base = alloc_df.merge(
+            rates_df[["carrier_name", "rate_per_container"]].rename(columns={"rate_per_container": "rate"}),
+            on="carrier_name", how="left",
+        )
+    else:
+        sim_base = alloc_df.copy()
+        sim_base["rate"] = 0.0
+    sim_base["rate"] = sim_base["rate"].fillna(0.0)
+    sim_base["current_cost"] = sim_base["containers"] * sim_base["rate"]
+    total_current = int(sim_base["containers"].sum())
+    total_cost_cur = float(sim_base["current_cost"].sum())
+
+    # ── Two-column layout ─────────────────────────────────────────────────────
+    col_cur, col_sim = st.columns(2, gap="large")
+
+    with col_cur:
+        st.markdown("### Current Allocation")
+        st.caption("From carrier submissions in the database.")
+
+        sim_base["% Share"] = (
+            (sim_base["containers"] / total_current * 100).round(1)
+            if total_current > 0 else 0.0
+        )
+
+        display_cur = sim_base.rename(columns={
+            "carrier_name":   "Carrier",
+            "containers":     "Containers",
+            "rate":           "Rate ($)",
+            "current_cost":   "Cost ($)",
+        })[["Carrier", "Containers", "% Share", "Rate ($)", "Cost ($)"]]
+
+        st.dataframe(
+            display_cur.style.format({
+                "% Share":  "{:.1f}%",
+                "Rate ($)": "${:,.2f}",
+                "Cost ($)": "${:,.2f}",
+            }),
+            use_container_width=True, hide_index=True,
+        )
+        st.metric("Total Containers", f"{total_current:,}")
+        st.metric("Total Cost (current)", f"${total_cost_cur:,.0f}")
+
+        if len(sim_base) > 1:
+            st.markdown("**Container distribution**")
+            st.bar_chart(sim_base.set_index("carrier_name")["containers"])
+
+    with col_sim:
+        st.markdown("### Scenario Simulator")
+        st.caption("Adjust counts — rates are applied automatically.")
+
+        sim_total = st.number_input(
+            "Total containers to allocate",
+            min_value=0, value=total_current, step=1, key="sim_total",
+        )
+
+        sim_rows = []
+        for _, row in sim_base.iterrows():
+            carrier = row["carrier_name"]
+            default_count = int(row["containers"])
+            sim_count = st.number_input(
+                f"{carrier}",
+                min_value=0, value=default_count, step=1, key=f"sim__{carrier}",
+                help=f"Rate: ${float(row['rate']):,.2f}/container",
+            )
+            sim_rows.append({"carrier_name": carrier, "containers": sim_count, "rate": float(row["rate"])})
+
+        sim_df = pd.DataFrame(sim_rows)
+        alloc_sum = int(sim_df["containers"].sum())
+
+        # allocation validation
+        if sim_total > 0:
+            remainder = sim_total - alloc_sum
+            if remainder > 0:
+                st.warning(f"⚠️ {remainder:,} containers unallocated ({alloc_sum:,} / {sim_total:,})")
+            elif remainder < 0:
+                st.warning(f"⚠️ Over-allocated by {abs(remainder):,} ({alloc_sum:,} / {sim_total:,})")
+            else:
+                st.success(f"✅ Fully allocated — {alloc_sum:,} containers")
+
+        sim_df["projected_cost"] = sim_df["containers"] * sim_df["rate"]
+        sim_df["% Share"] = (
+            (sim_df["containers"] / alloc_sum * 100).round(1)
+            if alloc_sum > 0 else 0.0
+        )
+        total_cost_sim = float(sim_df["projected_cost"].sum())
+
+        display_sim = sim_df.rename(columns={
+            "carrier_name":    "Carrier",
+            "containers":      "Containers",
+            "rate":            "Rate ($)",
+            "projected_cost":  "Proj. Cost ($)",
+        })[["Carrier", "Containers", "% Share", "Rate ($)", "Proj. Cost ($)"]]
+
+        st.dataframe(
+            display_sim.style.format({
+                "% Share":       "{:.1f}%",
+                "Rate ($)":      "${:,.2f}",
+                "Proj. Cost ($)":"${:,.2f}",
+            }),
+            use_container_width=True, hide_index=True,
+        )
+
+        delta = total_cost_sim - total_cost_cur
+        delta_pct = (delta / total_cost_cur * 100) if total_cost_cur > 0 else 0.0
+        st.metric(
+            "Projected Total Cost",
+            f"${total_cost_sim:,.0f}",
+            delta=f"${delta:+,.0f} ({delta_pct:+.1f}%) vs current",
+            delta_color="inverse",
+        )
+
+    # ── Cost Comparison Chart ─────────────────────────────────────────────────
+    if total_cost_cur > 0 or total_cost_sim > 0:
+        st.divider()
+        st.markdown("### Cost Comparison — Current vs Scenario")
+
+        compare = sim_base[["carrier_name", "current_cost"]].merge(
+            sim_df[["carrier_name", "projected_cost"]],
+            on="carrier_name", how="outer",
+        ).fillna(0).set_index("carrier_name")
+        compare.columns = ["Current ($)", "Projected ($)"]
+        st.bar_chart(compare)
+
+        mc1, mc2, mc3 = st.columns(3)
+        mc1.metric("Current Total",   f"${total_cost_cur:,.0f}")
+        mc2.metric("Projected Total", f"${total_cost_sim:,.0f}")
+        mc3.metric("Δ Cost",          f"${delta:+,.0f}",
+                   f"{delta_pct:+.1f}%", delta_color="inverse")
