@@ -120,6 +120,32 @@ def init_db():
 
 init_db()
 
+def migrate_db():
+    """Add columns missing in old-schema DBs pulled from S3."""
+    new_cols = [
+        ("sheet_type",       "TEXT"),
+        ("port",             "TEXT"),
+        ("fc_building",      "TEXT"),
+        ("flexi_id",         "TEXT"),
+        ("outgate_date",     "TEXT"),
+        ("delivery_date",    "TEXT"),
+        ("within_sla",       "TEXT"),
+        ("sla_notes",        "TEXT"),
+        ("empty_return_due", "TEXT"),
+        ("appointment_date", "TEXT"),
+        ("accessorial_type", "TEXT"),
+    ]
+    conn = get_db()
+    for col, col_type in new_cols:
+        try:
+            conn.execute(f"ALTER TABLE carrier_submissions ADD COLUMN {col} {col_type}")
+        except sqlite3.OperationalError:
+            pass  # column already exists
+    conn.commit()
+    conn.close()
+
+migrate_db()
+
 def db_write(sql: str, params: tuple):
     """Write to DB then push to S3."""
     conn = get_db()
@@ -385,7 +411,11 @@ with tab2:
         )
 
     if carrier_file_top and carrier_name_input.strip():
-        raw_bytes = carrier_file_top.read()
+        # cache bytes in session_state — file object resets across reruns in Streamlit
+        cache_key = f"cf_bytes_{carrier_file_top.name}_{carrier_file_top.size}"
+        if cache_key not in st.session_state:
+            st.session_state[cache_key] = carrier_file_top.read()
+        raw_bytes = st.session_state[cache_key]
         parsed = parse_carrier_template(raw_bytes, carrier_file_top.name)
 
         if not parsed:
@@ -574,7 +604,7 @@ with tab3:
             today = pd.Timestamp(date.today())
 
             active = er_raw[
-                er_raw["Status"].str.upper().ne("TERMINATED") &
+                er_raw["Status"].fillna("").str.upper().ne("TERMINATED") &
                 er_raw["Empty Return Due Date"].notna()
             ].copy()
             active["Days Until Due"] = (active["Empty Return Due Date"] - today).dt.days
@@ -623,7 +653,7 @@ with tab3:
 
             st.divider()
             st.markdown("### Terminated")
-            term = er_raw[er_raw["Status"].str.upper() == "TERMINATED"] if "Status" in er_raw.columns else pd.DataFrame()
+            term = er_raw[er_raw["Status"].fillna("").str.upper() == "TERMINATED"] if "Status" in er_raw.columns else pd.DataFrame()
             if not term.empty:
                 st.dataframe(term, use_container_width=True, hide_index=True)
 
