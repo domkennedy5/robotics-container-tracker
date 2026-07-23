@@ -1,0 +1,7 @@
+# never commit these
+.streamlit/secrets.toml
+tracker.db
+dbr/
+*.pyc
+__pycache__/
+.env
