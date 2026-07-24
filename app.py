@@ -17,7 +17,7 @@ import data_sync
 # ── page config ────────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="Robotics Container Tracker",
-    page_icon="🚢",
+    page_icon=None,
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -51,7 +51,7 @@ def _check_password():
     if st.session_state.get("authenticated"):
         return True
 
-    st.title("🚢 Robotics Container Tracker")
+    st.title("Robotics Container Tracker")
     pwd = st.text_input("Password", type="password")
     if st.button("Sign in"):
         if pwd == correct:
@@ -419,7 +419,7 @@ def lookup_containers(dbr_sheets: dict, query_ids: list) -> tuple:
 
 # ── sidebar ────────────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.header("📁 DBR File")
+    st.header("DBR File")
 
     # try to auto-load from S3 on first run
     if S3_ENABLED and not st.session_state.get("dbr_auto_loaded"):
@@ -444,7 +444,7 @@ with st.sidebar:
             with st.spinner("Saving to S3…"):
                 ok = data_sync.push_dbr_to_s3(raw, AWS_KEY, AWS_SECRET,
                                                AWS_REGION, S3_BUCKET, dbr_file.name)
-            st.success("Saved to S3 ✓" if ok else "Saved locally (S3 unavailable)")
+            st.success("Saved to S3" if ok else "Saved locally (S3 unavailable)")
         else:
             st.success(f"Loaded: {dbr_file.name}")
 
@@ -464,7 +464,7 @@ with st.sidebar:
         st.info("No DBR loaded yet." if S3_ENABLED else "Upload the DBR to enable lookups.")
 
     st.divider()
-    st.markdown("**📋 Additional Reports**")
+    st.markdown("**Additional Reports**")
     st.caption("Upload emailed reports to enrich tracking data.")
 
     # Import Shipment Status
@@ -480,10 +480,10 @@ with st.sidebar:
             n_ss = upsert_report(ss_df, "shipment_status", "container_no", ss_file.name)
             st.session_state.ss_loaded = True
             st.session_state.ss_source = ss_file.name
-        st.success(f"{n_ss:,} containers loaded ✓")
+        st.success(f"{n_ss:,} containers loaded")
 
     if st.session_state.get("ss_loaded"):
-        st.caption(f"✓ Shipment Status: {st.session_state.get('ss_source','')}")
+        st.caption(f"Shipment Status: {st.session_state.get('ss_source','')}")
 
     # Inbound Loads Report
     il_file = st.file_uploader(
@@ -498,20 +498,20 @@ with st.sidebar:
             n_il = upsert_report(il_df, "inbound_loads", "container_id", il_file.name)
             st.session_state.il_loaded = True
             st.session_state.il_source = il_file.name
-        st.success(f"{n_il:,} containers loaded ✓")
+        st.success(f"{n_il:,} containers loaded")
 
     if st.session_state.get("il_loaded"):
-        st.caption(f"✓ Inbound Loads: {st.session_state.get('il_source','')}")
+        st.caption(f"Inbound Loads: {st.session_state.get('il_source','')}")
 
     st.divider()
-    st.caption("🚢 **Container Tracker v1.1**")
+    st.caption("Container Tracker v1.1")
     if S3_ENABLED:
-        st.caption("☁️ S3 sync active")
-    st.markdown("[📖 User Guide](./help)")
+        st.caption("S3 sync active")
+    st.markdown("[User Guide](./help)")
 
 # ── tabs ───────────────────────────────────────────────────────────────────────
-st.title("🚢 Robotics Container Tracker")
-tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["🔍 Container Lookup", "📤 Carrier Submission", "📋 Empty Returns", "📊 Carrier Data", "🎛️ Allocation", "📈 Insights", "📅 Planning"])
+st.title("Robotics Container Tracker")
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["Container Lookup", "Carrier Submission", "Empty Returns", "Carrier Data", "Allocation", "Insights", "Planning"])
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -530,7 +530,7 @@ with tab1:
     with col_b:
         requester = st.text_input("Your name (optional)", placeholder="e.g. Dominique")
         st.caption("Searches: Delivery Appts · Empty Returns · On Vessel · Canceled · Demurrage · Accessorials")
-        search_btn = st.button("🔍 Search", type="primary", use_container_width=True)
+        search_btn = st.button("Search", type="primary", use_container_width=True)
 
     if search_btn:
         if not dbr_sheets:
@@ -569,7 +569,7 @@ with tab1:
                 st.warning("None of the queried containers found in the DBR.")
 
             if not_found:
-                st.markdown("### ❌ Not Found in DBR")
+                st.markdown("### Not Found in DBR")
                 st.dataframe(pd.DataFrame({"Container ID": not_found}),
                              use_container_width=True, hide_index=True)
 
@@ -599,7 +599,7 @@ with tab2:
                     use_container_width=True,
                     help="Fill this out and upload below or email it in"
                 )
-        st.caption(f"📎 Vendor portal (share with carriers): [{VENDOR_PORTAL_URL}]({VENDOR_PORTAL_URL})")
+        st.caption(f"Vendor portal (share with carriers): [{VENDOR_PORTAL_URL}]({VENDOR_PORTAL_URL})")
 
     st.divider()
 
@@ -631,13 +631,13 @@ with tab2:
 
             # show preview tabs per sheet type
             sheet_labels = {
-                "delivery":       "📦 Delivery",
-                "delivery_ilm1":  "🏭 ILM1",
-                "delivery_ric6":  "🏭 RIC6",
-                "empty_return":   "🔁 Empty Returns",
-                "ody":            "🏗️ Storage/ODY",
-                "demurrage":      "⚠️ Demurrage",
-                "accessorial":    "💰 Accessorials",
+                "delivery":       "Delivery",
+                "delivery_ilm1":  "ILM1",
+                "delivery_ric6":  "RIC6",
+                "empty_return":   "Empty Returns",
+                "ody":            "Storage/ODY",
+                "demurrage":      "Demurrage",
+                "accessorial":    "Accessorials",
             }
             preview_tabs = st.tabs([sheet_labels.get(k, k) for k in parsed.keys()])
             for ptab, (sheet_type, rows) in zip(preview_tabs, parsed.items()):
@@ -645,7 +645,7 @@ with tab2:
                     df_prev = pd.DataFrame(rows).drop(columns=["_raw_container"], errors="ignore")
                     st.dataframe(df_prev, use_container_width=True, hide_index=True)
 
-            if st.button("✅ Confirm & Submit All", type="primary"):
+            if st.button("Confirm & Submit All", type="primary"):
                 now = datetime.now().isoformat()
                 conn = get_db()
                 count = 0
@@ -674,7 +674,7 @@ with tab2:
                 conn.close()
                 if S3_ENABLED:
                     data_sync.push_db_to_s3(AWS_KEY, AWS_SECRET, AWS_REGION, S3_BUCKET)
-                st.success(f"✅ Logged {count} containers from **{carrier_name_input}**")
+                st.success(f"Logged {count} containers from **{carrier_name_input}**")
                 st.rerun()
 
     elif carrier_file_top and not carrier_name_input.strip():
@@ -713,7 +713,7 @@ with tab2:
             "Or upload your status file", type=["xlsx", "csv"],
             help="ARVY-format Excel or CSV — containers extracted automatically"
         )
-        submitted = st.form_submit_button("📤 Submit", type="primary")
+        submitted = st.form_submit_button("Submit", type="primary")
 
     if submitted:
         if not carrier_name.strip():
@@ -749,7 +749,7 @@ with tab2:
                 conn.close()
                 if S3_ENABLED:
                     data_sync.push_db_to_s3(AWS_KEY, AWS_SECRET, AWS_REGION, S3_BUCKET)
-                st.success(f"✅ Logged {len(ids)} containers from **{carrier_name}**")
+                st.success(f"Logged {len(ids)} containers from **{carrier_name}**")
 
     st.divider()
     st.markdown("### Submission Log")
@@ -812,8 +812,8 @@ with tab3:
                 er_raw["Empty Return Due Date"].notna()
             ].copy()
             active["Days Until Due"] = (active["Empty Return Due Date"] - today).dt.days
-            active["⚠️"] = active["Days Until Due"].apply(
-                lambda d: "🔴 OVERDUE" if d < 0 else ("🟡 Due soon" if d <= 3 else "🟢 OK")
+            active["Alert"] = active["Days Until Due"].apply(
+                lambda d: "OVERDUE" if d < 0 else ("Due soon" if d <= 3 else "OK")
             )
 
             overdue   = active[active["Days Until Due"] < 0]
@@ -822,20 +822,20 @@ with tab3:
 
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("Active", len(active))
-            m2.metric("🔴 Overdue", len(overdue))
-            m3.metric("🟡 Due ≤ 3 days", len(due_soon))
-            m4.metric("🟢 On track", len(on_track))
+            m2.metric("Overdue", len(overdue))
+            m3.metric("Due ≤ 3 days", len(due_soon))
+            m4.metric("On track", len(on_track))
             st.divider()
 
-            view = st.radio("Show", ["🔴 Overdue", "🟡 Due Soon (≤3 days)",
+            view = st.radio("Show", ["Overdue", "Due Soon (≤3 days)",
                                       "All Active", "All incl. Terminated"],
                             horizontal=True)
-            display = (overdue if view == "🔴 Overdue"
-                       else due_soon if view == "🟡 Due Soon (≤3 days)"
+            display = (overdue if view == "Overdue"
+                       else due_soon if view == "Due Soon (≤3 days)"
                        else active   if view == "All Active"
                        else er_raw)
 
-            show_cols = [c for c in ["⚠️", "Container #", "Terminal",
+            show_cols = [c for c in ["Alert", "Container #", "Terminal",
                                       "Empty Return Due Date", "Appointment Date",
                                       "Status", "Days Until Due",
                                       "If Outside Window - Reason"]
@@ -910,13 +910,13 @@ with tab4:
         sheet_types = sorted(filt["sheet_type"].dropna().unique())
         if sheet_types:
             sheet_labels = {
-                "delivery":       "📦 Delivery",
-                "delivery_ilm1":  "🏭 ILM1",
-                "delivery_ric6":  "🏭 RIC6",
-                "empty_return":   "🔁 Empty Returns",
-                "ody":            "🏗️ ODY/Storage",
-                "demurrage":      "⚠️ Demurrage",
-                "accessorial":    "💰 Accessorials",
+                "delivery":       "Delivery",
+                "delivery_ilm1":  "ILM1",
+                "delivery_ric6":  "RIC6",
+                "empty_return":   "Empty Returns",
+                "ody":            "ODY/Storage",
+                "demurrage":      "Demurrage",
+                "accessorial":    "Accessorials",
             }
             stabs = st.tabs([sheet_labels.get(s, s) for s in sheet_types])
             for stab, stype in zip(stabs, sheet_types):
@@ -1020,13 +1020,13 @@ with tab5:
         )
 
         if carrier_cols:
-            pivot["★ Cheapest"] = pivot[carrier_cols].idxmin(axis=1)
+            pivot["Cheapest"] = pivot[carrier_cols].idxmin(axis=1)
             pivot["Low $"]  = pivot[carrier_cols].min(axis=1)
             pivot["Spread"] = pivot[carrier_cols].max(axis=1) - pivot["Low $"]
 
         col_order = (["port", "node_code", "FC", "Type", "Facility"]
                      + carrier_cols
-                     + ["★ Cheapest", "Low $", "Spread"])
+                     + ["Cheapest", "Low $", "Spread"])
         col_order = [c for c in col_order if c in pivot.columns]
         disp = pivot[col_order].rename(columns={"port": "Port", "node_code": "Node"}).sort_values(["Port", "Node"])
 
@@ -1078,7 +1078,7 @@ with tab5:
     with sb4:
         sb_count = st.number_input("Containers", min_value=1, value=10, step=1, key="sb_count")
 
-    if st.button("➕ Add Lane to Scenario", type="primary"):
+    if st.button("Add Lane to Scenario", type="primary"):
         if c_opts and sb_carrier_sel != "No rates on this lane":
             carrier_nm = sb_carrier_sel.split("  |  $")[0].strip()
             rate_val   = float(sb_carrier_sel.split("$")[1].split("  ")[0].replace(",", ""))
@@ -1146,7 +1146,7 @@ with tab5:
                 file_name=f"dray_scenario_{date.today()}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
         with cl_c:
-            if st.button("🗑️ Clear All", type="secondary", use_container_width=True):
+            if st.button("Clear All", type="secondary", use_container_width=True):
                 st.session_state.scenario_v2 = []
                 st.rerun()
 
@@ -1241,10 +1241,10 @@ with tab6:
 
     def _risk_flag(d):
         if pd.isna(d): return "—"
-        if d < 0:   return f"🔴 {abs(int(d))}d overdue"
-        if d == 0:  return "🟡 Due today"
-        if d <= 3:  return f"🟡 {int(d)}d"
-        return f"🟢 {int(d)}d"
+        if d < 0:   return f"{abs(int(d))}d overdue"
+        if d == 0:  return "Due today"
+        if d <= 3:  return f"{int(d)}d"
+        return f"{int(d)}d ok"
 
     # ── load supplemental data ────────────────────────────────────────────────
     conn = get_db()
@@ -1302,8 +1302,8 @@ with tab6:
         c2.metric("Empty Returns",     len(_er))
         c3.metric("On Vessel",         len(_vsl))
         c4.metric("Demurrage",         len(_dem))
-        c5.metric("🔴 ER Overdue",     overdue_ct)
-        c6.metric("🟡 ER Due ≤3 days", due_soon_ct)
+        c5.metric("ER Overdue",     overdue_ct)
+        c6.metric("ER Due ≤3 days", due_soon_ct)
 
         # LFD risk
         if not _del.empty and "LFD" in _del.columns:
@@ -1312,10 +1312,10 @@ with tab6:
             lfd["Days to LFD"] = (lfd["_lfd"] - today_ts).dt.days
             risk = lfd[lfd["Days to LFD"].notna() & (lfd["Days to LFD"] <= 5)].copy()
             if not risk.empty:
-                risk["⚠️"] = risk["Days to LFD"].apply(_risk_flag)
-                show = [c for c in ["⚠️","Container #","Terminal ","FC/Building","Status","LFD","Days to LFD"] if c in risk.columns]
+                risk["Alert"] = risk["Days to LFD"].apply(_risk_flag)
+                show = [c for c in ["Alert","Container #","Terminal ","FC/Building","Status","LFD","Days to LFD"] if c in risk.columns]
                 st.divider()
-                st.markdown(f"#### ⏰ LFD Risk — {len(risk)} containers within 5 days")
+                st.markdown(f"#### LFD Risk — {len(risk)} containers within 5 days")
                 st.dataframe(risk[show].sort_values("Days to LFD"), use_container_width=True, hide_index=True)
 
         # Status + terminal breakdown
@@ -1366,20 +1366,20 @@ with tab6:
         d1, d2, d3, d4 = st.columns(4)
         det_overdue = int((det["days_to_det"].dropna() < 0).sum())
         dem_overdue = int((det["days_to_dem"].dropna() < 0).sum())
-        d1.metric("🔴 Detention Overdue",  det_overdue)
-        d2.metric("🟡 Detention ≤7 days",  max(0, len(det_risk) - det_overdue))
-        d3.metric("🔴 Demurrage Overdue",  dem_overdue)
-        d4.metric("🟡 Demurrage ≤7 days",  max(0, len(dem_risk) - dem_overdue))
+        d1.metric("Detention Overdue",  det_overdue)
+        d2.metric("Detention ≤7 days",  max(0, len(det_risk) - det_overdue))
+        d3.metric("Demurrage Overdue",  dem_overdue)
+        d4.metric("Demurrage ≤7 days",  max(0, len(dem_risk) - dem_overdue))
 
         if not det_risk.empty or not dem_risk.empty:
-            drisk_tab, ddem_tab = st.tabs(["⚠️ Detention Risk", "⚠️ Demurrage Risk"])
+            drisk_tab, ddem_tab = st.tabs(["Detention Risk", "Demurrage Risk"])
 
             with drisk_tab:
                 if det_risk.empty:
                     st.success("No detention risk in next 7 days.")
                 else:
-                    det_risk["⚠️"] = det_risk["days_to_det"].apply(_risk_flag)
-                    show_d = [c for c in ["⚠️","container_id","supplier","destination_fc",
+                    det_risk["Alert"] = det_risk["days_to_det"].apply(_risk_flag)
+                    show_d = [c for c in ["Alert","container_id","supplier","destination_fc",
                                           "dest_port","last_free_detention","days_to_det",
                                           "eta_discharge","gateout_terminal"]
                               if c in det_risk.columns]
@@ -1392,8 +1392,8 @@ with tab6:
                 if dem_risk.empty:
                     st.success("No demurrage risk in next 7 days.")
                 else:
-                    dem_risk["⚠️"] = dem_risk["days_to_dem"].apply(_risk_flag)
-                    show_m = [c for c in ["⚠️","container_id","supplier","destination_fc",
+                    dem_risk["Alert"] = dem_risk["days_to_dem"].apply(_risk_flag)
+                    show_m = [c for c in ["Alert","container_id","supplier","destination_fc",
                                           "dest_port","last_free_demurrage","days_to_dem",
                                           "eta_discharge","actual_arrival_discharge"]
                               if c in dem_risk.columns]
@@ -1446,7 +1446,7 @@ with tab6:
             if not soon.empty:
                 soon["Days to ETA"] = (soon["discharge_eta"] - today_ts).dt.days
                 st.divider()
-                st.markdown(f"#### 🚢 Arriving at Port — Next 30 Days ({len(soon)} containers)")
+                st.markdown(f"#### Arriving at Port — Next 30 Days ({len(soon)} containers)")
                 show_s = [c for c in ["container_no","vendor_name","fc","vessel_name",
                                       "discharge_city","discharge_eta","Days to ETA","current_status"]
                           if c in soon.columns]
@@ -1504,8 +1504,8 @@ with tab6:
                  .reset_index().rename(columns={"carrier_name":"Carrier","submitted_at":"Last Submitted"})
                  .sort_values("Last Submitted",ascending=False))
         fresh["Days Since"] = (today_ts - fresh["Last Submitted"].dt.normalize()).dt.days
-        fresh["⚠️"] = fresh["Days Since"].apply(
-            lambda d: "🔴 Stale (7+ days)" if d>=7 else ("🟡 4-6 days" if d>=4 else "🟢 Recent")
+        fresh["Alert"] = fresh["Days Since"].apply(
+            lambda d: "Stale (7+ days)" if d>=7 else ("4-6 days" if d>=4 else "Recent")
         )
         fresh["Last Submitted"] = fresh["Last Submitted"].dt.strftime("%b %d %H:%M")
         st.markdown("#### Submission Freshness")
@@ -1515,7 +1515,7 @@ with tab6:
     # SECTION 5 — Action Items
     # ══════════════════════════════════════════════════════════════════════
     st.divider()
-    st.markdown("### 🚨 Action Items")
+    st.markdown("### Action Items")
     st.caption("Priority flags auto-generated from all loaded data sources.")
 
     actions = []
@@ -1523,13 +1523,13 @@ with tab6:
     # From DBR
     if dbr_sheets:
         if overdue_ct > 0:
-            actions.append(("🔴 Critical", f"{overdue_ct} container(s) with overdue empty returns — DBR",
+            actions.append(("Critical", f"{overdue_ct} container(s) with overdue empty returns — DBR",
                             "Go to Empty Returns tab for details."))
         if due_soon_ct > 0:
-            actions.append(("🟡 Urgent", f"{due_soon_ct} container(s) with empty return due ≤3 days — DBR",
+            actions.append(("Urgent", f"{due_soon_ct} container(s) with empty return due ≤3 days — DBR",
                             "Schedule appointments immediately."))
         if not _dem.empty:
-            actions.append(("🔴 Critical", f"{len(_dem)} container(s) currently in demurrage — DBR",
+            actions.append(("Critical", f"{len(_dem)} container(s) currently in demurrage — DBR",
                             "Costs accruing daily. Expedite gateout."))
         if dbr_sheets and not _del.empty and "LFD" in _del.columns:
             _lfd_chk = _del.copy()
@@ -1537,20 +1537,20 @@ with tab6:
             _lfd_chk["_days"] = (_lfd_chk["_lfd"] - today_ts).dt.days
             lfd_r = _lfd_chk[_lfd_chk["_days"].notna() & (_lfd_chk["_days"] <= 2)]
             if not lfd_r.empty:
-                actions.append(("🔴 Critical", f"{len(lfd_r)} container(s) with LFD within 2 days — DBR",
+                actions.append(("Critical", f"{len(lfd_r)} container(s) with LFD within 2 days — DBR",
                                 "Expedite or notify carrier."))
 
     # From Inbound Loads
     if has_il:
         if det_overdue > 0:
-            actions.append(("🔴 Critical", f"{det_overdue} container(s) past detention free time — Inbound Loads",
+            actions.append(("Critical", f"{det_overdue} container(s) past detention free time — Inbound Loads",
                             "Detention fees accruing. Contact dray carrier immediately."))
         if dem_overdue > 0:
-            actions.append(("🔴 Critical", f"{dem_overdue} container(s) past demurrage free time — Inbound Loads",
+            actions.append(("Critical", f"{dem_overdue} container(s) past demurrage free time — Inbound Loads",
                             "Demurrage fees accruing. Contact ocean carrier / terminal."))
         det_warn = len(det_risk) - det_overdue
         if det_warn > 0:
-            actions.append(("🟡 Urgent", f"{det_warn} container(s) with detention deadline within 7 days",
+            actions.append(("Urgent", f"{det_warn} container(s) with detention deadline within 7 days",
                             "Schedule dray pickup before free time expires."))
 
     # From Carrier Submissions
@@ -1558,13 +1558,13 @@ with tab6:
         stale = fresh[fresh["Days Since"] >= 7] if "Days Since" in fresh.columns else pd.DataFrame()
         if not stale.empty:
             carriers_stale = ", ".join(stale["Carrier"].tolist())
-            actions.append(("🟡 Attention", f"{len(stale)} carrier(s) with no submission in 7+ days",
+            actions.append(("Attention", f"{len(stale)} carrier(s) with no submission in 7+ days",
                             f"Follow up: {carriers_stale}"))
 
     if not actions:
         st.success("No open action items across all loaded data sources.")
     else:
-        priority_order = {"🔴 Critical": 0, "🟡 Urgent": 1, "🟡 Attention": 2}
+        priority_order = {"Critical": 0, "Urgent": 1, "Attention": 2}
         actions.sort(key=lambda x: priority_order.get(x[0], 9))
         for priority, title, detail in actions:
             with st.container(border=True):
@@ -1590,8 +1590,8 @@ _SCAC_COLOR = {
 }
 _PLAN_STATUSES = ["SCHEDULED", "DELIVERED", "REJECTED", "RESCHEDULED", "HOLD", "PENDING"]
 _STATUS_BADGE = {
-    "SCHEDULED": "🔵", "DELIVERED": "✅", "REJECTED": "❌",
-    "RESCHEDULED": "🔄", "HOLD": "⏸️", "PENDING": "⏳",
+    "SCHEDULED": "Scheduled", "DELIVERED": "Delivered", "REJECTED": "Rejected",
+    "RESCHEDULED": "Rescheduled", "HOLD": "Hold", "PENDING": "Pending",
 }
 
 def _init_plan_config():
@@ -2076,7 +2076,7 @@ def _status_editor(df: pd.DataFrame, key_prefix: str):
         f"{r.appt_time}  {_STATUS_BADGE.get(r.status, r.status)}"
         for r in df.itertuples()
     ]
-    with st.expander("✏️ Edit / update status", expanded=False):
+    with st.expander("Edit / Update Status", expanded=False):
         sel    = st.selectbox("Container", labels, key=f"{key_prefix}_sel")
         row_id = ids[labels.index(sel)]
         ec1, ec2, ec3 = st.columns([2,2,1])
@@ -2181,7 +2181,7 @@ with tab7:
         if _conflicts:
             for _cday, _cdate, _ccnt in _conflicts:
                 st.warning(
-                    f"⚠️ **{_ccnt} container(s) still assigned to {_cday} {_cdate}** — "
+                    f"**{_ccnt} container(s) still assigned to {_cday} {_cdate}** — "
                     f"go to Plan Builder → Edit to reassign, or use **Redistribute** below."
                 )
         else:
@@ -2206,7 +2206,7 @@ with tab7:
 
     if not _orphan_df.empty:
         st.error(f"**{len(_orphan_df)} container(s) assigned to inactive days.** Redistribute or manually reassign.")
-        with st.expander("🔄 Redistribute to active days", expanded=False):
+        with st.expander("Redistribute to active days", expanded=False):
             st.dataframe(
                 _plan_row_table(_orphan_df, ["Day","Site","Container #","Carrier","Product","Status"]),
                 use_container_width=True, hide_index=True
@@ -2234,12 +2234,12 @@ with tab7:
     st.divider()
 
     _tp1, _tp2, _tp3, _tp4, _tp5, _tp6 = st.tabs([
-        "📋 Plan Builder", "🗂️ All Sites", "🏭 By Site",
-        "📤 Carrier View", "📊 WoW / History", "⚙️ Config",
+        "Plan Builder", "All Sites", "By Site",
+        "Carrier View", "WoW / History", "Config",
     ])
 
     # ══════════════════════════════════════════════════════════════════════════
-    # 📋 PLAN BUILDER
+    # PLAN BUILDER
     # ══════════════════════════════════════════════════════════════════════════
     with _tp1:
         _sites_df   = _get_sites_df()
@@ -2249,7 +2249,7 @@ with tab7:
         _act_scacs  = _cdf[_cdf["active"]==1]["scac"].tolist() if not _cdf.empty else list(_SCAC_COLOR.keys())
 
         # ── Step 1: Parse stakeholder request ────────────────────────────────
-        with st.expander("📥 Step 1 — Paste Stakeholder Request", expanded=True):
+        with st.expander("Step 1 — Paste Stakeholder Request", expanded=True):
             st.caption("Paste the message from Miguel or site ops. The tool will extract material needs and generate a plan structure.")
             _req_text = st.text_area(
                 "Stakeholder request",
@@ -2258,7 +2258,7 @@ with tab7:
             )
             _req_site = st.selectbox("Site this request is for", _act_sites or ["RIC6"], key="req_site")
 
-            if st.button("📋 Parse Request", key="req_parse", type="primary") and _req_text.strip():
+            if st.button("Parse Request", key="req_parse", type="primary") and _req_text.strip():
                 parsed = _parse_site_request(_req_text)
                 if parsed:
                     st.session_state["parsed_items"] = parsed
@@ -2279,7 +2279,7 @@ with tab7:
                     with col_b:
                         st.markdown(f"{item['qty']} {item['unit']}(s)")
                     with col_c:
-                        ll = "✅ Level load" if item["level_load"] else "⬜ Manual"
+                        ll = "Level load" if item["level_load"] else "Manual"
                         sat = " + Sat" if item["include_sat"] else ""
                         st.caption(f"{ll}{sat}")
                     with col_d:
@@ -2291,7 +2291,7 @@ with tab7:
                         st.caption(f"In plan: {_in_plan} / {item['qty']}")
 
         # ── Step 2: Add containers ────────────────────────────────────────────
-        with st.expander("📦 Step 2 — Add Container IDs", expanded=False):
+        with st.expander("Step 2 — Add Container IDs", expanded=False):
             _add_tab_s, _add_tab_b = st.tabs(["Single", "Bulk Paste"])
 
             with _add_tab_s:
@@ -2328,7 +2328,7 @@ with tab7:
                         _an = _s_slot if _s_status != "PENDING" else 99
                         _add_plan_entry(_plan_week_start(_s_date),_ad,_at,_an,
                                         _s_cid,_s_scac,_s_site,_s_product,int(_s_qty),_s_notes,_s_status)
-                        st.success(f"✅ {_s_cid.upper().strip()} ({_s_scac} → {_s_site})")
+                        st.success(f"{_s_cid.upper().strip()} ({_s_scac} → {_s_site})")
                         st.rerun()
                     else:
                         st.warning("Container # required.")
@@ -2395,7 +2395,7 @@ with tab7:
                                                 cid, b_sc, b_si, _b_product, 1190, "", _b_status)
                                 added += 1
 
-                        msg = f"✅ Added {added} container(s)."
+                        msg = f"Added {added} container(s)."
                         if skipped: msg += f" Skipped {len(skipped)} line(s)."
                         st.success(msg)
                         st.rerun()
@@ -2414,7 +2414,7 @@ with tab7:
 
 
     # ══════════════════════════════════════════════════════════════════════════
-    # 🗂️ ALL SITES (COMPILED)
+    # ALL SITES (COMPILED)
     # ══════════════════════════════════════════════════════════════════════════
     with _tp2:
         _pdf = _get_plan(_ws.isoformat())
@@ -2433,17 +2433,17 @@ with tab7:
                          use_container_width=True, hide_index=True)
             _pend = _pdf[_pdf["status"]=="PENDING"]
             if not _pend.empty:
-                st.caption(f"**⏳ {len(_pend)} pending (unscheduled)**")
+                st.caption(f"**{len(_pend)} pending (unscheduled)**")
                 st.dataframe(_plan_row_table(_pend, ["Site","Container #","Carrier","Product","Qty","Notes"]),
                              use_container_width=True, hide_index=True)
             xl = _export_compiled_excel(_pdf, _wdays, _ws)
-            st.download_button("📥 Export All Sites to Excel", data=xl,
+            st.download_button("Export — All Sites", data=xl,
                 file_name=f"Delivery Plan All Sites {_ws.strftime('%m.%d.%y')}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 type="primary")
 
     # ══════════════════════════════════════════════════════════════════════════
-    # 🏭 BY SITE (INTERNAL)
+    # BY SITE (INTERNAL)
     # ══════════════════════════════════════════════════════════════════════════
     with _tp3:
         _pdf = _get_plan(_ws.isoformat())
@@ -2470,18 +2470,18 @@ with tab7:
                          use_container_width=True, hide_index=True)
             _sp = _sdf[_sdf["status"]=="PENDING"]
             if not _sp.empty:
-                st.caption(f"**⏳ {len(_sp)} pending**")
+                st.caption(f"**{len(_sp)} pending**")
                 st.dataframe(_plan_row_table(_sp, ["Container #","Carrier","Product","Qty","Notes"]),
                              use_container_width=True, hide_index=True)
             _status_editor(_sdf, f"site_{_sel_site}")
             if not _sdf.empty:
                 xl = _export_site_excel(_pdf, _sel_site, _ws)
-                st.download_button(f"📥 Export {_sel_site} to Excel", data=xl,
+                st.download_button(f"Export {_sel_site} to Excel", data=xl,
                     file_name=f"{_sel_site} Delivery Plan {_ws.strftime('%m.%d.%y')}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
     # ══════════════════════════════════════════════════════════════════════════
-    # 📤 CARRIER VIEW (EXTERNAL / SHAREABLE)
+    # CARRIER VIEW (EXTERNAL / SHAREABLE)
     # ══════════════════════════════════════════════════════════════════════════
     with _tp4:
         _pdf = _get_plan(_ws.isoformat())
@@ -2522,23 +2522,23 @@ with tab7:
                 st.dataframe(pd.DataFrame(ext_rows), use_container_width=True, hide_index=True)
             _cpend = _cdf_w[_cdf_w["status"]=="PENDING"]
             if not _cpend.empty:
-                st.caption(f"**⏳ {len(_cpend)} pending**")
+                st.caption(f"**{len(_cpend)} pending**")
                 pext = [{"Site": r.site_code or "", "Container #": r.container_id,
                           "Product Type": r.product_type or "", "Notes": r.notes or ""}
                          for r in _cpend.itertuples()]
                 st.dataframe(pd.DataFrame(pext), use_container_width=True, hide_index=True)
             if not _cdf_w.empty:
                 xl = _export_carrier_excel(_pdf, _sel_scac, _cname, _ws)
-                st.download_button(f"📥 Export {_cname} Plan to Excel", data=xl,
+                st.download_button(f"Export {_cname} Plan to Excel", data=xl,
                     file_name=f"{_sel_scac} Delivery Plan {_ws.strftime('%m.%d.%y')}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     type="primary")
 
     # ══════════════════════════════════════════════════════════════════════════
-    # 📊 WoW / HISTORY
+    # WoW / HISTORY
     # ══════════════════════════════════════════════════════════════════════════
     with _tp5:
-        _wow_t, _hist_t = st.tabs(["📊 Week-over-Week", "🔍 History Search"])
+        _wow_t, _hist_t = st.tabs(["Week-over-Week", "History Search"])
 
         with _wow_t:
             _pdf      = _get_plan(_ws.isoformat())
@@ -2549,17 +2549,17 @@ with tab7:
             rolled_ids  = cur_ids & prior_ids
             dropped_ids = prior_ids - cur_ids
             w1, w2, w3 = st.columns(3)
-            with w1: st.metric("🆕 New this week",         len(new_ids))
-            with w2: st.metric("🔄 Rolled from prior week", len(rolled_ids))
-            with w3: st.metric("✅ Dropped / delivered",    len(dropped_ids))
+            with w1: st.metric("New this week",         len(new_ids))
+            with w2: st.metric("Rolled from prior week", len(rolled_ids))
+            with w3: st.metric("Dropped / delivered",    len(dropped_ids))
             st.divider()
             if new_ids:
-                st.markdown("**🆕 New containers:**")
+                st.markdown("**New containers:**")
                 st.dataframe(_plan_row_table(_pdf[_pdf["container_id"].str.upper().isin(new_ids)],
                     ["Day","Site","Container #","Carrier","Product","Status"]),
                     use_container_width=True, hide_index=True)
             if rolled_ids:
-                st.markdown("**🔄 Carried over from prior week:**")
+                st.markdown("**Carried over from prior week:**")
                 roll_rows = []
                 for r in _pdf[_pdf["container_id"].str.upper().isin(rolled_ids)].itertuples():
                     pr = _prior[_prior["container_id"].str.upper()==r.container_id.upper()]
@@ -2575,7 +2575,7 @@ with tab7:
                 st.dataframe(pd.DataFrame(roll_rows), use_container_width=True, hide_index=True)
             if dropped_ids:
                 prior_lbl = (_ws - timedelta(weeks=1)).strftime("%b %d")
-                st.markdown(f"**✅ Not on this week (were on {prior_lbl}):**")
+                st.markdown(f"**Not on this week (were on {prior_lbl}):**")
                 st.dataframe(_plan_row_table(_prior[_prior["container_id"].str.upper().isin(dropped_ids)],
                     ["Day","Site","Container #","Carrier","Status"]),
                     use_container_width=True, hide_index=True)
@@ -2609,7 +2609,7 @@ with tab7:
                                  use_container_width=True, hide_index=True)
 
     # ══════════════════════════════════════════════════════════════════════════
-    # ⚙️ CONFIG
+    # CONFIG
     # ══════════════════════════════════════════════════════════════════════════
     with _tp6:
         _cfg1, _cfg2, _cfg3 = st.tabs(["Sites", "Carriers", "Site–Carrier Map"])
@@ -2617,7 +2617,7 @@ with tab7:
         with _cfg1:
             _sdf3 = _get_sites_df()
             st.dataframe(_sdf3.drop(columns=["id"], errors="ignore"), use_container_width=True, hide_index=True)
-            with st.expander("➕ Add / Update Site"):
+            with st.expander("Add / Update Site"):
                 cx1, cx2, cx3 = st.columns(3)
                 with cx1:
                     _csc = st.text_input("Site Code", placeholder="RIC6", key="cfg_sc")
@@ -2645,7 +2645,7 @@ with tab7:
         with _cfg2:
             _cdf3 = _get_carriers_df()
             st.dataframe(_cdf3.drop(columns=["id"], errors="ignore"), use_container_width=True, hide_index=True)
-            with st.expander("➕ Add / Update Carrier"):
+            with st.expander("Add / Update Carrier"):
                 cy1, cy2 = st.columns(2)
                 with cy1:
                     _cc_scac = st.text_input("SCAC", key="cfg_cscac")
@@ -2671,7 +2671,7 @@ with tab7:
                 dc = ["site_code","scac","carrier_name","site_contact","site_contact_email",
                       "priority_time","allocation_pct","active","notes"]
                 st.dataframe(_scm2[[c for c in dc if c in _scm2.columns]], use_container_width=True, hide_index=True)
-            with st.expander("➕ Add / Update Mapping"):
+            with st.expander("Add / Update Mapping"):
                 _sdf4 = _get_sites_df(); _cdf4 = _get_carriers_df()
                 cm1, cm2, cm3 = st.columns(3)
                 with cm1:
