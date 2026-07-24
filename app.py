@@ -4406,30 +4406,118 @@ with tab8:
                         _p_et  = _s(_pw.get("empty_term_pct"), "%")
                         _p_vol = _s(_pw.get("containers"))
 
-                        _bridge_std = (
-                            f"WK{week_num} NA Robotics Dray — "
-                            f"[AV→OA] to {_s(_av_sla, '%')} — {_dom_carrier} Primary Driver\n\n"
-                            f"[Volume]         {_s(_vol)} containers ({_vol_wow.strip()} WoW; WK{week_num-1}: {_p_vol})\n"
-                            f"[AV→OA]          SLA: WK{week_num-1}: {_p_av}; WK{week_num}: {_s(_av_sla, '%')}{_av_wow} | "
-                            f"avg {_s(_av_avg)}d | P90 {_s(_av_p90)}d\n"
+                        # ── Perjen plain-English bridge ─────────────────────────────────
+                        def _dir(a, b):
+                            if a is None or b is None: return "moved"
+                            return "increased" if a > b else ("decreased" if a < b else "remained flat")
+                        def _flatcheck(a, b, thresh=2):
+                            return a is not None and b is not None and abs(a - b) <= thresh
+
+                        try:
+                            _wk_range = f"{wk_start.strftime('%m/%d')}–{wk_end.strftime('%m/%d/%y')}"
+                        except Exception:
+                            _wk_range = f"WK{week_num}"
+
+                        # Headline: top metric moves
+                        _headline_parts = []
+                        if _av_sla is not None and _pw.get("av_oa_sla_pct") is not None:
+                            _headline_parts.append(
+                                f"AV→OA SLA {_dir(_av_sla, _pw['av_oa_sla_pct'])} to {_av_sla}%"
+                                + (f" — {_dom_carrier} primary driver" if _dom_carrier != "–" else "")
+                            )
+                        if _od_sla is not None and _pw.get("oa_del_sla_pct") is not None:
+                            _headline_parts.append(f"OA→Del SLA {_dir(_od_sla, _pw['oa_del_sla_pct'])} to {_od_sla}%")
+                        if _otp is not None and _pw.get("otp_pct") is not None:
+                            _headline_parts.append(f"OTP {_dir(_otp, _pw['otp_pct'])} to {_otp}%")
+                        _headline = "; ".join(_headline_parts) if _headline_parts else "Week in review"
+
+                        # Volume narrative
+                        _p_vol_v = _pw.get("containers")
+                        if _vol is not None and _p_vol_v and _p_vol_v > 0:
+                            _vol_chg = round((_vol - _p_vol_v) / _p_vol_v * 100)
+                            _vol_narrative = (f"Container volume {_dir(_vol, _p_vol_v)} {abs(_vol_chg)}% to {_s(_vol)}"
+                                              f" (WK{week_num-1}: {_s(_p_vol_v)}; WK{week_num}: {_s(_vol)}).")
+                        else:
+                            _vol_narrative = f"Container volume: {_s(_vol)} for WK{week_num}."
+
+                        # AV→OA narrative
+                        _av_body = (
+                            f"AV→OA SLA {_dir(_av_sla, _pw.get('av_oa_sla_pct'))} to {_s(_av_sla, '%')}"
+                            f" (WK{week_num-1}: {_p_av}; WK{week_num}: {_s(_av_sla, '%')})."
+                            f" Avg transit {_dir(_av_avg, _pw.get('av_oa_avg'))} to {_s(_av_avg)}d;"
+                            f" P90 {_dir(_av_p90, _pw.get('av_oa_p90'))} to {_s(_av_p90)}d."
                         )
-                        # Per-carrier AV→OA breakdown
+                        _av_carrier_lines = []
+                        _miss_carriers = []
                         if carrier_sc:
-                            for _cs in carrier_sc[:3]:
-                                _cs_sla  = f"{_cs['av_oa_sla_pct']}%" if _cs.get("av_oa_sla_pct") is not None else "–"
-                                _cs_miss = _cs.get("av_oa_misses", 0) or 0
-                                _cs_vol  = _cs.get("volume", 0) or 0
-                                _bridge_std += (
-                                    f"                 - {_cs['carrier']}: {_cs_miss}/{_cs_vol} = {_cs_sla}\n"
-                                )
-                        _bridge_std += (
-                            f"[OA→Del]         SLA: WK{week_num-1}: {_p_od}; WK{week_num}: {_s(_od_sla, '%')}{_od_wow} | "
-                            f"P90 {_s(_od_p90)}d [BOS; A320-RBTCS excl.]\n"
-                            f"[Empty→Term]     {_s(_et, '%')} SLA (WK{week_num-1}: {_p_et})\n"
-                            f"[E2E/OTP]        OTP: {_s(_otp, '%')}{_otp_wow} | E2E: {_s(_e2e)}d avg{_e2e_wow}\n"
-                            f"[Op Callouts]    {_ctx_notes if _ctx_notes else '[Add callouts here]'}\n\n"
-                            f"Path to Green:\n"
-                            f"  [Action] | [Expected Impact] | [Timeline]\n"
+                            _sorted_sc = sorted(carrier_sc, key=lambda x: x.get("av_oa_misses") or 0, reverse=True)
+                            _miss_carriers = [c for c in _sorted_sc if (c.get("av_oa_misses") or 0) > 0]
+                            _clean_carriers = [c for c in _sorted_sc if (c.get("av_oa_misses") or 0) == 0]
+                            for _mc in _miss_carriers[:2]:
+                                _mc_sla = f"{_mc['av_oa_sla_pct']}%" if _mc.get("av_oa_sla_pct") is not None else "–"
+                                _av_carrier_lines.append(f"{_mc['carrier']} ({_mc.get('av_oa_misses',0)}/{_mc.get('volume',0)} = {_mc_sla})")
+                            if _clean_carriers:
+                                _av_carrier_lines.append(", ".join(c["carrier"] for c in _clean_carriers) + " all executed at 100%.")
+                        _av_miss_note = (f"\n{_miss_carriers[0]['carrier']} misses: {_ctx_notes.splitlines()[0]}"
+                                         if _ctx_notes and _miss_carriers else "")
+
+                        # OA→Del narrative
+                        _od_body = (
+                            f"OA→Del SLA {_dir(_od_sla, _pw.get('oa_del_sla_pct'))} to {_s(_od_sla, '%')}"
+                            f" (WK{week_num-1}: {_p_od}; WK{week_num}: {_s(_od_sla, '%')})."
+                            f" P90 {_dir(_od_p90, _pw.get('oa_del_p90'))} to {_s(_od_p90)}d [BOS; A320-RBTCS excl.]."
+                        )
+                        _ctx_lines = [l for l in _ctx_notes.splitlines() if l.strip()] if _ctx_notes else []
+                        _od_root = (f"\n{_ctx_lines[1]}" if len(_ctx_lines) > 1 else "")
+
+                        # Empty→Term narrative
+                        _et_pw = _pw.get("empty_term_pct")
+                        if _et is not None and _et_pw is not None:
+                            if _flatcheck(_et, _et_pw):
+                                _et_body = f"Flat at {_s(_et, '%')}. No issues."
+                            elif _et >= 95:
+                                _et_body = f"{'Improved' if _et > _et_pw else 'Declined'} to {_s(_et, '%')} (WK{week_num-1}: {_p_et}). Within SLA."
+                            else:
+                                _et_body = f"{'Improved' if _et > _et_pw else 'Declined'} to {_s(_et, '%')} (WK{week_num-1}: {_p_et}). Below 95% SLA threshold."
+                        else:
+                            _et_body = f"{_s(_et, '%')} SLA."
+
+                        # E2E / OTP narrative
+                        _e2e_pw = _pw.get("e2e_avg")
+                        _otp_pw = _pw.get("otp_pct")
+                        _e2e_body = (
+                            f"On-Time to Promise {_dir(_otp, _otp_pw)} to {_s(_otp, '%')}"
+                            f" (WK{week_num-1}: {_s(_otp_pw, '%')}; WK{week_num}: {_s(_otp, '%')})."
+                            f" E2E Transit Avg {_dir(_e2e, _e2e_pw)} to {_s(_e2e)}d (WK{week_num-1}: {_s(_e2e_pw)}d)."
+                        )
+                        if _otp is not None and _otp_pw is not None and _otp < _otp_pw:
+                            _e2e_body += (" Miss driven by ocean transit delay — outside dray control."
+                                          if (_e2e or 0) > 40 else
+                                          " Dray execution contributing to miss — carrier follow-up required.")
+
+                        # Path to Green (auto-generated from misses, fully editable)
+                        _ptg_lines = ["Path to Green:"]
+                        if _dom_carrier != "–" and _av_sla is not None and _av_sla < 95:
+                            _ptg_lines.append(f"  Carrier performance review with {_dom_carrier} | Reduce AV→OA SLA misses | This week")
+                        if _od_sla is not None and _od_sla < 95:
+                            _ptg_lines.append(f"  Investigate OA→Del delays (BOS market) | Restore SLA to ≥95% | Next 2 weeks")
+                        if _et is not None and _et < 95:
+                            _ptg_lines.append(f"  Empty return follow-up with all carriers | Clear backlog | This week")
+                        _ptg_lines.append("  [Additional action] | [Expected impact] | [Timeline]")
+                        _ptg = "\n".join(_ptg_lines)
+
+                        _bridge_std = (
+                            f"WK{week_num} ({_wk_range})\n"
+                            f"Headline: {_headline}\n\n"
+                            f"[Volume] {_vol_narrative}\n\n"
+                            f"[AV→OA] {_av_body}\n"
+                            + ("\n".join(_av_carrier_lines) + "\n" if _av_carrier_lines else "")
+                            + (_av_miss_note + "\n" if _av_miss_note else "")
+                            + f"\n[OA→Del] {_od_body}"
+                            + (_od_root + "\n" if _od_root else "\n")
+                            + f"\n[Empty→Term] {_et_body}\n"
+                            + f"\n[E2E / OTP] {_e2e_body}\n"
+                            + f"\n{_ptg}"
                         )
 
                         st.text_area(
