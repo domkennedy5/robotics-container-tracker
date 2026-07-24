@@ -282,7 +282,7 @@ def _draw_table(
     c.rect(TBL_LABEL_X, col_hdr_bot, TBL_LABEL_W, TBL_ROW_H, fill=1, stroke=1)
     c.setFillColor(C_BLACK)
     c.setFont("Helvetica-Bold", 9.0)
-    c.drawString(TBL_LABEL_X + 4, col_hdr_bot + 5, "Week")
+    c.drawCentredString(TBL_LABEL_X + TBL_LABEL_W / 2, col_hdr_bot + 5, "Week")
 
     # Week cells
     col_x = TBL_LABEL_X + TBL_LABEL_W
