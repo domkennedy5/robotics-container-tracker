@@ -3257,24 +3257,16 @@ HUDD LAX  : RE: DBR Bridges Report - HUDD - [DATE]  (Desirae/Ailua)""", language
                         st.info("No scheduled containers found for today matching that criteria.")
                     else:
                         _carriers_hit = _affected["carrier"].unique().tolist()
-                        _msg_lines = [f"Hi team,
-
-**{_mw_scenario}** — {_sel_site}
-"]
+                        _msg_lines = [f"Hi team,\n\n**{_mw_scenario}** — {_sel_site}\n"]
                         _msg_lines.append(f"**Affected containers ({len(_affected)}):**")
                         for _r in _affected.itertuples():
                             _msg_lines.append(f"  • {_r.container_id}  {_r.carrier}  {_r.appt_time}")
-                        _msg_lines.append(f"
-**Action:** Please hold delivery and reschedule to {_mw_new_date.strftime('%A, %m/%d')}.")
+                        _msg_lines.append(f"\n**Action:** Please hold delivery and reschedule to {_mw_new_date.strftime('%A, %m/%d')}.")
                         if _mw_note:
-                            _msg_lines.append(f"
-**Context:** {_mw_note}")
-                        _msg_lines.append("
-Thank you,
-Dominique Kennedy — AGL Robotics Dray")
+                            _msg_lines.append(f"\n**Context:** {_mw_note}")
+                        _msg_lines.append("\nThank you,\nDominique Kennedy — AGL Robotics Dray")
                         st.text_area("Draft carrier message (copy/paste to Slack or email)", 
-                                     value="
-".join(_msg_lines), height=220,
+                                     value="\n".join(_msg_lines), height=220,
                                      key=f"mw_msg_{_sel_site}")
                         st.caption(f"Carriers affected: {', '.join(_carriers_hit)}")
 
