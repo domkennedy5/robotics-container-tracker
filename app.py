@@ -504,14 +504,13 @@ with st.sidebar:
         st.caption(f"Inbound Loads: {st.session_state.get('il_source','')}")
 
     st.divider()
-    st.caption("Container Tracker v1.1")
+    st.caption("Container Tracker v1.2")
     if S3_ENABLED:
         st.caption("S3 sync active")
-    st.markdown("[User Guide](./help)")
 
 # ── tabs ───────────────────────────────────────────────────────────────────────
 st.title("Robotics Container Tracker")
-tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["Container Lookup", "Carrier Submission", "Empty Returns", "Carrier Data", "Allocation", "Insights", "Planning"])
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["Container Lookup", "Carrier Submission", "Empty Returns", "Carrier Data", "Lane Costs", "Insights", "Planning"])
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -959,275 +958,275 @@ with tab5:
             "No rate data loaded yet. Rate cards are imported by the AGL ops team — "
             "contact the app admin to refresh."
         )
-        st.stop()
 
-    # ── Build node lookups ────────────────────────────────────────────────────
-    # rate_lanes.destination matches either node_code (A100) or fc_code (ARW0)
-    fc_to_node   = routes_df.dropna(subset=["fc_code"]).set_index("fc_code")["node_code"].to_dict()
-    node_to_fc   = routes_df.dropna(subset=["fc_code"]).set_index("node_code")["fc_code"].to_dict()
-    node_to_addr = routes_df.set_index("node_code")["node_address"].to_dict()
-    node_to_type = routes_df.set_index("node_code")["node_type"].to_dict()
+    if not rates_df.empty:
+        # ── Build node lookups ────────────────────────────────────────────────────
+        # rate_lanes.destination matches either node_code (A100) or fc_code (ARW0)
+        fc_to_node   = routes_df.dropna(subset=["fc_code"]).set_index("fc_code")["node_code"].to_dict()
+        node_to_fc   = routes_df.dropna(subset=["fc_code"]).set_index("node_code")["fc_code"].to_dict()
+        node_to_addr = routes_df.set_index("node_code")["node_address"].to_dict()
+        node_to_type = routes_df.set_index("node_code")["node_type"].to_dict()
 
-    # normalize destination to node_code where possible
-    rates_df["node_code"] = rates_df["destination"].apply(
-        lambda d: d if str(d) in node_to_fc else fc_to_node.get(str(d), str(d))
-    )
-
-    # ── Global filters ────────────────────────────────────────────────────────
-    gf1, gf2, gf3 = st.columns(3)
-    all_ports   = sorted(rates_df["port"].dropna().unique())
-    all_sources = sorted(rates_df["rate_source"].dropna().unique())
-    all_types   = sorted(rates_df["lane_type"].dropna().unique())
-
-    with gf1:
-        g_port = st.selectbox("Port of Arrival", ["All"] + all_ports, key="g_port")
-    with gf2:
-        g_sources = st.multiselect("Rate Source", all_sources,
-            default=["robotics_2026"] if "robotics_2026" in all_sources else all_sources,
-            key="g_sources")
-    with gf3:
-        g_types = st.multiselect("Lane Type", all_types, default=all_types, key="g_types")
-
-    rfilt = rates_df.copy()
-    if g_port != "All":
-        rfilt = rfilt[rfilt["port"] == g_port]
-    if g_sources:
-        rfilt = rfilt[rfilt["rate_source"].isin(g_sources)]
-    if g_types:
-        rfilt = rfilt[rfilt["lane_type"].isin(g_types)]
-
-    if rfilt.empty:
-        st.warning("No rates for the selected filters.")
-        st.stop()
-
-    # ── Rate Matrix ────────────────────────────────────────────────────────────
-    with st.expander("Rate Matrix — all carrier options by lane", expanded=True):
-        st.caption("Green = cheapest carrier per lane  ·  Red = most expensive  ·  — = no rate on this lane")
-
-        pivot = rfilt.pivot_table(
-            index=["port", "node_code"],
-            columns="carrier_name",
-            values="base_rate",
-            aggfunc="min",
-        ).reset_index()
-        pivot.columns.name = None
-        carrier_cols = [c for c in pivot.columns if c not in ["port", "node_code"]]
-
-        pivot["FC"] = pivot["node_code"].map(node_to_fc)
-        pivot["Type"] = pivot["node_code"].map(node_to_type)
-        pivot["Facility"] = pivot["node_code"].map(
-            lambda n: (node_to_addr.get(n) or "")[:55]
+        # normalize destination to node_code where possible
+        rates_df["node_code"] = rates_df["destination"].apply(
+            lambda d: d if str(d) in node_to_fc else fc_to_node.get(str(d), str(d))
         )
 
-        if carrier_cols:
-            pivot["Cheapest"] = pivot[carrier_cols].idxmin(axis=1)
-            pivot["Low $"]  = pivot[carrier_cols].min(axis=1)
-            pivot["Spread"] = pivot[carrier_cols].max(axis=1) - pivot["Low $"]
+        # ── Global filters ────────────────────────────────────────────────────────
+        gf1, gf2, gf3 = st.columns(3)
+        all_ports   = sorted(rates_df["port"].dropna().unique())
+        all_sources = sorted(rates_df["rate_source"].dropna().unique())
+        all_types   = sorted(rates_df["lane_type"].dropna().unique())
 
-        col_order = (["port", "node_code", "FC", "Type", "Facility"]
-                     + carrier_cols
-                     + ["Cheapest", "Low $", "Spread"])
-        col_order = [c for c in col_order if c in pivot.columns]
-        disp = pivot[col_order].rename(columns={"port": "Port", "node_code": "Node"}).sort_values(["Port", "Node"])
+        with gf1:
+            g_port = st.selectbox("Port of Arrival", ["All"] + all_ports, key="g_port")
+        with gf2:
+            g_sources = st.multiselect("Rate Source", all_sources,
+                default=["robotics_2026"] if "robotics_2026" in all_sources else all_sources,
+                key="g_sources")
+        with gf3:
+            g_types = st.multiselect("Lane Type", all_types, default=all_types, key="g_types")
 
-        fmt = {c: "${:,.0f}" for c in carrier_cols}
-        fmt.update({"Low $": "${:,.0f}", "Spread": "${:,.0f}"})
+        rfilt = rates_df.copy()
+        if g_port != "All":
+            rfilt = rfilt[rfilt["port"] == g_port]
+        if g_sources:
+            rfilt = rfilt[rfilt["rate_source"].isin(g_sources)]
+        if g_types:
+            rfilt = rfilt[rfilt["lane_type"].isin(g_types)]
 
-        try:
-            styled = disp.style.format(fmt, na_rep="—")
-            if len(carrier_cols) > 1:
-                styled = (styled
-                    .highlight_min(subset=carrier_cols, axis=1, color="#c8f7c5")
-                    .highlight_max(subset=carrier_cols, axis=1, color="#fad7d7"))
-            st.dataframe(styled, use_container_width=True, hide_index=True)
-        except Exception:
-            st.dataframe(disp, use_container_width=True, hide_index=True)
+        if rfilt.empty:
+            st.warning("No rates for the selected filters.")
 
-    st.divider()
+        # ── Rate Matrix ────────────────────────────────────────────────────────────
+        with st.expander("Rate Matrix — all carrier options by lane", expanded=True):
+            st.caption("Green = cheapest carrier per lane  ·  Red = most expensive  ·  — = no rate on this lane")
 
-    # ── Scenario Builder ───────────────────────────────────────────────────────
-    st.markdown("### Scenario Builder")
-    st.caption("Select port → node → carrier, enter container count, build your cost projection.")
+            pivot = rfilt.pivot_table(
+                index=["port", "node_code"],
+                columns="carrier_name",
+                values="base_rate",
+                aggfunc="min",
+            ).reset_index()
+            pivot.columns.name = None
+            carrier_cols = [c for c in pivot.columns if c not in ["port", "node_code"]]
 
-    sb_ports = sorted(rfilt["port"].dropna().unique())
-    sb1, sb2, sb3, sb4 = st.columns([1.2, 1.5, 2, 1])
+            pivot["FC"] = pivot["node_code"].map(node_to_fc)
+            pivot["Type"] = pivot["node_code"].map(node_to_type)
+            pivot["Facility"] = pivot["node_code"].map(
+                lambda n: (node_to_addr.get(n) or "")[:55]
+            )
 
-    with sb1:
-        sb_port = st.selectbox("Port", sb_ports, key="sb_port")
+            if carrier_cols:
+                pivot["Cheapest"] = pivot[carrier_cols].idxmin(axis=1)
+                pivot["Low $"]  = pivot[carrier_cols].min(axis=1)
+                pivot["Spread"] = pivot[carrier_cols].max(axis=1) - pivot["Low $"]
 
-    sb_nodes = sorted(rfilt[rfilt["port"] == sb_port]["node_code"].dropna().unique())
-    with sb2:
-        sb_node = st.selectbox(
-            "Node", sb_nodes, key="sb_node",
-            format_func=lambda n: f"{n}  ({node_to_fc.get(n, '?')})",
+            col_order = (["port", "node_code", "FC", "Type", "Facility"]
+                         + carrier_cols
+                         + ["Cheapest", "Low $", "Spread"])
+            col_order = [c for c in col_order if c in pivot.columns]
+            disp = pivot[col_order].rename(columns={"port": "Port", "node_code": "Node"}).sort_values(["Port", "Node"])
+
+            fmt = {c: "${:,.0f}" for c in carrier_cols}
+            fmt.update({"Low $": "${:,.0f}", "Spread": "${:,.0f}"})
+
+            try:
+                styled = disp.style.format(fmt, na_rep="—")
+                if len(carrier_cols) > 1:
+                    styled = (styled
+                        .highlight_min(subset=carrier_cols, axis=1, color="#c8f7c5")
+                        .highlight_max(subset=carrier_cols, axis=1, color="#fad7d7"))
+                st.dataframe(styled, use_container_width=True, hide_index=True)
+            except Exception:
+                st.dataframe(disp, use_container_width=True, hide_index=True)
+
+        st.divider()
+
+        # ── Scenario Builder ───────────────────────────────────────────────────────
+        st.markdown("### Scenario Builder")
+        st.caption("Select port → node → carrier, enter container count, build your cost projection.")
+
+        sb_ports = sorted(rfilt["port"].dropna().unique())
+        sb1, sb2, sb3, sb4 = st.columns([1.2, 1.5, 2, 1])
+
+        with sb1:
+            sb_port = st.selectbox("Port", sb_ports, key="sb_port")
+
+        sb_nodes = sorted(rfilt[rfilt["port"] == sb_port]["node_code"].dropna().unique())
+        with sb2:
+            sb_node = st.selectbox(
+                "Node", sb_nodes, key="sb_node",
+                format_func=lambda n: f"{n}  ({node_to_fc.get(n, '?')})",
+            )
+
+        carriers_here = (
+            rfilt[(rfilt["port"] == sb_port) & (rfilt["node_code"] == sb_node)]
+            [["carrier_name", "base_rate", "lane_type"]]
+            .drop_duplicates()
+            .sort_values("base_rate")
         )
+        c_opts = [
+            f"{r.carrier_name}  |  ${r.base_rate:,.0f}  [{r.lane_type}]"
+            for _, r in carriers_here.iterrows()
+        ]
 
-    carriers_here = (
-        rfilt[(rfilt["port"] == sb_port) & (rfilt["node_code"] == sb_node)]
-        [["carrier_name", "base_rate", "lane_type"]]
-        .drop_duplicates()
-        .sort_values("base_rate")
-    )
-    c_opts = [
-        f"{r.carrier_name}  |  ${r.base_rate:,.0f}  [{r.lane_type}]"
-        for _, r in carriers_here.iterrows()
-    ]
+        with sb3:
+            sb_carrier_sel = st.selectbox("Carrier & Rate", c_opts if c_opts else ["No rates on this lane"], key="sb_carrier")
+        with sb4:
+            sb_count = st.number_input("Containers", min_value=1, value=10, step=1, key="sb_count")
 
-    with sb3:
-        sb_carrier_sel = st.selectbox("Carrier & Rate", c_opts if c_opts else ["No rates on this lane"], key="sb_carrier")
-    with sb4:
-        sb_count = st.number_input("Containers", min_value=1, value=10, step=1, key="sb_count")
-
-    if st.button("Add Lane to Scenario", type="primary"):
-        if c_opts and sb_carrier_sel != "No rates on this lane":
-            carrier_nm = sb_carrier_sel.split("  |  $")[0].strip()
-            rate_val   = float(sb_carrier_sel.split("$")[1].split("  ")[0].replace(",", ""))
-            fc   = node_to_fc.get(sb_node, "")
-            addr = (node_to_addr.get(sb_node) or "")[:60]
-            if "scenario_v2" not in st.session_state:
-                st.session_state.scenario_v2 = []
-            st.session_state.scenario_v2.append({
-                "Port":       sb_port,
-                "Node":       sb_node,
-                "FC":         fc,
-                "Facility":   addr,
-                "Carrier":    carrier_nm,
-                "Containers": sb_count,
-                "Rate ($)":   rate_val,
-                "Cost ($)":   round(sb_count * rate_val, 2),
-            })
-            st.rerun()
-
-    # ── Portfolio ─────────────────────────────────────────────────────────────
-    items = st.session_state.get("scenario_v2", [])
-
-    if not items:
-        st.info("Add lanes above to build your cost scenario.")
-    else:
-        sc_df = pd.DataFrame(items)
-        total_ctr  = int(sc_df["Containers"].sum())
-        total_cost = float(sc_df["Cost ($)"].sum())
-        avg_rate   = total_cost / total_ctr if total_ctr else 0
-
-        pm1, pm2, pm3 = st.columns(3)
-        pm1.metric("Total Containers",    f"{total_ctr:,}")
-        pm2.metric("Total Projected Cost", f"${total_cost:,.0f}")
-        pm3.metric("Avg Cost / Container", f"${avg_rate:,.0f}")
-
-        edited_sc = st.data_editor(
-            sc_df,
-            column_config={
-                "Port":       st.column_config.TextColumn("Port",     disabled=True),
-                "Node":       st.column_config.TextColumn("Node",     disabled=True),
-                "FC":         st.column_config.TextColumn("FC",       disabled=True),
-                "Facility":   st.column_config.TextColumn("Facility", disabled=True),
-                "Carrier":    st.column_config.TextColumn("Carrier",  disabled=True),
-                "Containers": st.column_config.NumberColumn("Containers", min_value=0),
-                "Rate ($)":   st.column_config.NumberColumn("Rate ($)",   format="$%d", disabled=True),
-                "Cost ($)":   st.column_config.NumberColumn("Cost ($)",   format="$%d", disabled=True),
-            },
-            use_container_width=True, hide_index=True, num_rows="dynamic", key="sc_editor",
-        )
-
-        # recalc costs if containers edited
-        if not edited_sc.equals(sc_df):
-            edited_sc["Cost ($)"] = edited_sc["Containers"] * edited_sc["Rate ($)"]
-            st.session_state.scenario_v2 = edited_sc.to_dict("records")
-            sc_df = edited_sc.copy()
-            total_cost = float(sc_df["Cost ($)"].sum())
-            total_ctr  = int(sc_df["Containers"].sum())
-
-        dl_c, cl_c = st.columns([3, 1])
-        with dl_c:
-            buf = io.BytesIO()
-            sc_df.to_excel(buf, index=False)
-            buf.seek(0)
-            st.download_button("⬇️ Export scenario (.xlsx)", buf,
-                file_name=f"dray_scenario_{date.today()}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-        with cl_c:
-            if st.button("Clear All", type="secondary", use_container_width=True):
-                st.session_state.scenario_v2 = []
+        if st.button("Add Lane to Scenario", type="primary"):
+            if c_opts and sb_carrier_sel != "No rates on this lane":
+                carrier_nm = sb_carrier_sel.split("  |  $")[0].strip()
+                rate_val   = float(sb_carrier_sel.split("$")[1].split("  ")[0].replace(",", ""))
+                fc   = node_to_fc.get(sb_node, "")
+                addr = (node_to_addr.get(sb_node) or "")[:60]
+                if "scenario_v2" not in st.session_state:
+                    st.session_state.scenario_v2 = []
+                st.session_state.scenario_v2.append({
+                    "Port":       sb_port,
+                    "Node":       sb_node,
+                    "FC":         fc,
+                    "Facility":   addr,
+                    "Carrier":    carrier_nm,
+                    "Containers": sb_count,
+                    "Rate ($)":   rate_val,
+                    "Cost ($)":   round(sb_count * rate_val, 2),
+                })
                 st.rerun()
 
-        st.divider()
+        # ── Portfolio ─────────────────────────────────────────────────────────────
+        items = st.session_state.get("scenario_v2", [])
 
-        # ── By carrier + by port breakdown ────────────────────────────────────
-        lc, rc = st.columns(2)
+        if not items:
+            st.info("Add lanes above to build your cost scenario.")
+        else:
+            sc_df = pd.DataFrame(items)
+            total_ctr  = int(sc_df["Containers"].sum())
+            total_cost = float(sc_df["Cost ($)"].sum())
+            avg_rate   = total_cost / total_ctr if total_ctr else 0
 
-        with lc:
-            st.markdown("#### Cost by Carrier")
-            by_c = sc_df.groupby("Carrier").agg(
-                Containers=("Containers", "sum"),
-                Cost=("Cost ($)", "sum"),
-            ).reset_index()
-            by_c["% Total"] = (by_c["Cost"] / total_cost * 100).round(1) if total_cost else 0
-            by_c.columns = ["Carrier", "Containers", "Cost ($)", "% Total"]
-            st.dataframe(
-                by_c.style.format({"Cost ($)": "${:,.0f}", "% Total": "{:.1f}%"}),
-                use_container_width=True, hide_index=True,
+            pm1, pm2, pm3 = st.columns(3)
+            pm1.metric("Total Containers",    f"{total_ctr:,}")
+            pm2.metric("Total Projected Cost", f"${total_cost:,.0f}")
+            pm3.metric("Avg Cost / Container", f"${avg_rate:,.0f}")
+
+            edited_sc = st.data_editor(
+                sc_df,
+                column_config={
+                    "Port":       st.column_config.TextColumn("Port",     disabled=True),
+                    "Node":       st.column_config.TextColumn("Node",     disabled=True),
+                    "FC":         st.column_config.TextColumn("FC",       disabled=True),
+                    "Facility":   st.column_config.TextColumn("Facility", disabled=True),
+                    "Carrier":    st.column_config.TextColumn("Carrier",  disabled=True),
+                    "Containers": st.column_config.NumberColumn("Containers", min_value=0),
+                    "Rate ($)":   st.column_config.NumberColumn("Rate ($)",   format="$%d", disabled=True),
+                    "Cost ($)":   st.column_config.NumberColumn("Cost ($)",   format="$%d", disabled=True),
+                },
+                use_container_width=True, hide_index=True, num_rows="dynamic", key="sc_editor",
             )
-            st.bar_chart(by_c.set_index("Carrier")["Cost ($)"])
 
-        with rc:
-            st.markdown("#### Cost by Port")
-            by_p = sc_df.groupby("Port").agg(
-                Containers=("Containers", "sum"),
-                Cost=("Cost ($)", "sum"),
-            ).reset_index()
-            by_p["% Total"] = (by_p["Cost"] / total_cost * 100).round(1) if total_cost else 0
-            by_p.columns = ["Port", "Containers", "Cost ($)", "% Total"]
-            st.dataframe(
-                by_p.style.format({"Cost ($)": "${:,.0f}", "% Total": "{:.1f}%"}),
-                use_container_width=True, hide_index=True,
-            )
-            st.bar_chart(by_p.set_index("Port")["Cost ($)"])
+            # recalc costs if containers edited
+            if not edited_sc.equals(sc_df):
+                edited_sc["Cost ($)"] = edited_sc["Containers"] * edited_sc["Rate ($)"]
+                st.session_state.scenario_v2 = edited_sc.to_dict("records")
+                sc_df = edited_sc.copy()
+                total_cost = float(sc_df["Cost ($)"].sum())
+                total_ctr  = int(sc_df["Containers"].sum())
 
-        # ── Savings vs cheapest ───────────────────────────────────────────────
-        st.divider()
-        st.markdown("#### Savings vs Cheapest Available")
+            dl_c, cl_c = st.columns([3, 1])
+            with dl_c:
+                buf = io.BytesIO()
+                sc_df.to_excel(buf, index=False)
+                buf.seek(0)
+                st.download_button("⬇️ Export scenario (.xlsx)", buf,
+                    file_name=f"dray_scenario_{date.today()}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            with cl_c:
+                if st.button("Clear All", type="secondary", use_container_width=True):
+                    st.session_state.scenario_v2 = []
+                    st.rerun()
 
-        sav_rows = []
-        for _, row in sc_df.iterrows():
-            lane_r = rfilt[(rfilt["port"] == row["Port"]) & (rfilt["node_code"] == row["Node"])]
-            if lane_r.empty:
-                continue
-            min_idx      = lane_r["base_rate"].idxmin()
-            min_rate     = float(lane_r.loc[min_idx, "base_rate"])
-            min_carrier  = str(lane_r.loc[min_idx, "carrier_name"])
-            current_cost = float(row["Cost ($)"])
-            cheapest     = row["Containers"] * min_rate
-            sav_rows.append({
-                "Lane":          f"{row['Port']} → {row['Node']} ({row['FC']})",
-                "Selected":      row["Carrier"],
-                "Rate ($)":      row["Rate ($)"],
-                "Cheapest":      min_carrier,
-                "Cheapest Rate": min_rate,
-                "Containers":    row["Containers"],
-                "Current Cost":  current_cost,
-                "Min Cost":      cheapest,
-                "Savings":       current_cost - cheapest,
-            })
+            st.divider()
 
-        if sav_rows:
-            sav_df = pd.DataFrame(sav_rows)
-            total_sav = float(sav_df["Savings"].sum())
+            # ── By carrier + by port breakdown ────────────────────────────────────
+            lc, rc = st.columns(2)
 
-            if total_sav > 1:
-                st.info(f"Switching to cheapest available on all lanes would save **${total_sav:,.0f}**")
-            else:
-                st.success("You're already using the cheapest available carrier on all lanes.")
+            with lc:
+                st.markdown("#### Cost by Carrier")
+                by_c = sc_df.groupby("Carrier").agg(
+                    Containers=("Containers", "sum"),
+                    Cost=("Cost ($)", "sum"),
+                ).reset_index()
+                by_c["% Total"] = (by_c["Cost"] / total_cost * 100).round(1) if total_cost else 0
+                by_c.columns = ["Carrier", "Containers", "Cost ($)", "% Total"]
+                st.dataframe(
+                    by_c.style.format({"Cost ($)": "${:,.0f}", "% Total": "{:.1f}%"}),
+                    use_container_width=True, hide_index=True,
+                )
+                st.bar_chart(by_c.set_index("Carrier")["Cost ($)"])
 
-            st.dataframe(
-                sav_df.style.format({
-                    "Rate ($)":      "${:,.0f}",
-                    "Cheapest Rate": "${:,.0f}",
-                    "Current Cost":  "${:,.0f}",
-                    "Min Cost":      "${:,.0f}",
-                    "Savings":       "${:,.0f}",
-                }),
-                use_container_width=True, hide_index=True,
-            )
+            with rc:
+                st.markdown("#### Cost by Port")
+                by_p = sc_df.groupby("Port").agg(
+                    Containers=("Containers", "sum"),
+                    Cost=("Cost ($)", "sum"),
+                ).reset_index()
+                by_p["% Total"] = (by_p["Cost"] / total_cost * 100).round(1) if total_cost else 0
+                by_p.columns = ["Port", "Containers", "Cost ($)", "% Total"]
+                st.dataframe(
+                    by_p.style.format({"Cost ($)": "${:,.0f}", "% Total": "{:.1f}%"}),
+                    use_container_width=True, hide_index=True,
+                )
+                st.bar_chart(by_p.set_index("Port")["Cost ($)"])
+
+            # ── Savings vs cheapest ───────────────────────────────────────────────
+            st.divider()
+            st.markdown("#### Savings vs Cheapest Available")
+
+            sav_rows = []
+            for _, row in sc_df.iterrows():
+                lane_r = rfilt[(rfilt["port"] == row["Port"]) & (rfilt["node_code"] == row["Node"])]
+                if lane_r.empty:
+                    continue
+                min_idx      = lane_r["base_rate"].idxmin()
+                min_rate     = float(lane_r.loc[min_idx, "base_rate"])
+                min_carrier  = str(lane_r.loc[min_idx, "carrier_name"])
+                current_cost = float(row["Cost ($)"])
+                cheapest     = row["Containers"] * min_rate
+                sav_rows.append({
+                    "Lane":          f"{row['Port']} → {row['Node']} ({row['FC']})",
+                    "Selected":      row["Carrier"],
+                    "Rate ($)":      row["Rate ($)"],
+                    "Cheapest":      min_carrier,
+                    "Cheapest Rate": min_rate,
+                    "Containers":    row["Containers"],
+                    "Current Cost":  current_cost,
+                    "Min Cost":      cheapest,
+                    "Savings":       current_cost - cheapest,
+                })
+
+            if sav_rows:
+                sav_df = pd.DataFrame(sav_rows)
+                total_sav = float(sav_df["Savings"].sum())
+
+                if total_sav > 1:
+                    st.info(f"Switching to cheapest available on all lanes would save **${total_sav:,.0f}**")
+                else:
+                    st.success("You're already using the cheapest available carrier on all lanes.")
+
+                st.dataframe(
+                    sav_df.style.format({
+                        "Rate ($)":      "${:,.0f}",
+                        "Cheapest Rate": "${:,.0f}",
+                        "Current Cost":  "${:,.0f}",
+                        "Min Cost":      "${:,.0f}",
+                        "Savings":       "${:,.0f}",
+                    }),
+                    use_container_width=True, hide_index=True,
+                )
+
 
 
 # ══════════════════════════════════════════════════════════════════════════════
