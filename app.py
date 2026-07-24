@@ -4094,7 +4094,7 @@ with tab8:
                 inbound_df = load_inbound_loads(il_bytes)
                 iss_df     = parse_shipment_status_file(iss_bytes) if iss_bytes else pd.DataFrame()
 
-                week_num, year = guess_week(gvt_df["ready_date"])
+                week_num, year = guess_week(gvt_df["ready_date"], wbr_report_date)
                 if week_num is None:
                     st.error("❌ GVT file has no parseable Ready Date/Time values. "
                              "Re-pull GVT and ensure the Ready Date column is populated before continuing.")

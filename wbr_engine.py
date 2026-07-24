@@ -27,15 +27,29 @@ EXCL_FACILITY   = 'A320-RBTCS'
 
 def week_bounds(week_num: int, year: int) -> tuple:
     iso_monday = date.fromisocalendar(year, week_num, 1)
-    sun = iso_monday - timedelta(days=1)
-    sat = sun + timedelta(days=6)
+    sun = iso_monday - timedelta(days=1)   # Sunday opening the WBR week
+    sat = sun + timedelta(days=6)          # Saturday closing
     return sun, sat
 
 
-def guess_week(ready_dates) -> tuple:
+def guess_week(ready_dates, report_date=None) -> tuple:
+    """Return (week_num, year) of the WBR week.
+
+    GVT files span 6-12 prior weeks so a naive most-common picks the wrong
+    week.  When report_date is provided we narrow to a 7-day backward window
+    (the WBR Sun-Sat week sits immediately before report_date Monday).
+    """
     dates = pd.to_datetime(ready_dates, errors='coerce').dropna()
     if dates.empty:
         return None, date.today().year
+    if report_date is not None:
+        rpt_ts = pd.Timestamp(report_date)
+        window = dates[
+            (dates >= rpt_ts - pd.Timedelta(days=7)) &
+            (dates <= rpt_ts + pd.Timedelta(days=1))
+        ]
+        if not window.empty:
+            dates = window
     iso_weeks = dates.apply(lambda d: (d + timedelta(days=1)).isocalendar()[:2])
     most_common = pd.Series(iso_weeks).value_counts().idxmax()
     return int(most_common[1]), int(most_common[0])
@@ -183,13 +197,23 @@ def compute_metrics(gvt, oblt, inbound, week_start, week_end, report_date) -> di
         et_den += 1
         if (rp - ce).total_seconds()/86400 <= EMPTY_TERM_SLA: et_met += 1
 
-    # E2E (VD->Enter Facility, completed only)
+    # E2E (VD->Enter Facility)
+    # Completed containers use actual Enter Facility date.
+    # In-transit containers that have voyaged 40-75 days (same voyage window
+    # as completed ones) use report_date as proxy.  Containers with recent
+    # VD dates (still at sea) are excluded — their voyage isn't measurable yet.
     e2e = []
     for _, r in pop.iterrows():
         c, ef = r['container'], r['enter_facility']
-        if pd.isna(ef) or c not in vd_ev.index: continue
-        d = (ef - vd_ev[c]).total_seconds()/86400
-        if d > 0: e2e.append(d)
+        if c not in vd_ev.index: continue
+        vd = vd_ev[c]
+        days_since_vd = (rpt - vd).total_seconds() / 86400
+        if not pd.isna(ef):
+            d = (ef - vd).total_seconds() / 86400
+            if d > 0: e2e.append(d)
+        elif 40 <= days_since_vd <= 90:
+            # In-transit but voyaged long enough to be measurable
+            e2e.append(days_since_vd)
 
     # OTP
     il = inbound[inbound['container'].isin(set(pop['container']))].dropna(subset=['po_promised','actual_arrival'])
