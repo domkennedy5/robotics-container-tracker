@@ -36,9 +36,15 @@ C_GREEN_SLA  = colors.Color(0.000, 0.686, 0.310)   # #00af4f (SLA pass)
 PAGE_W, PAGE_H = 792.0, 612.0
 
 # ── Chart geometry (all in ReportLab coords, y=0 at bottom) ──────────────────
-# Plot x bands (shared by both chart rows)
-BANDS = [(238, 382), (428, 572), (618, 762)]   # (x_start, x_end) for each of 3 charts
-DOT_SPACING = 28.8                              # x pts between 6 data points per chart
+# Plot x bands — row 1 is right-shifted (SLA box occupies upper-left)
+# row 2 spans full page width. Derived from gold PDF forensics.
+R1_BANDS = [(266, 404), (443, 581), (618, 756)]  # row 1 (shifted right)
+R2_BANDS = [(51,  260), (298, 507), (547, 756)]  # row 2 (full width)
+R1_DOT_SPACING = 27.5   # row 1: 6 dots spanning ~138pt
+R2_DOT_SPACING = 41.8   # row 2: 6 dots spanning ~209pt
+# Legacy alias so nothing else breaks
+BANDS = R1_BANDS
+DOT_SPACING = R1_DOT_SPACING
 
 # Plot y ranges per row
 R1_BOT, R1_TOP = 447.0, 542.0   # row 1 charts (fitz y=165→70)
@@ -148,16 +154,18 @@ def _draw_chart(
     year_2d: str = "26",
     is_pct: bool = False,
 ):
-    x_start, x_end = BANDS[band_idx]
+    bands      = R1_BANDS if row == 1 else R2_BANDS
+    dot_spc    = R1_DOT_SPACING if row == 1 else R2_DOT_SPACING
+    x_start, x_end = bands[band_idx]
     plot_bot = R1_BOT if row == 1 else R2_BOT
     plot_top = R1_TOP if row == 1 else R2_TOP
     title_y  = R1_TITLE_Y if row == 1 else R2_TITLE_Y
     xlabel_y = R1_XLABEL_Y if row == 1 else R2_XLABEL_Y
-    plot_h   = plot_top - plot_bot   # 87 pts
+    plot_h   = plot_top - plot_bot
 
-    # Dot x positions — 6 points from x_start to x_end, spacing 28.8
+    # Dot x positions — 6 points, row-specific spacing
     n = len(values)
-    dot_xs = [x_start + i * DOT_SPACING for i in range(n)]
+    dot_xs = [x_start + i * dot_spc for i in range(n)]
 
     # Y scale
     clean = [float(v) for v in values if v is not None]
@@ -186,7 +194,7 @@ def _draw_chart(
         c.line(x_start, gy, x_end, gy)
 
     # ── Y-axis value labels (Helvetica 5.5pt gray, right-aligned 2pt left of x_start) ──
-    c.setFont("Helvetica", 5.5)
+    c.setFont("Helvetica", 6.0)
     c.setFillColor(C_GRAY)
     for i in range(6):
         gy = plot_bot + i * (plot_h / 5)
@@ -224,7 +232,7 @@ def _draw_chart(
             xlbl = f"{year_2d} W {wk[1:]}"
         else:
             xlbl = wk
-        c.setFont("Helvetica", 5.0)
+        c.setFont("Helvetica", 6.0)
         c.setFillColor(C_GRAY)
         c.drawCentredString(px, xlabel_y, xlbl)
 
@@ -236,7 +244,7 @@ def _draw_chart(
 
             # Value label above dot — Helvetica-Bold 6.5pt black
             c.setFillColor(C_BLACK)
-            c.setFont("Helvetica-Bold", 6.5)
+            c.setFont("Helvetica-Bold", 8.0)
             if is_pct:
                 lbl = f"{int(round(float(v)))}"
             else:
@@ -397,7 +405,7 @@ def generate_standard_wbr(
 
     # ── Charts — Row 2 (Empty→Term | OTP | Volume) ────────────────────────
     charts_r2 = [
-        ("Leg: Empty to Termination SLA %",       "empty_term_pct", True),
+        ("Leg: Empty to Termination (avg. days)", "empty_term_pct", False),
         ("Leg: On-Time to Promise %",              "otp_pct",        True),
         ("Volume (containers)",                    "containers",     False),
     ]
