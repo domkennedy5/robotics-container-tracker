@@ -38,6 +38,9 @@ Manage drayage rate lanes by SCAC + port + destination.
 ### WoW / History
 Week-over-week trend charts for AV→OA SLA, OA→Del SLA, OTP, volume.
 
+### Planning
+Delivery scheduling board — assign containers to sites, carriers, and time slots by week. Includes DBR receipt tracker, site/carrier config, and capacity management.
+
 ### WBR Generator (Tab 8)
 **Automated WBR slide builder** — generates the Monday WBR PDF submitted to Mitch/DestOps.
 
