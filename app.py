@@ -4215,19 +4215,20 @@ with tab8:
                                 st.caption(f"ETA within 7d: **{len(_w1)} containers** | within 14d: **{len(_w2)} containers**")
                                 _in_window = _iss_fwd[_iss_fwd["_eta"].notna() & (_iss_fwd["_eta"] > wbr_report_date) & (_iss_fwd["_eta"] <= _fwd_cut2)]
                                 if len(_in_window):
-                                    _vcols = [c for c in ["vessel_name","voyage_no","_eta","container_no","fc","carrier_code"] if c in _in_window.columns]
                                     _grp_cols = [c for c in ["vessel_name","voyage_no","_eta"] if c in _in_window.columns]
-                                _fc_agg   = lambda x: ", ".join(x.dropna().astype(str).unique()[:3])
-                                if "fc" in _in_window.columns:
-                                    _vg = (_in_window.groupby(_grp_cols)
-                                           .agg(Containers=("container_no","count"), FC=("fc", _fc_agg))
-                                           .reset_index().rename(columns={"vessel_name":"Vessel","voyage_no":"Voyage","_eta":"ETA"})
-                                           .sort_values("ETA"))
-                                else:
-                                    _vg = (_in_window.groupby(_grp_cols)
-                                           .agg(Containers=("container_no","count"))
-                                           .reset_index().rename(columns={"vessel_name":"Vessel","voyage_no":"Voyage","_eta":"ETA"})
-                                           .sort_values("ETA"))
+                                    _fc_agg   = lambda x: ", ".join(x.dropna().astype(str).unique()[:3])
+                                    if "fc" in _in_window.columns:
+                                        _vg = (_in_window.groupby(_grp_cols)
+                                               .agg(Containers=("container_no","count"), FC=("fc", _fc_agg))
+                                               .reset_index()
+                                               .rename(columns={"vessel_name":"Vessel","voyage_no":"Voyage","_eta":"ETA"})
+                                               .sort_values("ETA"))
+                                    else:
+                                        _vg = (_in_window.groupby(_grp_cols)
+                                               .agg(Containers=("container_no","count"))
+                                               .reset_index()
+                                               .rename(columns={"vessel_name":"Vessel","voyage_no":"Voyage","_eta":"ETA"})
+                                               .sort_values("ETA"))
                                     st.dataframe(_vg, hide_index=True, use_container_width=True)
                                 else:
                                     st.info("No containers with FinalDestETA in the next 14 days in this ISS file.")
