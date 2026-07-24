@@ -1875,6 +1875,58 @@ def _parse_dbr_tracker(file_bytes: bytes) -> tuple:
         })
     return rows, errors
 
+# ── SharePoint DBR fetch ─────────────────────────────────────────────────────
+
+@st.cache_data(ttl=3600, show_spinner="Fetching DBR Tracker from SharePoint...")
+def _fetch_dbr_from_sharepoint(tenant_id: str, client_id: str, client_secret: str) -> bytes | None:
+    """Download the master DBR Tracker from SharePoint via MSAL client credentials.
+    Cached for 1 hour to avoid hammering SharePoint on every rerun.
+    Returns raw xlsx bytes, or None on failure.
+    """
+    try:
+        import msal
+        import requests as _rq
+        app = msal.ConfidentialClientApplication(
+            client_id,
+            authority=f"https://login.microsoftonline.com/{tenant_id}",
+            client_credential=client_secret,
+        )
+        result = app.acquire_token_for_client(
+            scopes=["https://amazon.sharepoint.com/.default"]
+        )
+        token = result.get("access_token")
+        if not token:
+            return None
+        # Download via SharePoint REST API using the server-relative path
+        file_path = "/sites/AGLRobotics/Shared%20Documents/ToteASERs%20Robotics%20DBR%20Tracker.xlsx"
+        url = (
+            "https://amazon.sharepoint.com/sites/AGLRobotics"
+            f"/_api/web/GetFileByServerRelativePath(decodedurl='{file_path}')/$value"
+        )
+        resp = _rq.get(
+            url,
+            headers={"Authorization": f"Bearer {token}", "Accept": "application/octet-stream"},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        return resp.content
+    except Exception as _sp_exc:
+        return str(_sp_exc)  # return error string so caller can distinguish
+
+
+def _sp_secrets() -> tuple[str | None, str | None, str | None]:
+    """Return (tenant_id, client_id, client_secret) from Streamlit secrets, or Nones."""
+    try:
+        cfg = st.secrets["sharepoint"]
+        return (
+            cfg.get("TENANT_ID") or cfg.get("tenant_id"),
+            cfg.get("CLIENT_ID")  or cfg.get("client_id"),
+            cfg.get("CLIENT_SECRET") or cfg.get("client_secret"),
+        )
+    except Exception:
+        return None, None, None
+
+
 # ── request parser ────────────────────────────────────────────────────────────
 import re as _re
 
@@ -2858,16 +2910,61 @@ with tab7:
     # IMPORT HISTORY
     # ══════════════════════════════════════════════════════════════════════════
     with _tp7:
-        st.subheader("Import Historical Delivery Data")
+        st.subheader("Sync from DBR Tracker")
         st.caption(
-            "Upload the **ToteASERs Robotics DBR Tracker.xlsx** to bulk-load container history. "
-            "Duplicate containers are skipped automatically."
+            "Pulls the latest **ToteASERs Robotics DBR Tracker.xlsx** from SharePoint and "
+            "imports all new containers into the delivery plan. Duplicates are skipped."
         )
 
-        _imp_file = st.file_uploader("DBR Tracker (.xlsx)", type=["xlsx"], key="imp_dbr_upload")
+        _sp_tid, _sp_cid, _sp_sec = _sp_secrets()
+        _sp_configured = all([_sp_tid, _sp_cid, _sp_sec])
 
-        if _imp_file:
-            _imp_bytes = _imp_file.read()
+        if not _sp_configured:
+            st.warning(
+                "SharePoint credentials not configured. Add the following to your Streamlit secrets "
+                "to enable auto-fetch:"
+            )
+            st.code(
+                "[sharepoint]\n"
+                "TENANT_ID     = \"your-azure-tenant-id\"\n"
+                "CLIENT_ID     = \"your-app-registration-client-id\"\n"
+                "CLIENT_SECRET = \"your-client-secret\"",
+                language="toml",
+            )
+            st.markdown(
+                "**Setup steps:**  \n"
+                "1. Register an Azure AD app in Amazon's tenant with **Sites.Read.All** permission  \n"
+                "2. Grant admin consent  \n"
+                "3. Add the three values above to Streamlit Cloud \u2192 App Settings \u2192 Secrets  \n\n"
+                "Until then, use the manual upload below."
+            )
+            st.divider()
+
+        # ── Fetch trigger (if credentials exist) or manual upload ─────────────
+        _imp_bytes = None
+
+        if _sp_configured:
+            _fetch_col, _status_col = st.columns([2, 4])
+            with _fetch_col:
+                _do_fetch = st.button("Fetch latest from SharePoint", type="primary", key="sp_fetch_btn")
+            if _do_fetch:
+                _result = _fetch_dbr_from_sharepoint(_sp_tid, _sp_cid, _sp_sec)
+                if isinstance(_result, str):
+                    st.error(f"SharePoint fetch failed: {_result}")
+                elif _result is None:
+                    st.error("Could not authenticate to SharePoint. Check your credentials.")
+                else:
+                    _imp_bytes = _result
+                    with _status_col:
+                        st.success(f"Downloaded {len(_result):,} bytes from SharePoint.")
+        else:
+            st.caption("Manual upload (fallback):")
+            _up = st.file_uploader("ToteASERs Robotics DBR Tracker.xlsx", type=["xlsx"], key="imp_dbr_manual")
+            if _up:
+                _imp_bytes = _up.read()
+
+        # ── Parse + import ─────────────────────────────────────────────────────
+        if _imp_bytes:
             _imp_rows, _imp_errors = _parse_dbr_tracker(_imp_bytes)
 
             if not _imp_rows:
@@ -2876,22 +2973,21 @@ with tab7:
                     st.warning(_e)
             else:
                 # Deduplication
-                _con = get_db()
+                _con2 = get_db()
                 _existing_ids = set(
-                    r[0] for r in _con.execute(
+                    r[0] for r in _con2.execute(
                         "SELECT DISTINCT container_id FROM delivery_plan"
                     ).fetchall()
                 )
-                _con.close()
-                _new_rows = [r for r in _imp_rows if r["container_id"] not in _existing_ids]
-                _dup_rows = [r for r in _imp_rows if r["container_id"] in _existing_ids]
+                _con2.close()
+                _new_rows  = [r for r in _imp_rows if r["container_id"] not in _existing_ids]
+                _dup_count = len(_imp_rows) - len(_new_rows)
 
-                # Metrics
                 _im1, _im2, _im3, _im4 = st.columns(4)
-                _im1.metric("In file",        len(_imp_rows))
-                _im2.metric("New (to import)", len(_new_rows))
-                _im3.metric("Already in DB",   len(_dup_rows))
-                _im4.metric("Parse warnings",  len(_imp_errors))
+                _im1.metric("In file",         len(_imp_rows))
+                _im2.metric("New (to import)",  len(_new_rows))
+                _im3.metric("Already in DB",    _dup_count)
+                _im4.metric("Parse warnings",   len(_imp_errors))
 
                 if _imp_errors:
                     with st.expander(f"Parse warnings ({len(_imp_errors)})"):
@@ -2901,7 +2997,6 @@ with tab7:
                 if _new_rows:
                     _prev_df = pd.DataFrame(_new_rows)
 
-                    # Breakdown tables
                     _ps1, _ps2, _ps3 = st.columns(3)
                     with _ps1:
                         st.caption("By Site")
@@ -2922,15 +3017,15 @@ with tab7:
                             hide_index=True, use_container_width=True,
                         )
 
-                    _date_range = sorted(_prev_df["appt_date"].dropna().tolist())
-                    if _date_range:
-                        st.caption(f"Date range: {_date_range[0]} through {_date_range[-1]}")
+                    _dr = sorted(_prev_df["appt_date"].dropna().tolist())
+                    if _dr:
+                        st.caption(f"Date range: {_dr[0]} through {_dr[-1]}")
 
                     with st.expander("Preview first 25 rows"):
                         st.dataframe(
                             _prev_df[[
                                 "container_id","carrier","site_code","appt_date",
-                                "product_type","qty","status","notes"
+                                "product_type","qty","status","notes",
                             ]].head(25),
                             hide_index=True, use_container_width=True,
                         )
@@ -2955,7 +3050,7 @@ with tab7:
                             data_sync.push_db_to_s3(AWS_KEY, AWS_SECRET, AWS_REGION, S3_BUCKET)
                         st.success(
                             f"Imported {len(_new_rows)} containers. "
-                            "WoW / History tab is now populated with historical data."
+                            "WoW / History tab now has full historical data."
                         )
                         st.rerun()
                 else:
