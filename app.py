@@ -670,14 +670,14 @@ with tab2:
     st.caption("🎯 **Purpose:** The single intake point for all carrier status updates. Carriers upload their weekly template here so you have one place to review submissions instead of managing files across email.")
     st.caption("📋 **How to use:** Upload a completed AGL Carrier Template and click Confirm & Submit, or share the vendor portal link with carriers to submit directly.")
 
-    col_info, col_tmpl = st.columns([3, 1])
-    with col_info:
+    _vp_col, _tmpl_col = st.columns([3, 1])
+    with _vp_col:
         st.info(
-            "**Two ways to submit:**  \n"
-            "1. Upload your filled-out AGL template below  \n"
-            "2. Email your template to the inbound address — it will be processed automatically"
+            f"**🔗 Share this link with your carriers:**  \n"
+            f"[{VENDOR_PORTAL_URL}]({VENDOR_PORTAL_URL})  \n"
+            "Carriers submit directly through this portal — no manual upload needed on your end."
         )
-    with col_tmpl:
+    with _tmpl_col:
         tmpl_path = os.path.join(BASE_DIR, "agl_carrier_template.xlsx")
         if os.path.exists(tmpl_path):
             with open(tmpl_path, "rb") as f:
@@ -687,178 +687,13 @@ with tab2:
                     file_name="AGL_Carrier_Template.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True,
-                    help="Fill this out and upload below or email it in"
                 )
-        st.caption(f"Vendor portal (share with carriers): [{VENDOR_PORTAL_URL}]({VENDOR_PORTAL_URL})")
 
     st.divider()
 
-    # ── Template upload + preview ──────────────────────────────────────────────
-    c1, c2 = st.columns([2, 1])
-    with c1:
-        carrier_name_input = st.text_input("Carrier / Company Name *", placeholder="e.g. ARVY, XPO…", key="cn_top")
-    with c2:
-        carrier_file_top = st.file_uploader(
-            "Upload completed template", type=["xlsx", "csv"],
-            help="Upload your filled AGL carrier template",
-            key="cf_top"
-        )
-
-    if carrier_file_top and carrier_name_input.strip():
-        # cache bytes in session_state — file object resets across reruns in Streamlit
-        cache_key = f"cf_bytes_{carrier_file_top.name}_{carrier_file_top.size}"
-        if cache_key not in st.session_state:
-            st.session_state[cache_key] = carrier_file_top.read()
-        raw_bytes = st.session_state[cache_key]
-        parsed = parse_carrier_template(raw_bytes, carrier_file_top.name)
-
-        if not parsed:
-            st.warning("No container data found in this file. Make sure you're using the AGL Carrier Template.")
-        else:
-            # count totals
-            total = sum(len(v) for v in parsed.values())
-            st.success(f"Found **{total} containers** across **{len(parsed)} sheet(s)** — review below then click Submit.")
-
-            # show preview tabs per sheet type
-            sheet_labels = {
-                "delivery":       "Delivery",
-                "delivery_ilm1":  "ILM1",
-                "delivery_ric6":  "RIC6",
-                "empty_return":   "Empty Returns",
-                "ody":            "Storage/ODY",
-                "demurrage":      "Demurrage",
-                "accessorial":    "Accessorials",
-            }
-            preview_tabs = st.tabs([sheet_labels.get(k, k) for k in parsed.keys()])
-            for ptab, (sheet_type, rows) in zip(preview_tabs, parsed.items()):
-                with ptab:
-                    df_prev = pd.DataFrame(rows).drop(columns=["_raw_container"], errors="ignore")
-                    st.dataframe(df_prev, use_container_width=True, hide_index=True)
-
-            if st.button("Confirm & Submit All", type="primary"):
-                now = datetime.now().isoformat()
-                conn = get_db()
-                count = 0
-                for sheet_type, rows in parsed.items():
-                    for row in rows:
-                        conn.execute(
-                            """INSERT INTO carrier_submissions
-                               (submitted_at, carrier_name, container_id, sheet_type,
-                                port, terminal, fc_building, flexi_id, outgate_date,
-                                delivery_date, status, within_sla, sla_notes,
-                                empty_return_due, appointment_date, accessorial_type,
-                                notes, source_file, source)
-                               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                            (now, carrier_name_input.strip(), row["container_id"],
-                             sheet_type,
-                             row.get("port"), row.get("terminal"), row.get("fc_building"),
-                             row.get("flexi_id"), row.get("outgate_date"),
-                             row.get("delivery_date"), row.get("status"),
-                             row.get("within_sla"), row.get("sla_notes"),
-                             row.get("empty_return_due"), row.get("appointment_date"),
-                             row.get("accessorial_type"), row.get("notes"),
-                             carrier_file_top.name, "web")
-                        )
-                        count += 1
-                conn.commit()
-                # auto-log DBR receipt
-                _al1_wk = (date.today() - timedelta(days=date.today().weekday())).isoformat()
-                get_db().execute(
-                    "INSERT OR IGNORE INTO dbr_receipts (carrier, week_start, received_date, received_via, file_name, logged_at) VALUES (?,?,?,?,?,?)",
-                    (carrier_name_input.strip(), _al1_wk, date.today().isoformat(), "portal", carrier_file_top.name, datetime.now().isoformat())
-                )
-                get_db().commit()
-                conn.close()
-                if S3_ENABLED:
-                    data_sync.push_db_to_s3(AWS_KEY, AWS_SECRET, AWS_REGION, S3_BUCKET)
-                st.success(f"Logged {count} containers from **{carrier_name_input}**")
-                st.rerun()
-
-    elif carrier_file_top and not carrier_name_input.strip():
-        st.warning("Enter your carrier name above before uploading.")
-
-    if S3_ENABLED:
-        try:
-            inbound_email = st.secrets["notifications"].get("INBOUND_EMAIL", "")
-            if inbound_email:
-                st.code(inbound_email, language=None)
-        except Exception:
-            pass
-
-    with st.form("carrier_form", clear_on_submit=True):
-        c1, c2 = st.columns(2)
-        with c1:
-            carrier_name = st.text_input("Carrier / Company Name *", placeholder="e.g. ARVY, XPO…")
-            terminal     = st.text_input("Terminal", placeholder="e.g. EWR, BOS, CHI")
-        with c2:
-            submitted_status = st.selectbox("Status", [
-                "Delivery Scheduled",
-                "Delivered pending empty return",
-                "Empty Return Scheduled",
-                "TERMINATED",
-                "On Vessel",
-                "Customs Hold",
-                "Other",
-            ])
-            notes = st.text_input("Notes", placeholder="Delays, exceptions…")
-
-        container_text = st.text_area(
-            "Container IDs (one per line) *", height=180,
-            placeholder="TCNU389902-4\nONEU624470-0\n…",
-        )
-        carrier_file = st.file_uploader(
-            "Or upload your status file", type=["xlsx", "csv"],
-            help="ARVY-format Excel or CSV — containers extracted automatically"
-        )
-        submitted = st.form_submit_button("Submit", type="primary")
-
-    if submitted:
-        if not carrier_name.strip():
-            st.error("Carrier name is required.")
-        else:
-            ids = []
-            if container_text.strip():
-                ids.extend(parse_container_list(container_text))
-            source_file = None
-            if carrier_file:
-                source_file = carrier_file.name
-                fdf = parse_carrier_file(carrier_file.read(), carrier_file.name)
-                if not fdf.empty:
-                    ids.extend(fdf["container_id"].tolist())
-
-            ids = list(dict.fromkeys(ids))
-            if not ids:
-                st.error("No container IDs found.")
-            else:
-                now = datetime.now().isoformat()
-                conn = get_db()
-                for cid in ids:
-                    conn.execute(
-                        """INSERT INTO carrier_submissions
-                           (submitted_at, carrier_name, container_id, terminal,
-                            status, notes, source_file, source)
-                           VALUES (?,?,?,?,?,?,?,?)""",
-                        (now, carrier_name.strip(), normalize_container(cid),
-                         terminal.strip() or None, submitted_status,
-                         notes.strip() or None, source_file, "web")
-                    )
-                conn.commit()
-                # auto-log DBR receipt
-                _al2_wk = (date.today() - timedelta(days=date.today().weekday())).isoformat()
-                get_db().execute(
-                    "INSERT OR IGNORE INTO dbr_receipts (carrier, week_start, received_date, received_via, file_name, logged_at) VALUES (?,?,?,?,?,?)",
-                    (carrier_name.strip(), _al2_wk, date.today().isoformat(), "portal", source_file, datetime.now().isoformat())
-                )
-                get_db().commit()
-                conn.close()
-                if S3_ENABLED:
-                    data_sync.push_db_to_s3(AWS_KEY, AWS_SECRET, AWS_REGION, S3_BUCKET)
-                st.success(f"Logged {len(ids)} containers from **{carrier_name}**")
-
-    st.divider()
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # DBR Receipt Tracker
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     st.markdown("### 📋 DBR Receipt Tracker")
     st.caption("Track whether each carrier has submitted their weekly DBR. Use the week selector to navigate; missing submissions are flagged automatically.")
 
@@ -926,72 +761,224 @@ with tab2:
                     f"We haven\u2019t received your container status DBR for the week of "
                     f"{_wk_start.strftime('%B %-d, %Y')}. Could you please submit your weekly "
                     f"update at your earliest convenience?\n\n"
-                    f"You can submit via the AGL carrier portal or reply with your completed template.\n\n"
+                    f"You can submit via the AGL carrier portal: {VENDOR_PORTAL_URL}\n\n"
                     f"Thank you,\nAGL Robotics Logistics"
                 )
                 st.code(_tmpl.replace("\n", "\n"), language=None)
 
-    with st.expander("➕ Log a receipt manually (email / out-of-band submission)"):
-        with st.form("dbr_manual_receipt_form"):
-            _mrc1, _mrc2 = st.columns(2)
-            with _mrc1:
-                _log_carrier = st.selectbox("Carrier", TRACKED_CARRIERS, key="dbr_log_c")
-            with _mrc2:
-                _log_date = st.date_input("Date received", value=_today_rd, key="dbr_log_d")
-            _log_via   = st.selectbox("Received via", ["email", "portal", "other"], key="dbr_log_via")
-            _log_fname = st.text_input("File name (optional)", key="dbr_log_fn")
-            _log_note  = st.text_input("Notes (optional)",     key="dbr_log_nt")
-            _log_sub   = st.form_submit_button("Log Receipt", type="primary")
-        if _log_sub:
-            _lw = (_log_date - timedelta(days=_log_date.weekday())).isoformat()
-            _lc = get_db()
-            _lc.execute(
-                "INSERT OR IGNORE INTO dbr_receipts (carrier, week_start, received_date, received_via, file_name, notes, logged_at) VALUES (?,?,?,?,?,?,?)",
-                (_log_carrier, _lw, _log_date.isoformat(), _log_via,
-                 _log_fname.strip() or None, _log_note.strip() or None,
-                 datetime.now().isoformat())
-            )
-            _lc.commit(); _lc.close()
-            if S3_ENABLED:
-                data_sync.push_db_to_s3(AWS_KEY, AWS_SECRET, AWS_REGION, S3_BUCKET)
-            st.success(f"Logged receipt for **{_log_carrier}** on {_log_date.strftime('%b %-d, %Y')}")
-            st.rerun()
+    st.divider()
 
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # Bulk DBR File Upload
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    st.markdown("### 📤 Submit DBR Files")
+    st.caption("Upload one or more files in one shot — mix carriers, mix weeks. Carrier is auto-detected from the filename; override per file if needed.")
+
+    def _detect_carrier_from_name(fname: str) -> str:
+        fn = fname.upper()
+        for sc in ["ATMI", "ARVY", "RKNE", "TGHE"]:
+            if sc in fn: return sc
+        if "HUDD" in fn or "HDDR" in fn: return "HDDR"
+        return ""
+
+    _CARRIER_OPTS = ["", "ATMI", "ARVY", "HDDR", "RKNE", "TGHE"]
+
+    bulk_files = st.file_uploader(
+        "Drop DBR files here",
+        type=["xlsx", "csv"],
+        accept_multiple_files=True,
+        key="bulk_dbr_upload",
+        label_visibility="collapsed",
+    )
+
+    if bulk_files:
+        st.caption(f"{len(bulk_files)} file(s) selected — confirm carrier for each:")
+
+        _file_carrier_map = {}
+        for _fi, _uf in enumerate(bulk_files):
+            _det = _detect_carrier_from_name(_uf.name)
+            _hd1, _hd2 = st.columns([4, 1])
+            with _hd1:
+                st.markdown(f"&nbsp;&nbsp;📄 `{_uf.name}`")
+            with _hd2:
+                _chosen = st.selectbox(
+                    "Carrier",
+                    _CARRIER_OPTS,
+                    index=_CARRIER_OPTS.index(_det) if _det in _CARRIER_OPTS else 0,
+                    key=f"bulk_c_{_fi}",
+                    label_visibility="collapsed",
+                )
+            _file_carrier_map[_fi] = (_uf, _chosen)
+
+        _unassigned = [_uf.name for _, (_uf, _c) in _file_carrier_map.items() if not _c]
+        if _unassigned:
+            st.warning(f"Assign carrier for: {', '.join(_unassigned)}")
+        else:
+            # Parse all files, group by carrier
+            _all_parsed = {}
+            _parse_errs = []
+            for _fi, (_uf, _carrier) in _file_carrier_map.items():
+                _ck = f"bulk_{_uf.name}_{_uf.size}"
+                if _ck not in st.session_state:
+                    st.session_state[_ck] = _uf.read()
+                _raw = st.session_state[_ck]
+                try:
+                    _p = parse_carrier_template(_raw, _uf.name)
+                    if _p:
+                        if _carrier not in _all_parsed:
+                            _all_parsed[_carrier] = {}
+                        for _stype, _rows in _p.items():
+                            _all_parsed[_carrier].setdefault(_stype, [])
+                            for _r in _rows:
+                                _r["_src"] = _uf.name
+                            _all_parsed[_carrier][_stype].extend(_rows)
+                    else:
+                        _parse_errs.append(f"{_uf.name}: no container data found")
+                except Exception as _e:
+                    _parse_errs.append(f"{_uf.name}: {_e}")
+
+            for _err in _parse_errs:
+                st.warning(_err)
+
+            if _all_parsed:
+                _tot = sum(len(_r) for _cd in _all_parsed.values() for _r in _cd.values())
+                st.success(f"Ready: **{_tot} containers** across **{len(_all_parsed)} carrier(s)**")
+
+                for _carrier, _sheets in _all_parsed.items():
+                    _ctot = sum(len(_r) for _r in _sheets.values())
+                    with st.expander(f"🔎 Preview — {_carrier} ({_ctot} containers)"):
+                        _slabels = {"delivery": "Delivery", "delivery_ilm1": "ILM1",
+                                    "delivery_ric6": "RIC6", "empty_return": "Empty Returns",
+                                    "demurrage": "Demurrage", "accessorial": "Accessorials", "ody": "ODY"}
+                        _ptabs = st.tabs([_slabels.get(_k, _k) for _k in _sheets])
+                        for _ptab, (_st, _rows) in zip(_ptabs, _sheets.items()):
+                            with _ptab:
+                                _df_p = pd.DataFrame(_rows).drop(columns=["_raw_container","_src"], errors="ignore")
+                                st.dataframe(_df_p, use_container_width=True, hide_index=True)
+
+                if st.button("✅ Confirm & Submit All", type="primary", key="bulk_submit_btn"):
+                    _now = datetime.now().isoformat()
+                    _conn = get_db()
+                    _logged = 0
+                    for _carrier, _sheets in _all_parsed.items():
+                        for _stype, _rows in _sheets.items():
+                            for _row in _rows:
+                                _conn.execute(
+                                    """INSERT INTO carrier_submissions
+                                       (submitted_at, carrier_name, container_id, sheet_type,
+                                        port, terminal, fc_building, flexi_id, outgate_date,
+                                        delivery_date, status, within_sla, sla_notes,
+                                        empty_return_due, appointment_date, accessorial_type,
+                                        notes, source_file, source)
+                                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                                    (_now, _carrier, _row["container_id"], _stype,
+                                     _row.get("port"), _row.get("terminal"), _row.get("fc_building"),
+                                     _row.get("flexi_id"), _row.get("outgate_date"),
+                                     _row.get("delivery_date"), _row.get("status"),
+                                     _row.get("within_sla"), _row.get("sla_notes"),
+                                     _row.get("empty_return_due"), _row.get("appointment_date"),
+                                     _row.get("accessorial_type"), _row.get("notes"),
+                                     _row.get("_src"), "web")
+                                )
+                                _logged += 1
+                        _wk = (date.today() - timedelta(days=date.today().weekday())).isoformat()
+                        _conn.execute(
+                            "INSERT OR IGNORE INTO dbr_receipts (carrier, week_start, received_date, received_via, logged_at) VALUES (?,?,?,?,?)",
+                            (_carrier, _wk, date.today().isoformat(), "portal", _now)
+                        )
+                    _conn.commit()
+                    _conn.close()
+                    if S3_ENABLED:
+                        data_sync.push_db_to_s3(AWS_KEY, AWS_SECRET, AWS_REGION, S3_BUCKET)
+                    st.success(f"✅ Submitted {_logged} containers across {len(_all_parsed)} carrier(s)")
+                    st.rerun()
+
+    st.divider()
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # Manual entry (fallback)
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    with st.expander("⌨️ Enter containers manually (fallback — use file upload when possible)"):
+        st.caption("Use this only if a carrier cannot provide a file. Paste container IDs directly.")
+        with st.form("carrier_form_manual", clear_on_submit=True):
+            _fm1, _fm2 = st.columns(2)
+            with _fm1:
+                _m_carrier  = st.selectbox("Carrier *", ["", "ATMI", "ARVY", "HDDR", "RKNE", "TGHE"], key="man_carrier")
+                _m_terminal = st.text_input("Terminal", placeholder="EWR, BOS, CHI…", key="man_term")
+            with _fm2:
+                _m_status = st.selectbox("Status", [
+                    "Delivery Scheduled", "Delivered pending empty return",
+                    "Empty Return Scheduled", "TERMINATED", "On Vessel",
+                    "Customs Hold", "Other",
+                ], key="man_status")
+                _m_notes = st.text_input("Notes", placeholder="Delays, exceptions…", key="man_notes")
+            _m_ids_text = st.text_area("Container IDs (one per line) *", height=140, key="man_ids")
+            _m_submit   = st.form_submit_button("Submit", type="primary")
+        if _m_submit:
+            if not _m_carrier:
+                st.error("Select a carrier.")
+            elif not _m_ids_text.strip():
+                st.error("Paste at least one container ID.")
+            else:
+                _mids = parse_container_list(_m_ids_text)
+                _mn   = datetime.now().isoformat()
+                _mc   = get_db()
+                for _cid in _mids:
+                    _mc.execute(
+                        "INSERT INTO carrier_submissions (submitted_at, carrier_name, container_id, terminal, status, notes, source) VALUES (?,?,?,?,?,?,?)",
+                        (_mn, _m_carrier, normalize_container(_cid), _m_terminal.strip() or None, _m_status, _m_notes.strip() or None, "manual")
+                    )
+                _mwk = (date.today() - timedelta(days=date.today().weekday())).isoformat()
+                _mc.execute(
+                    "INSERT OR IGNORE INTO dbr_receipts (carrier, week_start, received_date, received_via, logged_at) VALUES (?,?,?,?,?)",
+                    (_m_carrier, _mwk, date.today().isoformat(), "manual", _mn)
+                )
+                _mc.commit(); _mc.close()
+                if S3_ENABLED:
+                    data_sync.push_db_to_s3(AWS_KEY, AWS_SECRET, AWS_REGION, S3_BUCKET)
+                st.success(f"Logged {len(_mids)} containers from **{_m_carrier}**")
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # Submission Log
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     st.markdown("### Submission Log")
 
-    conn = get_db()
-    log_df = pd.read_sql(
-        """SELECT submitted_at, carrier_name, container_id, terminal,
-                  status, notes, source
+    _sl_conn = get_db()
+    _log_df  = pd.read_sql(
+        """SELECT submitted_at, carrier_name, container_id, sheet_type,
+                  terminal, status, notes, source_file, source
            FROM carrier_submissions ORDER BY submitted_at DESC LIMIT 500""",
-        conn
+        _sl_conn
     )
-    conn.close()
+    _sl_conn.close()
 
-    if log_df.empty:
+    if _log_df.empty:
         st.info("No submissions yet.")
     else:
-        fc1, fc2, fc3 = st.columns(3)
-        with fc1:
-            f_carrier = st.multiselect("Carrier", sorted(log_df["carrier_name"].unique()))
-        with fc2:
-            f_status = st.multiselect("Status", sorted(log_df["status"].dropna().unique()))
-        with fc3:
-            f_source = st.multiselect("Source", sorted(log_df["source"].dropna().unique()))
+        _sc1, _sc2, _sc3 = st.columns(3)
+        with _sc1:
+            _sf_carrier = st.multiselect("Carrier", sorted(_log_df["carrier_name"].unique()), key="sl_carrier")
+        with _sc2:
+            _sf_status  = st.multiselect("Status",  sorted(_log_df["status"].dropna().unique()), key="sl_status")
+        with _sc3:
+            _sf_source  = st.multiselect("Source",  sorted(_log_df["source"].dropna().unique()), key="sl_source")
 
-        filt = log_df.copy()
-        if f_carrier: filt = filt[filt["carrier_name"].isin(f_carrier)]
-        if f_status:  filt = filt[filt["status"].isin(f_status)]
-        if f_source:  filt = filt[filt["source"].isin(f_source)]
+        _filt = _log_df.copy()
+        if _sf_carrier: _filt = _filt[_filt["carrier_name"].isin(_sf_carrier)]
+        if _sf_status:  _filt = _filt[_filt["status"].isin(_sf_status)]
+        if _sf_source:  _filt = _filt[_filt["source"].isin(_sf_source)]
 
-        st.dataframe(filt, use_container_width=True, hide_index=True)
+        st.dataframe(_filt, use_container_width=True, hide_index=True)
 
-        buf = io.BytesIO()
-        filt.to_excel(buf, index=False)
-        buf.seek(0)
-        st.download_button("⬇️ Export log (.xlsx)", data=buf,
+        _sl_buf = io.BytesIO()
+        _filt.to_excel(_sl_buf, index=False)
+        _sl_buf.seek(0)
+        st.download_button(
+            "⬇️ Export log (.xlsx)", data=_sl_buf,
             file_name=f"carrier_log_{date.today()}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
 
 
 # ══════════════════════════════════════════════════════════════════════════════
