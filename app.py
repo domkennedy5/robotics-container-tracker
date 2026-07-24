@@ -2162,6 +2162,41 @@ def _init_plan_config():
 
 _init_plan_config()
 
+def _migrate_plan_config():
+    """One-time migrations to fill gaps in seeded config data."""
+    conn = get_db()
+    # Carrier emails
+    conn.executemany(
+        "UPDATE plan_carriers SET ops_email=? WHERE scac=? AND (ops_email IS NULL OR ops_email='')",
+        [
+            ("tspangler@arrivelogistics.com", "ARVY"),
+        ]
+    )
+    # Site-carrier contact emails (HDDR contacts per site)
+    conn.executemany(
+        "UPDATE plan_site_carrier SET site_contact_email=? WHERE site_code=? AND scac=? AND (site_contact_email IS NULL OR site_contact_email='')",
+        [
+            ("sandji.ruffin@maersk.com",  "RIC6", "HDDR"),
+            ("jerry.nesbit@maersk.com",   "ILM1", "HDDR"),
+            ("desirae.swain@maersk.com",  "LAX",  "HDDR"),
+        ]
+    )
+    # Add SJC8 site if missing
+    conn.execute(
+        """INSERT OR IGNORE INTO plan_sites (site_code,fc_name,port,region,capacity_day,active,notes)
+           VALUES ('SJC8','San Jose CA','OAK','West',6,1,'West coast; via OAK port')"""
+    )
+    # Add SJC8 carrier mapping (ATMI)
+    conn.execute(
+        """INSERT OR IGNORE INTO plan_site_carrier
+           (site_code,scac,site_contact,site_contact_email,priority_time,allocation_pct,active,notes)
+           VALUES ('SJC8','ATMI','Tyler Domingues','tdomingues@cargomatic.com','8:30 AM',100.0,1,'')"""
+    )
+    conn.commit()
+    conn.close()
+
+_migrate_plan_config()
+
 _ALL_DAYS   = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"]
 _DEFAULT_DAYS = ["Mon","Tue","Wed","Thu","Fri"]
 
@@ -2782,7 +2817,38 @@ def _week_grid(plan_df: pd.DataFrame, week_days: list):
 with tab7:
     st.subheader("Delivery Plan Scheduler")
     st.caption("🎯 **Purpose:** Build, manage, and distribute the weekly container delivery plan across all sites and carriers.")
-    st.caption("📋 **How to use:** Select the week, add containers in Plan Builder, generate Slack messages from By Site, and export carrier-specific plans from Carrier View.")
+
+    # ── SOP header callout ────────────────────────────────────────────────────
+    with st.expander("📋 Weekly Planning SOP — Quick Reference", expanded=False):
+        _sop_c1, _sop_c2 = st.columns(2)
+        with _sop_c1:
+            st.markdown("""
+**Owner:** Dominique Kennedy (kennewdo)  
+**Frequency:** Weekly — Every **Friday**  
+**Plan Deadline:** 3:00 PM ET · 2:00 PM CT · 12:00 PM PT  
+**Carrier DBR Deadline:** 3:00 PM CT Thursday (primary input)  
+**Sites:** RIC6, ILM1, DBM6/SAV, SJC8, XPH1-IAG1, LAX/West Coast  
+**SharePoint:** AGLRobotics → Carrier DBRs (subfolders: ATMI, ARVY, HUDD)
+""")
+        with _sop_c2:
+            st.markdown("""
+**Carriers & Ops Contacts:**
+
+| SCAC | Carrier | Contact | Email |
+|---|---|---|---|
+| ATMI | Cargomatic | Tyler Domingues | tdomingues@cargomatic.com |
+| ARVY | Arrive Logistics | Tyler Spangler | tspangler@arrivelogistics.com |
+| HDDR – RIC6 | Maersk | Sandji Ruffin | sandji.ruffin@maersk.com |
+| HDDR – ILM1 | Maersk | Jerry Nesbit | jerry.nesbit@maersk.com |
+| HDDR – LAX | Maersk | Desirae Swain / Ailua Osoimalo | desirae.swain@maersk.com |
+""")
+        st.markdown("**DBR Email Subjects to expect Thursday EOD:**")
+        st.code("""ATMI : [EXTERNAL] Amazon Robotics - DBR [DATE]  (Tyler Domingues)
+ARVY : [EXTERNAL] Robotics DBR [DATE]  (Tyler Spangler)
+HUDD RIC6 : [EXTERNAL] RIC6 Delivery Plan Update (HUDD)  (Sandji Ruffin)
+HUDD ILM1 : [EXTERNAL] ILM1 Delivery Plan Update / HUDD  (Jerry Nesbit)
+HUDD LAX  : RE: DBR Bridges Report - HUDD - [DATE]  (Desirae/Ailua)""", language="")
+        st.markdown("**File naming:** `[CARRIER] DBR M.DD.YY.xlsx`  e.g. `ATMI DBR 7.17.26.xlsx`")
 
     # ── global week selector ──────────────────────────────────────────────────
     _wc1, _wc2, _wc3, _wc4 = st.columns([3,1,1,1])
@@ -2883,9 +2949,9 @@ with tab7:
 
     st.divider()
 
-    _tp1, _tp2, _tp3, _tp4, _tp5, _tp6, _tp7 = st.tabs([
+    _tp1, _tp2, _tp3, _tp4, _tp5, _tp6, _tp7, _tp8 = st.tabs([
         "Plan Builder", "All Sites", "By Site",
-        "Carrier View", "WoW / History", "Config", "Import History",
+        "Carrier View", "WoW / History", "Config", "Import History", "SOP Guide",
     ])
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -3025,6 +3091,7 @@ with tab7:
                             ])
                             if not work_days:
                                 work_days = [_plan_week_start(_b_date) + timedelta(days=i) for i in range(5)]
+                            n_days = len(work_days)
                             for idx, (cid, b_sc, b_si) in enumerate(raw_cids):
                                 day = work_days[idx % n_days]
                                 _scm_r2 = _scm[(_scm["site_code"]==b_si)&(_scm["scac"]==b_sc)]
@@ -3159,6 +3226,58 @@ with tab7:
                     file_name=f"{_sel_site} Delivery Plan {_ws.strftime('%m.%d.%y')}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
+            # ── Mid-Week Adjustment ────────────────────────────────────────────────
+            with st.expander("🔄 Mid-Week Adjustment", expanded=False):
+                st.caption(
+                    "Use when: site stops receiving, container rejected, carrier requests change, "
+                    "or contingent container clears customs. Updates generate draft carrier messages."
+                )
+                _mw_scenario = st.selectbox(
+                    "Scenario", [
+                        "Site stopped receiving — hold and reschedule",
+                        "Container rejected at site — reschedule to next available day",
+                        "Container cleared customs — slot into plan",
+                        "Carrier requested change",
+                    ],
+                    key=f"mw_scenario_{_sel_site}"
+                )
+                _mw_cid = st.text_input("Container # (optional — blank = all affected today)", key=f"mw_cid_{_sel_site}")
+                _mw_note = st.text_area("Notes / reason", height=68, key=f"mw_note_{_sel_site}",
+                                        placeholder="e.g. RIC6 stopped receiving after lunch — backlog at dock")
+                _mw_new_date = st.date_input("Reschedule to", value=_today + timedelta(days=1), key=f"mw_date_{_sel_site}")
+
+                if st.button("Generate Hold Message", key=f"mw_gen_{_sel_site}"):
+                    _affected = _sdf[
+                        (_sdf["appt_date"] == _today.isoformat()) &
+                        (_sdf["status"].isin(["SCHEDULED","HOLD"]))
+                    ]
+                    if _mw_cid.strip():
+                        _affected = _affected[_affected["container_id"].str.upper() == _mw_cid.strip().upper()]
+                    if _affected.empty:
+                        st.info("No scheduled containers found for today matching that criteria.")
+                    else:
+                        _carriers_hit = _affected["carrier"].unique().tolist()
+                        _msg_lines = [f"Hi team,
+
+**{_mw_scenario}** — {_sel_site}
+"]
+                        _msg_lines.append(f"**Affected containers ({len(_affected)}):**")
+                        for _r in _affected.itertuples():
+                            _msg_lines.append(f"  • {_r.container_id}  {_r.carrier}  {_r.appt_time}")
+                        _msg_lines.append(f"
+**Action:** Please hold delivery and reschedule to {_mw_new_date.strftime('%A, %m/%d')}.")
+                        if _mw_note:
+                            _msg_lines.append(f"
+**Context:** {_mw_note}")
+                        _msg_lines.append("
+Thank you,
+Dominique Kennedy — AGL Robotics Dray")
+                        st.text_area("Draft carrier message (copy/paste to Slack or email)", 
+                                     value="
+".join(_msg_lines), height=220,
+                                     key=f"mw_msg_{_sel_site}")
+                        st.caption(f"Carriers affected: {', '.join(_carriers_hit)}")
+
     # ══════════════════════════════════════════════════════════════════════════
     # CARRIER VIEW (EXTERNAL / SHAREABLE)
     # ══════════════════════════════════════════════════════════════════════════
@@ -3207,6 +3326,30 @@ with tab7:
                          for r in _cpend.itertuples()]
                 st.dataframe(pd.DataFrame(pext), use_container_width=True, hide_index=True)
             if not _cdf_w.empty:
+                # ── Pre-send validation checklist ─────────────────────────────────────
+                with st.expander("✅ Pre-Send Validation Checklist — verify before exporting", expanded=False):
+                    st.caption("Check off each item before sending the plan to this carrier.")
+                    _chk_key = f"chk_{_sel_scac}_{_ws.isoformat()}"
+                    _checks = [
+                        ("all_at_yard",    "All containers verified as at-yard with no actual FC delivery date"),
+                        ("product_split",  "Product type (Shelf/Strap) matches site's requested split"),
+                        ("fifo_order",     "FIFO order respected — longest-dwelling containers scheduled first"),
+                        ("no_lunch",       "No appointments during lunch break (12:00–1:00 PM)"),
+                        ("last_appt",      "Last appointment at or before 3:30 PM (or site-specific cutoff)"),
+                        ("level_load",     "Level-loaded across days (+/- 1–2 container difference max)"),
+                        ("hddr_am",        "HDDR/HUDD containers in early morning slots (before lunch)"),
+                        ("carrier_tab",    "Carrier tab is clean and ready to copy/paste"),
+                        ("contingent",     "Contingent containers clearly marked with status note (PENDING)"),
+                    ]
+                    _all_checked = True
+                    for _ck, _clabel in _checks:
+                        _checked = st.checkbox(_clabel, key=f"{_chk_key}_{_ck}")
+                        if not _checked:
+                            _all_checked = False
+                    if _all_checked:
+                        st.success("All checks passed — plan is ready to send.")
+                    else:
+                        st.warning("Complete all checks before exporting.")
                 xl = _export_carrier_excel(_pdf, _sel_scac, _cname, _ws)
                 st.download_button(f"Export {_cname} Plan to Excel", data=xl,
                     file_name=f"{_sel_scac} Delivery Plan {_ws.strftime('%m.%d.%y')}.xlsx",
@@ -3296,6 +3439,17 @@ with tab7:
         with _cfg1:
             _sdf3 = _get_sites_df()
             st.dataframe(_sdf3.drop(columns=["id"], errors="ignore"), use_container_width=True, hide_index=True)
+            st.markdown("**Site Receiving Constraints Reference**")
+            _site_constraints = [
+                {"Site":"RIC6","Receiving Window":"7:30 AM – 4:30 PM","Lunch (no recv)":"12:00–1:00 PM","Last Arrival":"3:30 PM","Max Loads/Day":"11–12","No-Recv Day":"Monday","Carrier Pref":"HDDR before lunch (7:30–11:30 AM)"},
+                {"Site":"ILM1","Receiving Window":"TBD","Lunch (no recv)":"TBD","Last Arrival":"TBD","Max Loads/Day":"TBD","No-Recv Day":"TBD","Carrier Pref":"TBD"},
+                {"Site":"DBM6","Receiving Window":"TBD","Lunch (no recv)":"TBD","Last Arrival":"TBD","Max Loads/Day":"TBD","No-Recv Day":"TBD","Carrier Pref":"TBD"},
+                {"Site":"SJC8","Receiving Window":"TBD","Lunch (no recv)":"TBD","Last Arrival":"TBD","Max Loads/Day":"TBD","No-Recv Day":"TBD","Carrier Pref":"TBD"},
+                {"Site":"LAX", "Receiving Window":"TBD","Lunch (no recv)":"TBD","Last Arrival":"TBD","Max Loads/Day":"TBD","No-Recv Day":"TBD","Carrier Pref":"TBD"},
+                {"Site":"IAG1","Receiving Window":"TBD","Lunch (no recv)":"TBD","Last Arrival":"TBD","Max Loads/Day":"TBD","No-Recv Day":"TBD","Carrier Pref":"Via XPH1 transload — 53ft trailer"},
+            ]
+            st.dataframe(pd.DataFrame(_site_constraints), use_container_width=True, hide_index=True)
+            st.caption("Update constraints above via Config edits as each site's parameters are confirmed.")
             with st.expander("Add / Update Site"):
                 cx1, cx2, cx3 = st.columns(3)
                 with cx1:
@@ -3486,6 +3640,212 @@ with tab7:
                         st.rerun()
                 else:
                     st.info("All containers in this file are already in the database — nothing new to import.")
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # SOP GUIDE
+    # ══════════════════════════════════════════════════════════════════════════
+    with _tp8:
+        st.markdown("### Weekly Delivery Planning SOP")
+        st.caption("Amazon Robotics Dray Program — AGL · Owner: Dominique Kennedy (kennewdo) · Every Friday · Deadline: 3 PM ET / 2 PM CT")
+
+        _sop_step = st.radio(
+            "Jump to step:",
+            ["Step 1 — Collect DBRs", "Step 2 — Pull Data", "Step 3 — Identify Available",
+             "Step 4 — Classify Product", "Step 5 — FIFO Priority", "Step 6 — Build Plan",
+             "Step 7 — Validate", "Step 8 — Send to Carriers", "Step 9 — Mid-Week Adjustments",
+             "GVT Status Glossary", "File Naming"],
+            horizontal=True, key="sop_step_sel"
+        )
+
+        st.divider()
+
+        if _sop_step == "Step 1 — Collect DBRs":
+            st.markdown("#### Step 1: Collect Carrier DBRs (Thursday EOD)")
+            st.info("Ensure all carrier DBRs are received by **3:00 PM CT Thursday**. These are the primary inputs for building next week's plan.")
+            st.markdown("""
+| Carrier | Contact | Expected Email Subject |
+|---|---|---|
+| ATMI | Tyler Domingues | `[EXTERNAL] Amazon Robotics - DBR [DATE]` |
+| ARVY | Tyler Spangler | `[EXTERNAL] Robotics DBR [DATE]` |
+| HUDD RIC6 | Sandji Ruffin | `[EXTERNAL] RIC6 Delivery Plan Update (HUDD)` |
+| HUDD ILM1 | Jerry Nesbit | `[EXTERNAL] ILM1 Delivery Plan Update / HUDD` |
+| HUDD LAX | Desirae Swain / Ailua Osoimalo | `RE: DBR Bridges Report - HUDD - [DATE]` |
+""")
+            st.markdown("**File naming convention:** `[CARRIER] DBR M.DD.YY.xlsx`  e.g. `ATMI DBR 7.17.26.xlsx`")
+            st.markdown("**SharePoint location:** AGLRobotics → Carrier DBRs → subfolders: ATMI / ARVY / HUDD")
+            st.caption("The automated DBR-saving schedule runs at 12:00 PM, 2:00 PM, and 3:30 PM CT on weekdays to save carrier DBRs to SharePoint.")
+
+        elif _sop_step == "Step 2 — Pull Data":
+            st.markdown("#### Step 2: Pull Supporting Data (Friday Morning)")
+            st.markdown("Pull the following three reports to cross-reference container status and product classification:")
+            with st.expander("📥 GVT Report (GM DCM Reports — Inbound Container Milestone)", expanded=True):
+                st.markdown("""
+- **Filters:** Customer = AMZ · Equip Category = AMAZON Robotics
+- **Ocean ETA range:** 6–12 weeks back, 6–12 weeks forward
+- **Key columns:** Container, Status, Dray SCAC, Discharged Port, Facility
+- **Use to identify:** containers at yard (In Yard Full), incoming (On Water / Not Ready), dispatched
+- **Save as:** `GVT Data WK##.xlsx`
+""")
+            with st.expander("📥 Inbound Loads Report (Amazon Robotics Inbound Loads)", expanded=True):
+                st.markdown("""
+- **Provides:** Container → PO Line Item Description (product type classification)
+- **Critical for:** Identifying SHELF vs STRAP containers
+- **Key columns:** Container Id, PO Line Item Description, Quantity, Location Code
+""")
+            with st.expander("📥 CDS Report (Import Shipment Status)", expanded=True):
+                st.markdown("""
+- **Provides:** Most accurate port arrival times
+- **Use to identify:** containers arriving at port this/next week that could become available
+""")
+
+        elif _sop_step == "Step 3 — Identify Available":
+            st.markdown("#### Step 3: Identify Available Containers Per Site")
+            st.markdown("For each site, determine what containers are **at yard and ready to deliver** using the carrier DBR.")
+            st.markdown("""
+**Verification method (per carrier DBR):**
+
+Go to the site-specific tab (e.g., "RIC6 Rockville" on ATMI's DBR) and check each container:
+
+| Check | YES | NO |
+|---|---|---|
+| Has Actual Delivery to FC date? | ✅ Already delivered — **skip** | ➡️ Available for scheduling |
+| Marked as rerouted to another site? | ✅ Exclude from this site | ➡️ Include |
+| Has Actual Delivery to Yard date? | ✅ Confirmed at yard — schedule | ⚠️ May be in transit — cross-ref GVT |
+""")
+            st.info("Cross-reference GVT for containers showing **Not Ready** (at port / customs hold) — these are contingent. Add as PENDING if likely to clear before delivery week.")
+
+        elif _sop_step == "Step 4 — Classify Product":
+            st.markdown("#### Step 4: Classify Product Type")
+            st.markdown("Using the **Inbound Loads Report**, classify each available container:")
+            st.markdown("""
+1. Match on **Container Id**
+2. Read **PO Line Item Description:**
+   - Contains `SHELF` → **SHELF, HDTP**
+   - Contains `STRAP` → **STRAP, HDTP**
+3. Note the **Quantity** (units) per container — include in the delivery plan
+""")
+            st.caption("In the Plan Builder, set the Product Type dropdown before adding containers. Bulk paste supports inline override.")
+
+        elif _sop_step == "Step 5 — FIFO Priority":
+            st.markdown("#### Step 5: Prioritize by FIFO (Dwell Time)")
+            st.markdown("""
+Sort all available containers by **dwell time at yard** — longest dwelling = highest priority:
+
+1. Use **Actual Delivery to Yard** date from carrier DBR
+2. Calculate: **Days Dwelling = Plan Date − Yard Arrival Date**
+3. Longest-dwelling containers get scheduled **first**
+4. Containers **refused/rejected** in prior weeks get priority — flagged in DBR with notes like `REJECTED BY [SITE] [DATE]`
+""")
+            st.info("The WoW / History tab shows containers rolled from the prior week — these are your FIFO candidates.")
+
+        elif _sop_step == "Step 6 — Build Plan":
+            st.markdown("#### Step 6: Build the Delivery Plan (Friday, in this app)")
+            st.markdown("""
+Use **Plan Builder** → Step 2 — Add Container IDs:
+- **Single:** one container at a time with full field control
+- **Bulk Paste:** `CONTAINER_ID  CARRIER  SITE` one per line — level-load checkbox distributes evenly
+
+**Level loading logic:**
+- App distributes containers across active receiving days for the week
+- Disable Monday (RIC6 no-recv) in the **Receiving Days** toggles before bulk-pasting
+- Saturday can be included via checkbox if site requests it
+""")
+            st.markdown("**RIC6 Constraints:**")
+            st.markdown("""
+| Parameter | Value |
+|---|---|
+| Receiving window | 7:30 AM – 4:30 PM |
+| Lunch break | 12:00 PM – 1:00 PM (no deliveries) |
+| Last arrival time | 3:30 PM (must be docked by 4:30) |
+| Max loads/day | 11–12 |
+| Stagger | ~1 per hour |
+| No receiving day | **Monday** |
+| HUDD preference | Deliver before lunch (7:30 AM – 11:30 AM) |
+""")
+            st.caption("All time slots in the app skip the 12–1 PM window automatically. Monday can be toggled off per week.")
+
+        elif _sop_step == "Step 7 — Validate":
+            st.markdown("#### Step 7: Review & Validate Before Sending")
+            st.info("The **Pre-Send Validation Checklist** is available in the Carrier View tab before each carrier export.")
+            st.markdown("""
+☐ All containers verified as at-yard with no actual FC delivery date  
+☐ Product type (Shelf/Strap) matches site's requested split  
+☐ FIFO order respected (longest dwelling first)  
+☐ No appointments during lunch break  
+☐ Last appointment at or before 3:30 PM (or site-specific cutoff)  
+☐ Level-loaded across days (+/− 1–2 container difference max)  
+☐ HDDR/HUDD containers in early morning slots (before lunch)  
+☐ Carrier tabs are clean and ready to copy/paste  
+☐ Contingent containers clearly marked as PENDING with status note  
+""")
+
+        elif _sop_step == "Step 8 — Send to Carriers":
+            st.markdown("#### Step 8: Send to Carriers")
+            st.markdown("""
+Copy/paste each carrier's schedule from the **Carrier View** tab and send via **Slack DM or email**.
+
+**Include in message:**
+- Delivery dates + appointment times per container
+- Any contingent containers pending customs clearance (flagged PENDING)
+- Site-specific constraints they need to know (lunch window, no-Monday at RIC6, etc.)
+
+**Contacts:**
+| Carrier | Contact | Channel |
+|---|---|---|
+| ATMI | Tyler Domingues — tdomingues@cargomatic.com | Slack + Email |
+| ARVY | Tyler Spangler — tspangler@arrivelogistics.com | Slack + Email |
+| HUDD RIC6 | Sandji Ruffin — sandji.ruffin@maersk.com | Email |
+| HUDD ILM1 | Jerry Nesbit — jerry.nesbit@maersk.com | Email |
+| HUDD LAX | Desirae Swain / Ailua Osoimalo — desirae.swain@maersk.com | Email |
+""")
+            st.caption("The By Site → Daily Notification expander generates tomorrow's delivery list formatted for Slack.")
+
+        elif _sop_step == "Step 9 — Mid-Week Adjustments":
+            st.markdown("#### Step 9: Mid-Week Adjustments")
+            st.markdown("""
+Replan as needed throughout the delivery week when any of these occur:
+
+| Trigger | Action |
+|---|---|
+| Site stops receiving | Notify affected carriers to hold; reschedule to later in week |
+| Container refused at site | Add note (REJECTED), reschedule to next available day; priority for next plan |
+| Carrier requests change | Accommodate within site constraints |
+| Contingent container clears customs | Slot into plan; update status PENDING → SCHEDULED |
+
+**Mid-week replan steps:**
+1. Check updated carrier DBR for which containers didn't deliver today
+2. Identify which carriers had deliveries that day
+3. Use **By Site → Mid-Week Adjustment** expander to draft hold/reschedule messages
+4. Update delivery plan — mark delivered as DELIVERED, rejected as REJECTED
+5. Reschedule remaining containers to later days in the week
+""")
+            st.caption("The Mid-Week Adjustment tool is in the By Site tab — select the site, choose the scenario, and it drafts the carrier message.")
+
+        elif _sop_step == "GVT Status Glossary":
+            st.markdown("#### GVT Container Status Meanings")
+            st.markdown("""
+| Status | Meaning | Action |
+|---|---|---|
+| **In Yard Full** | Container at dray yard — ready to deliver | ✅ Schedule |
+| **Dispatched to Destination** | En route to FC (or refused / returning to yard) | 🔍 Check carrier DBR for delivery outcome |
+| **Not Ready** | At port — pending customs clearance or carrier release | ⏳ Add as PENDING if expected to clear |
+| **On Water** | Still at sea — not yet at port | 📅 Note ETA; not schedulable this week |
+| **Closed** | Delivered and empty returned | ✅ Complete — no action needed |
+""")
+            st.info("When carrier DBRs show containers as 'at yard' that seem old, always verify against the **Actual FC Delivery Date** on the site tab — DBRs can be stale.")
+
+        elif _sop_step == "File Naming":
+            st.markdown("#### File Naming Conventions")
+            st.markdown("""
+| File | Convention | Example |
+|---|---|---|
+| Carrier DBR | `[CARRIER] DBR M.DD.YY.xlsx` | `ATMI DBR 7.17.26.xlsx` |
+| HUDD site-specific | `HUDD [SITE] DBR M.DD.YY.xlsx` | `HUDD RIC6 DBR 7.17.26.xlsx` |
+| Delivery Plan | `[SITE] Delivery Plan M.DD-M.DD.xlsx` | `RIC6 Delivery Plan 7.21-7.25.xlsx` |
+| GVT Export | `GVT Data WK##.xlsx` | `GVT Data WK30.xlsx` |
+| Inbound Loads | Standard report name | Keep as-is |
+""")
+            st.caption("App exports automatically follow the Delivery Plan convention.")
 
 
 
