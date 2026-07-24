@@ -69,7 +69,7 @@ If that doesn't work: use the **Manual submission instructions** expander — nu
 **What the slide contains:**
 - 6-week trend charts: AV→OA SLA%, OA→Del SLA%, OTP (top row) + volume/E2E (bottom row)
 - Summary table with 6 prior weeks + current week total column
-- SLA Goals box (AV→OA ≤2d, OA→Del ≤3d BOS, Empty→Term ≤5d, OTP ≥95%)
+- SLA Goals box (AV→OA ≤3d, OA→Del ≤3d BOS, Empty→Term ≤3d, OTP ≥95%)
 
 **Bridge format (Perjen-style):**  
 Auto-generated below the slide — `[Volume] / [AV→OA] / [OA→Del] / [Empty→Term] / [E2E/OTP] / [Op Callouts]`  
