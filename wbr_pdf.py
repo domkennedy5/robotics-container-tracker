@@ -72,12 +72,12 @@ def _chart_vals(weeks_data: list[Optional[dict]], key: str) -> list:
     return [w.get(key) if w else None for w in weeks_data]
 
 
-# ── Bar chart drawing ──────────────────────────────────────────────────────────
+# ── Line chart drawing (matches reference slide: cyan dots + connecting line) ───
 def _draw_bar_chart(
     c: rl_canvas.Canvas,
     x: float, y: float, w: float, h: float,
     title: str,
-    values: list,          # list of numbers or None; last = current week
+    values: list,
     week_labels: list[str],
     sla_val: Optional[float] = None,
     is_pct: bool = False,
@@ -88,53 +88,72 @@ def _draw_bar_chart(
     max_v = max(clean) if clean else 1
     if sla_val and sla_val > max_v:
         max_v = sla_val * 1.05
-    max_v = max_v * 1.15 or 1
+    max_v = max_v * 1.20 or 1
 
-    bar_area_x = x + 2
-    bar_area_y = y + 18        # leave room for x-axis labels
-    bar_area_w = w - 4
-    bar_area_h = h - 32        # leave room for title
+    plot_x = x + 8
+    plot_y = y + 18
+    plot_w = w - 16
+    plot_h = h - 30
 
     # Title
     c.setFont("Helvetica-Bold", 7)
     c.setFillColor(C_BLACK)
-    c.drawCentredString(x + w / 2, y + h - 1, title)
+    c.drawCentredString(x + w / 2, y + h - 9, title)
 
-    # SLA reference line
+    # Light horizontal grid lines
+    c.setStrokeColor(colors.Color(0.90, 0.90, 0.90))
+    c.setLineWidth(0.3)
+    for i in range(4):
+        gy = plot_y + (i / 3) * plot_h
+        c.line(plot_x, gy, plot_x + plot_w, gy)
+
+    # Red dashed SLA reference line
     if sla_val is not None and max_v > 0:
-        sla_y = bar_area_y + (sla_val / max_v) * bar_area_h
+        sla_y = plot_y + (sla_val / max_v) * plot_h
         c.setStrokeColor(C_SLA_LINE)
         c.setLineWidth(0.8)
         c.setDash(3, 2)
-        c.line(bar_area_x, sla_y, bar_area_x + bar_area_w, sla_y)
+        c.line(plot_x, sla_y, plot_x + plot_w, sla_y)
         c.setDash()
 
-    # Bars
-    bar_w = bar_area_w / n * 0.6
-    gap   = bar_area_w / n
+    # X positions per week
+    gap = plot_w / (n - 1) if n > 1 else 0
+    pts = [(plot_x + i * gap, plot_y + (v / max_v) * plot_h if v is not None else None)
+           for i, v in enumerate(values)]
 
-    for i, v in enumerate(values):
-        bx = bar_area_x + i * gap + (gap - bar_w) / 2
-        if v is None:
+    # Connecting line between non-None points
+    c.setStrokeColor(C_BAR)
+    c.setLineWidth(1.2)
+    prev = None
+    for px, py in pts:
+        if py is not None:
+            if prev is not None:
+                c.line(prev[0], prev[1], px, py)
+            prev = (px, py)
+        else:
+            prev = None
+
+    # Dots + value labels + week labels
+    for i, (px, py) in enumerate(pts):
+        if py is None:
             continue
-        bh = (v / max_v) * bar_area_h if max_v else 0
-        by = bar_area_y
+        v = values[i]
+        is_curr = (i == n - 1)
+        r = 4.5 if is_curr else 3.5
+        dot_color = C_BAR_CURR if is_curr else C_BAR
+        c.setFillColor(dot_color)
+        c.setStrokeColor(dot_color)
+        c.circle(px, py, r, fill=1, stroke=0)
 
-        fill = C_BAR_CURR if i == len(values) - 1 else C_BAR
-        c.setFillColor(fill)
-        c.setStrokeColor(fill)
-        c.rect(bx, by, bar_w, bh, fill=1, stroke=0)
-
-        # Value label on top
+        # Value label above dot
         c.setFillColor(C_BLACK)
-        c.setFont("Helvetica-Bold", 6)
+        c.setFont("Helvetica-Bold" if is_curr else "Helvetica", 6)
         label = f"{round(v)}%" if is_pct else str(round(v))
-        c.drawCentredString(bx + bar_w / 2, by + bh + 1, label)
+        c.drawCentredString(px, py + r + 3, label)
 
-        # Week label below
+        # Week label below x-axis
         c.setFont("Helvetica", 5.5)
-        c.drawCentredString(bx + bar_w / 2, bar_area_y - 9, week_labels[i] if i < len(week_labels) else "")
-
+        c.drawCentredString(px, plot_y - 9, week_labels[i] if i < len(week_labels) else "")
 
 # ── SLA goals box ──────────────────────────────────────────────────────────────
 def _draw_sla_goals(c: rl_canvas.Canvas, x: float, y: float, w: float, h: float):
