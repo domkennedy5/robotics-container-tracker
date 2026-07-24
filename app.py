@@ -3501,6 +3501,7 @@ with tab8:
         compute_metrics, compute_totals, compute_carrier_scorecard,
         week_bounds, guess_week,
         save_week_to_db, load_weeks_from_db,
+        _latest,
     )
     from wbr_pdf import generate_standard_wbr
     import urllib.parse
@@ -4107,7 +4108,7 @@ with tab8:
                             f"  Empty→Term:  {_s(_et, '%')}\n"
                             f"  E2E Transit: {_s(_e2e)}d avg\n"
                             f"  On-Time:     {_s(_otp, '%')}\n\n"
-                            + (_ctx_notes.replace("\n", "\n") + "\n\n" if _ctx_notes else "")
+                            + (_ctx_notes.replace("\n", " | ") + "\n\n" if _ctx_notes else "")
                             + "Best,\nDominique Kennedy\n"
                             "Amazon Global Logistics — Robotics Destination Dray\n"
                         )

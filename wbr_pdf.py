@@ -399,7 +399,7 @@ def generate_standard_wbr(
 
     # ── Charts — Row 2 (Empty→Term | OTP | Volume) ────────────────────────
     charts_r2 = [
-        ("Leg: Empty to Termination (avg. days)", "empty_term_pct", True),
+        ("Leg: Empty to Termination SLA %",       "empty_term_pct", True),
         ("Leg: On-Time to Promise %",              "otp_pct",        True),
         ("Volume (containers)",                    "containers",     False),
     ]
