@@ -259,6 +259,14 @@ def init_db():
             generated_at   TEXT,
             UNIQUE(year, week_num)
         );
+        CREATE TABLE IF NOT EXISTS wbr_context_notes (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            year       INTEGER NOT NULL,
+            week_num   INTEGER NOT NULL,
+            notes      TEXT,
+            updated_at TEXT,
+            UNIQUE(year, week_num)
+        );
     """)
     conn.commit()
     conn.close()
@@ -330,6 +338,21 @@ def migrate_db():
         conn.execute("""
             CREATE UNIQUE INDEX IF NOT EXISTS idx_cs_dedup
             ON carrier_submissions(carrier_name, container_id, sheet_type, submitted_at)
+        """)
+    except sqlite3.OperationalError:
+        pass
+
+    # ── wbr_context_notes: create if missing (new in July 2026) ────────────────
+    try:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS wbr_context_notes (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                year       INTEGER NOT NULL,
+                week_num   INTEGER NOT NULL,
+                notes      TEXT,
+                updated_at TEXT,
+                UNIQUE(year, week_num)
+            )
         """)
     except sqlite3.OperationalError:
         pass
@@ -3509,6 +3532,43 @@ with tab8:
 
     st.caption(f"Reporting week: **W{_wbr_wnum}** · {_wbr_sun_str} to {_wbr_sat_str} (Sun–Sat)")
 
+    # ── Context notes ─────────────────────────────────────────────────────────
+    # Notes saved per-week to DB; auto-injected into Perjen bridge at generate time.
+    # Default week: Thu–Sun → next WBR week; Mon–Wed → current WBR week
+    _cn_default_wk = _wbr_wnum + 1 if _dsm2 >= 3 else _wbr_wnum  # Thu=3..Sun=6 → next wk
+    _cn_year       = _wbr_today2.year
+    with st.expander(f"📝 Context Notes — W{_cn_default_wk} (injected into bridge at generate time)", expanded=False):
+        _cn_wk_input = st.number_input(
+            "Week # for notes", min_value=1, max_value=53,
+            value=_cn_default_wk, key="cn_week_input",
+        )
+        _cn_load_conn = get_db()
+        _cn_saved = _cn_load_conn.execute(
+            "SELECT notes FROM wbr_context_notes WHERE year=? AND week_num=?",
+            (_cn_year, _cn_wk_input)
+        ).fetchone()
+        _cn_load_conn.close()
+        _cn_existing = _cn_saved["notes"] if _cn_saved and _cn_saved["notes"] else ""
+        _cn_text = st.text_area(
+            "Operational context, wins, misses, callouts:",
+            value=_cn_existing,
+            height=100,
+            placeholder="e.g. RIC6 shutdown Fri 7/17, 9 containers rerouted to NCKR; ATMI last DBM6 delivered",
+            key="cn_notes_text",
+        )
+        if st.button("Save Context Notes", key="cn_save_btn", type="secondary"):
+            _cn_save_conn = get_db()
+            _cn_save_conn.execute(
+                "INSERT INTO wbr_context_notes (year, week_num, notes, updated_at) VALUES (?,?,?,?) "
+                "ON CONFLICT(year, week_num) DO UPDATE SET notes=excluded.notes, updated_at=excluded.updated_at",
+                (_cn_year, _cn_wk_input, _cn_text.strip(), datetime.now(_EASTERN).isoformat())
+            )
+            _cn_save_conn.commit()
+            _cn_save_conn.close()
+            if S3_ENABLED:
+                data_sync.push_db_to_s3(AWS_KEY, AWS_SECRET, AWS_REGION, S3_BUCKET)
+            st.success(f"Notes saved for W{_cn_wk_input}.")
+
     # ── Slide preview helper (called pre-generate and post-generate) ───────────
     def _wbr_slide_preview(has_gvt, has_oblt, has_il, has_iss=False, curr=None, prior=None):
         n_ready = sum([has_gvt, has_oblt, has_il])  # ISS is optional — doesn't gate generate
@@ -3940,7 +4000,7 @@ with tab8:
                             key="wbr_dl_std",
                         )
 
-                        # Bridge for Mitch
+                        # ── Bridge — Perjen format ───────────────────────────────
                         def _s(v, sfx=""): return f"{v}{sfx}" if v is not None else "–"
                         _vol    = curr_metrics.get("containers")
                         _av_sla = curr_metrics.get("av_oa_sla_pct")
@@ -3953,58 +4013,128 @@ with tab8:
                         _e2e    = curr_metrics.get("e2e_avg")
                         _otp    = curr_metrics.get("otp_pct")
 
-                        _bridge_std = f"""WK{week_num} NA Robotics Destination Dray — WBR Bridge
-Reporting Week: {wk_start} to {wk_end}
+                        # WoW deltas vs. prior week (W-1)
+                        _pw = prior_data.get(week_num - 1, {}) or {}
+                        def _wow(curr_val, prior_val, higher_good=True):
+                            if curr_val is None or prior_val is None: return ""
+                            d = curr_val - prior_val
+                            sign = "+" if d >= 0 else ""
+                            return f" ({sign}{d} WoW)"
+                        _vol_wow  = _wow(_vol,    _pw.get("containers"),    True)
+                        _av_wow   = _wow(_av_sla, _pw.get("av_oa_sla_pct"), True)
+                        _od_wow   = _wow(_od_sla, _pw.get("oa_del_sla_pct"),True)
+                        _e2e_wow  = _wow(_e2e,    _pw.get("e2e_avg"),       False)  # lower E2E is better
+                        _otp_wow  = _wow(_otp,    _pw.get("otp_pct"),       True)
 
-Volume: {_s(_vol)} containers
+                        # Primary carrier for AV→OA (highest miss volume)
+                        _dom_carrier = "–"
+                        if carrier_sc:
+                            _worst = sorted(carrier_sc, key=lambda x: x.get("av_oa_misses") or 0, reverse=True)
+                            if _worst and _worst[0].get("av_oa_misses", 0) > 0:
+                                _dom_carrier = _worst[0]["carrier"]
 
-AV to OA: {_s(_av_sla, "%")} SLA | {_s(_av_avg)} avg days | P90: {_s(_av_p90)} days
-OA to Delivery: {_s(_od_sla, "%")} SLA | {_s(_od_avg)} avg days | P90: {_s(_od_p90)} days  [BOS market; A320-RBTCS excluded]
-Empty to Terminal: {_s(_et, "%")} SLA
-E2E Transit: {_s(_e2e)} days avg
-On-Time to Promise: {_s(_otp, "%")}
+                        # Context notes for this week (from DB)
+                        _cn_conn = get_db()
+                        _cn_row  = _cn_conn.execute(
+                            "SELECT notes FROM wbr_context_notes WHERE year=? AND week_num=?",
+                            (year, week_num)
+                        ).fetchone()
+                        _cn_conn.close()
+                        _op_notes = st.session_state.get("wbr_op_notes") or ""
+                        _ctx_notes = ""
+                        if _cn_row and _cn_row["notes"]:
+                            _ctx_notes = _cn_row["notes"]
+                        if _op_notes:
+                            _ctx_notes = (_ctx_notes + "\n" + _op_notes).strip() if _ctx_notes else _op_notes
 
-Highlights / Callouts:
-- [Add operational context, wins, and misses here]
+                        # Prior week values for reference lines
+                        _p_av  = _s(_pw.get("av_oa_sla_pct"), "%")
+                        _p_od  = _s(_pw.get("oa_del_sla_pct"), "%")
+                        _p_et  = _s(_pw.get("empty_term_pct"), "%")
+                        _p_vol = _s(_pw.get("containers"))
 
-Path to Green:
-- [Action | Owner | Target Date]
-"""
-                        st.text_area("Bridge — Standard (editable before sending)", value=_bridge_std, height=280, key="wbr_bridge_std")
+                        _bridge_std = (
+                            f"WK{week_num} NA Robotics Dray — "
+                            f"[AV→OA] to {_s(_av_sla, '%')} — {_dom_carrier} Primary Driver\n\n"
+                            f"[Volume]         {_s(_vol)} containers ({_vol_wow.strip()} WoW; WK{week_num-1}: {_p_vol})\n"
+                            f"[AV→OA]          SLA: WK{week_num-1}: {_p_av}; WK{week_num}: {_s(_av_sla, '%')}{_av_wow} | "
+                            f"avg {_s(_av_avg)}d | P90 {_s(_av_p90)}d\n"
+                        )
+                        # Per-carrier AV→OA breakdown
+                        if carrier_sc:
+                            for _cs in carrier_sc[:3]:
+                                _cs_sla  = f"{_cs['av_oa_sla_pct']}%" if _cs.get("av_oa_sla_pct") is not None else "–"
+                                _cs_miss = _cs.get("av_oa_misses", 0) or 0
+                                _cs_vol  = _cs.get("volume", 0) or 0
+                                _bridge_std += (
+                                    f"                 - {_cs['carrier']}: {_cs_miss}/{_cs_vol} = {_cs_sla}\n"
+                                )
+                        _bridge_std += (
+                            f"[OA→Del]         SLA: WK{week_num-1}: {_p_od}; WK{week_num}: {_s(_od_sla, '%')}{_od_wow} | "
+                            f"P90 {_s(_od_p90)}d [BOS; A320-RBTCS excl.]\n"
+                            f"[Empty→Term]     {_s(_et, '%')} SLA (WK{week_num-1}: {_p_et})\n"
+                            f"[E2E/OTP]        OTP: {_s(_otp, '%')}{_otp_wow} | E2E: {_s(_e2e)}d avg{_e2e_wow}\n"
+                            f"[Op Callouts]    {_ctx_notes if _ctx_notes else '[Add callouts here]'}\n\n"
+                            f"Path to Green:\n"
+                            f"  [Action] | [Expected Impact] | [Timeline]\n"
+                        )
 
-                        # ── Email submission ──────────────────────────────────
+                        st.text_area(
+                            "Bridge — Perjen format (editable before sending)",
+                            value=_bridge_std, height=320, key="wbr_bridge_std",
+                        )
+
+                        # ── SOP Callout box ───────────────────────────────────
                         st.markdown("---")
-                        st.markdown("**📧 Submit to Mitch**")
+                        st.info(
+                            "**📧 WBR Submission SOP**\n\n"
+                            f"**To:** `doc+destops-36@fusion.amazon.dev`  ·  "
+                            f"**Subject:** `NA Destination Ops WBR_Robotics`  ·  "
+                            f"**Deadline:** Monday by 2:00 PM CT  ·  "
+                            f"**Attachment:** `{fname}`"
+                        )
+
                         _email_to   = "doc+destops-36@fusion.amazon.dev"
                         _email_subj = "NA Destination Ops WBR_Robotics"
-                        _email_body = (
+                        _email_body_txt = (
                             f"Hi team,\n\n"
                             f"Attached is the WK{week_num} NA Robotics Destination Dray WBR.\n\n"
                             f"Reporting Week: {wk_start} to {wk_end}\n"
                             f"Volume: {_s(_vol)} containers\n\n"
                             f"KPIs:\n"
-                            f"  AV→OA:        {_s(_av_sla, '%')} SLA | {_s(_av_avg)}d avg | P90 {_s(_av_p90)}d\n"
-                            f"  OA→Delivery:  {_s(_od_sla, '%')} SLA | {_s(_od_avg)}d avg | P90 {_s(_od_p90)}d  [BOS market]\n"
-                            f"  Empty→Term:   {_s(_et, '%')}\n"
-                            f"  E2E Transit:  {_s(_e2e)} days avg\n"
-                            f"  On-Time:      {_s(_otp, '%')}\n\n"
-                            f"[Add bridge callouts here — copy from the text area above]\n\n"
-                            f"Best,\nDominique Kennedy\n"
-                            f"Amazon Global Logistics — Robotics Destination Dray\n"
+                            f"  AV→OA:       {_s(_av_sla, '%')} SLA | {_s(_av_avg)}d avg | P90 {_s(_av_p90)}d\n"
+                            f"  OA→Del:      {_s(_od_sla, '%')} SLA | {_s(_od_avg)}d avg | P90 {_s(_od_p90)}d  [BOS market]\n"
+                            f"  Empty→Term:  {_s(_et, '%')}\n"
+                            f"  E2E Transit: {_s(_e2e)}d avg\n"
+                            f"  On-Time:     {_s(_otp, '%')}\n\n"
+                            + (_ctx_notes.replace("\n", "\n") + "\n\n" if _ctx_notes else "")
+                            + "Best,\nDominique Kennedy\n"
+                            "Amazon Global Logistics — Robotics Destination Dray\n"
                         )
                         _mailto_url = (
                             f"mailto:{_email_to}"
                             f"?subject={urllib.parse.quote(_email_subj)}"
-                            f"&body={urllib.parse.quote(_email_body)}"
+                            f"&body={urllib.parse.quote(_email_body_txt)}"
                         )
-                        _ec1, _ec2 = st.columns([3, 2])
-                        with _ec1:
-                            st.caption(f"**To:** `{_email_to}`")
-                            st.caption(f"**Subject:** `{_email_subj}` · **Deadline:** 2:00 PM CT")
-                        with _ec2:
+
+                        _btn_col, _ = st.columns([1, 2])
+                        with _btn_col:
                             st.link_button("📧 Open in Email Client", _mailto_url, type="primary")
-                        with st.expander("📋 Email body (copy-paste if mailto doesn't open)", expanded=False):
-                            st.code(_email_body, language="")
+
+                        # ── Manual fallback — step-by-step ───────────────────
+                        with st.expander("📋 Manual submission instructions (if mailto doesn't work)", expanded=False):
+                            st.markdown("""**Step-by-step:**
+
+1. **Download the PDF** — click the ⬇️ Download button above  
+2. **Open a new email** (Outlook / webmail)  
+3. **To:** `doc+destops-36@fusion.amazon.dev`  
+4. **Subject:** `NA Destination Ops WBR_Robotics`  
+5. **Attach** the PDF you just downloaded  
+6. **Paste the email body below** into the message body  
+7. **Send before 2:00 PM CT on Monday**
+""")
+                            st.caption("Email body (copy all of this):")
+                            st.code(_email_body_txt, language="")
 
                     # ── RIGHT: Enhanced WBR (Robotics team) ──────────────────
                     with out2:

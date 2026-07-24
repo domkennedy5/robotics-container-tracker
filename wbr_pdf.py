@@ -1,129 +1,207 @@
 """
-wbr_pdf.py — Generate the standard WBR PDF slide matching GLS_Robotics layout.
+wbr_pdf.py — WBR PDF slide generator.
+Pixel-faithful match to GLS_Robotics_2026-7-20_FINAL.pdf (forensic analysis 2026-07-24).
 
-Page: 792×612 landscape letter.
-Colors sourced directly from GLS_Robotics_2026-7-20.pdf via PyMuPDF inspection.
+Forensic spec:
+  Page:        792×612 pts (landscape letter), white background
+  Title:       Helvetica-Bold 20pt, black, baseline RL y=576, x=30
+  Accent line: #e8a838, lw=2, y=568, x=30-762
+  SLA box:     x=30-230, RL y=492-556, no fill, black border lw=0.5
+  Charts:      3 bands (x=238-382, 428-572, 618-762), 2 rows (RL y=435-522 / 290-377)
+               6 gridlines per chart, spacing 17.4; dots 5×5 #4BACC6; line lw=1.5
+  Table:       label col x=51 w=130; 6 week cols w=80; total col w=80 bg=#fff2cc
+               col hdr RL y=199-215; data rows 16pt each down from 199
+  Footer:      Helvetica 7.5pt #666666, RL y=13
 """
 from __future__ import annotations
-import io
+import io, math
 from datetime import date, datetime
 from typing import Optional
 
 from reportlab.lib import colors
-from reportlab.lib.pagesizes import landscape, letter
 from reportlab.pdfgen import canvas as rl_canvas
 
-# ── Brand colors (from PDF inspection) ────────────────────────────────────────
-C_HEADER_BG  = colors.Color(0.200, 0.200, 0.200)   # dark gray header
-C_BAR        = colors.Color(0.294, 0.675, 0.776)   # teal bar #4BACC6
-C_BAR_CURR   = colors.Color(0.173, 0.518, 0.616)   # slightly darker for current week
-C_SLA_LINE   = colors.Color(0.8, 0.2, 0.2)         # red SLA threshold line
-C_GREEN      = colors.Color(0.133, 0.545, 0.133)
-C_RED        = colors.Color(0.800, 0.133, 0.133)
-C_TOTAL_BG   = colors.Color(1.000, 0.980, 0.804)   # light yellow #FFFACD
-C_TABLE_HDR  = colors.Color(0.200, 0.200, 0.200)
-C_WHITE      = colors.white
+# ── Colors (forensic) ─────────────────────────────────────────────────────────
 C_BLACK      = colors.black
-C_LTGRAY     = colors.Color(0.85, 0.85, 0.85)
-C_GRIDLINE   = colors.Color(0.60, 0.60, 0.60)
+C_GRAY       = colors.Color(0.400, 0.400, 0.400)   # #666666
+C_DOT        = colors.Color(0.294, 0.675, 0.776)   # #4BACC6
+C_ACCENT     = colors.Color(0.910, 0.659, 0.220)   # #e8a838 (orange accent line)
+C_TOTAL_BG   = colors.Color(1.000, 0.950, 0.800)   # #fff2cc (total col)
+C_WHITE      = colors.white
+C_GRIDLIGHT  = colors.Color(0.875, 0.875, 0.875)   # #dfdfdf (chart gridlines)
+C_CELL_BDR   = colors.black                         # table cell borders
+C_RED_SLA    = colors.Color(1.000, 0.000, 0.000)   # #ff0000 (SLA fail)
+C_GREEN_SLA  = colors.Color(0.000, 0.686, 0.310)   # #00af4f (SLA pass)
 
 PAGE_W, PAGE_H = 792.0, 612.0
 
-# ── Row labels and display helpers ────────────────────────────────────────────
+# ── Chart geometry (all in ReportLab coords, y=0 at bottom) ──────────────────
+# Plot x bands (shared by both chart rows)
+BANDS = [(238, 382), (428, 572), (618, 762)]   # (x_start, x_end) for each of 3 charts
+DOT_SPACING = 28.8                              # x pts between 6 data points per chart
+
+# Plot y ranges per row
+R1_BOT, R1_TOP = 435.0, 522.0   # row 1 charts (fitz y=177→90)
+R2_BOT, R2_TOP = 290.0, 377.0   # row 2 charts (fitz y=322→235)
+
+# Chart title y (baseline)
+R1_TITLE_Y  = 537.0   # row 1 (fitz y=70 baseline ~75)
+R2_TITLE_Y  = 392.0   # row 2 (fitz y=215)
+
+# X-axis label y (inside chart near bottom)
+R1_XLABEL_Y = 446.0   # fitz y=162.3
+R2_XLABEL_Y = 301.0   # fitz y=307.3
+
+# ── Table geometry ────────────────────────────────────────────────────────────
+TBL_LABEL_X   = 51.0    # table left x (label column starts here)
+TBL_LABEL_W   = 130.0   # label column width
+TBL_WEEK_W    = 80.0    # per-week column width
+TBL_TOTAL_W   = 80.0    # total column width
+TBL_ROW_H     = 16.0    # row height (pts)
+TBL_COL_HDR_TOP = 215.0 # RL y-top of column header row
+
+# ── Row definitions ───────────────────────────────────────────────────────────
 ROW_LABELS = [
     "Containers",
-    "AV\u2192OA Avg",
-    "AV\u2192OA SLA%",
-    "AV\u2192OA P90",
-    "OA\u2192Del Avg",
-    "OA\u2192Del SLA%",
-    "OA\u2192Del P90",
-    "Empty\u2192Term SLA%",
-    "E2E Transit Avg",
-    "On-Time to Promise%",
+    "AV\u2192OA Avg (Days)",
+    "AV\u2192OA SLA %",
+    "AV\u2192OA P90 (Days)",
+    "OA\u2192Del Avg (Days)",
+    "OA\u2192Del SLA %",
+    "OA\u2192Del P90 (Days)",
+    "Empty\u2192Term SLA %",
+    "E2E Transit Avg (Days)",
+    "On-Time to Promise %",
 ]
+ROW_KEYS = [
+    "containers", "av_oa_avg", "av_oa_sla_pct", "av_oa_p90",
+    "oa_del_avg",  "oa_del_sla_pct",  "oa_del_p90",
+    "empty_term_pct", "e2e_avg", "otp_pct",
+]
+# Row indices (0-based) that get SLA pass/fail color border on current week
+SLA_ROWS = {2, 5, 7}   # AV→OA SLA, OA→Del SLA, Empty→Term SLA
+SLA_TARGET = 95
 
-# SLA threshold for coloring (None = no border)
-ROW_SLA = [None, None, 95, None, None, 95, None, None, None, 95]
 
-
-def _fmt(v, row_idx: int) -> str:
+def _fmt(v, key: str) -> str:
     if v is None:
-        return "–"
-    if row_idx in (2, 5, 7, 9):   # SLA%
-        return f"{int(v)}%"
-    if row_idx in (1, 4):          # avg (decimal)
+        return "\u2013"
+    if key in ("av_oa_sla_pct", "oa_del_sla_pct", "empty_term_pct", "otp_pct"):
+        return f"{int(round(float(v)))}%"
+    if key in ("av_oa_avg", "oa_del_avg"):
         return f"{float(v):.1f}"
-    return str(int(v))
+    return str(int(round(float(v))))
 
 
-def _row_val(m: Optional[dict], row_idx: int):
-    if not m:
-        return None
-    keys = [
-        "containers", "av_oa_avg", "av_oa_sla_pct", "av_oa_p90",
-        "oa_del_avg", "oa_del_sla_pct", "oa_del_p90",
-        "empty_term_pct", "e2e_avg", "otp_pct",
-    ]
-    return m.get(keys[row_idx])
+def _nice_max(raw_max: float, n_intervals: int = 5) -> float:
+    """Round raw_max * 1.2 up to a nice number divisible by n_intervals."""
+    target = raw_max * 1.20
+    if target <= 0:
+        return float(n_intervals)
+    magnitude = 10 ** math.floor(math.log10(target))
+    for step in [1, 2, 2.5, 5, 10]:
+        candidate = math.ceil(target / (magnitude * step)) * magnitude * step
+        if candidate >= target:
+            return candidate
+    return target
 
 
-def _chart_vals(weeks_data: list[Optional[dict]], key: str) -> list:
+def _chart_vals(weeks_data, key):
     return [w.get(key) if w else None for w in weeks_data]
 
 
-# ── Line chart drawing (matches reference slide: cyan dots + connecting line) ───
-def _draw_bar_chart(
+# ── SLA Goals box ─────────────────────────────────────────────────────────────
+def _draw_sla_goals(c: rl_canvas.Canvas):
+    """Forensic: x=30-230, RL y_bottom=492, h=64, black border lw=0.5."""
+    bx, by, bw, bh = 30.0, 492.0, 200.0, 64.0
+
+    c.setStrokeColor(C_CELL_BDR)
+    c.setLineWidth(0.5)
+    c.setFillColor(C_WHITE)
+    c.rect(bx, by, bw, bh, fill=1, stroke=1)
+
+    # "SLA Goals" header — Helvetica-Bold 8.5pt, fitz y=58.9 → RL baseline ≈ 547
+    c.setFillColor(C_BLACK)
+    c.setFont("Helvetica-Bold", 8.5)
+    c.drawString(bx + 4, 547, "SLA Goals")
+
+    goals = [
+        "AV to OA \u2264 3 Days",
+        "OA to Delivery \u2264 3 Days",
+        "Empty to Termination \u2264 3 Days",
+        "E2E Transit / On-Time to Promise \u2265 95%",
+    ]
+    c.setFont("Helvetica", 7.0)
+    # From forensic: bullet rows at fitz y=74.5, 85.5, 96.5, 107.5 → RL ≈ 531, 520, 509, 498
+    for i, (g, rl_y) in enumerate(zip(goals, [531, 520, 509, 498])):
+        c.drawString(bx + 6, rl_y, f"\u25aa {g}")
+
+
+# ── Single line chart (dot+line style) ────────────────────────────────────────
+def _draw_chart(
     c: rl_canvas.Canvas,
-    x: float, y: float, w: float, h: float,
+    band_idx: int,         # 0, 1, or 2
+    row: int,              # 1 or 2
     title: str,
     values: list,
-    week_labels: list[str],
-    sla_val: Optional[float] = None,
+    week_labels: list,
+    year_2d: str = "26",
     is_pct: bool = False,
-    current_idx: int = -1,
 ):
+    x_start, x_end = BANDS[band_idx]
+    plot_bot = R1_BOT if row == 1 else R2_BOT
+    plot_top = R1_TOP if row == 1 else R2_TOP
+    title_y  = R1_TITLE_Y if row == 1 else R2_TITLE_Y
+    xlabel_y = R1_XLABEL_Y if row == 1 else R2_XLABEL_Y
+    plot_h   = plot_top - plot_bot   # 87 pts
+
+    # Dot x positions — 6 points from x_start to x_end, spacing 28.8
     n = len(values)
-    clean = [v for v in values if v is not None]
-    max_v = max(clean) if clean else 1
-    if sla_val and sla_val > max_v:
-        max_v = sla_val * 1.05
-    max_v = max_v * 1.20 or 1
+    dot_xs = [x_start + i * DOT_SPACING for i in range(n)]
 
-    plot_x = x + 8
-    plot_y = y + 18
-    plot_w = w - 16
-    plot_h = h - 30
+    # Y scale
+    clean = [float(v) for v in values if v is not None]
+    raw_max = max(clean) if clean else 1.0
+    if raw_max == 0:
+        raw_max = 1.0
+    max_v = _nice_max(raw_max)
 
-    # Title
-    c.setFont("Helvetica-Bold", 7)
+    def _y(v):
+        """Convert data value to RL y coordinate."""
+        if v is None:
+            return None
+        return plot_bot + (float(v) / max_v) * plot_h
+
+    # ── Title ──────────────────────────────────────────────────────────────
+    cx = (x_start + x_end) / 2
+    c.setFont("Helvetica-Bold", 7.5)
     c.setFillColor(C_BLACK)
-    c.drawCentredString(x + w / 2, y + h - 9, title)
+    c.drawCentredString(cx, title_y, title)
 
-    # Light horizontal grid lines
-    c.setStrokeColor(colors.Color(0.90, 0.90, 0.90))
+    # ── Gridlines (6 horizontal, spacing 17.4 pts) ──────────────────────
+    c.setStrokeColor(C_GRIDLIGHT)
     c.setLineWidth(0.3)
-    for i in range(4):
-        gy = plot_y + (i / 3) * plot_h
-        c.line(plot_x, gy, plot_x + plot_w, gy)
+    for i in range(6):
+        gy = plot_bot + i * (plot_h / 5)
+        c.line(x_start, gy, x_end, gy)
 
-    # Red dashed SLA reference line
-    if sla_val is not None and max_v > 0:
-        sla_y = plot_y + (sla_val / max_v) * plot_h
-        c.setStrokeColor(C_SLA_LINE)
-        c.setLineWidth(0.8)
-        c.setDash(3, 2)
-        c.line(plot_x, sla_y, plot_x + plot_w, sla_y)
-        c.setDash()
+    # ── Y-axis value labels (Helvetica 5.5pt gray, right-aligned 2pt left of x_start) ──
+    c.setFont("Helvetica", 5.5)
+    c.setFillColor(C_GRAY)
+    for i in range(6):
+        gy = plot_bot + i * (plot_h / 5)
+        v_label = max_v * i / 5
+        # Format: integers for most, skip decimals
+        if v_label == int(v_label):
+            lbl = str(int(v_label))
+        else:
+            lbl = f"{v_label:.1f}"
+        c.drawRightString(x_start - 2, gy - 2, lbl)
 
-    # X positions per week
-    gap = plot_w / (n - 1) if n > 1 else 0
-    pts = [(plot_x + i * gap, plot_y + (v / max_v) * plot_h if v is not None else None)
-           for i, v in enumerate(values)]
-
-    # Connecting line between non-None points
-    c.setStrokeColor(C_BAR)
-    c.setLineWidth(1.2)
+    # ── Connecting line ─────────────────────────────────────────────────
+    c.setStrokeColor(C_DOT)
+    c.setLineWidth(1.5)
+    pts = [(dot_xs[i], _y(values[i])) for i in range(n)]
     prev = None
     for px, py in pts:
         if py is not None:
@@ -133,279 +211,221 @@ def _draw_bar_chart(
         else:
             prev = None
 
-    # Dots + value labels + week labels
-    for i, (px, py) in enumerate(pts):
-        if py is None:
-            continue
-        v = values[i]
-        is_curr = (i == n - 1)
-        r = 4.5 if is_curr else 3.5
-        dot_color = C_BAR_CURR if is_curr else C_BAR
-        c.setFillColor(dot_color)
-        c.setStrokeColor(dot_color)
-        c.circle(px, py, r, fill=1, stroke=0)
+    # ── Dots (5×5 squares) + value labels ───────────────────────────────
+    DOT_H = 2.5  # half of 5pt square
+    for i in range(n):
+        px = dot_xs[i]
+        py = _y(values[i])
+        v  = values[i]
 
-        # Value label above dot
-        c.setFillColor(C_BLACK)
-        c.setFont("Helvetica-Bold" if is_curr else "Helvetica", 6)
-        label = f"{round(v)}%" if is_pct else str(round(v))
-        c.drawCentredString(px, py + r + 3, label)
+        # X-axis label — Helvetica 5pt gray
+        wk = week_labels[i] if i < len(week_labels) else ""
+        if wk.startswith("W"):
+            xlbl = f"{year_2d} W {wk[1:]}"
+        else:
+            xlbl = wk
+        c.setFont("Helvetica", 5.0)
+        c.setFillColor(C_GRAY)
+        c.drawCentredString(px, xlabel_y, xlbl)
 
-        # Week label below x-axis
-        c.setFont("Helvetica", 5.5)
-        c.drawCentredString(px, plot_y - 9, week_labels[i] if i < len(week_labels) else "")
+        if py is not None and v is not None:
+            # 5×5 square dot
+            c.setFillColor(C_DOT)
+            c.setStrokeColor(C_DOT)
+            c.rect(px - DOT_H, py - DOT_H, 5, 5, fill=1, stroke=0)
 
-# ── SLA goals box ──────────────────────────────────────────────────────────────
-def _draw_sla_goals(c: rl_canvas.Canvas, x: float, y: float, w: float, h: float):
-    c.setFillColor(C_WHITE)
-    c.setStrokeColor(C_GRIDLINE)
-    c.setLineWidth(0.5)
-    c.rect(x, y, w, h, fill=1, stroke=1)
-
-    c.setFillColor(C_BLACK)
-    c.setFont("Helvetica-Bold", 7)
-    c.drawString(x + 3, y + h - 9, "SLA Goals")
-
-    goals = [
-        "AV to OA \u2264 3 Days",
-        "OA to Delivery \u2264 3 Days",
-        "Empty to Term \u2264 3 Days",
-        "E2E Transit",
-        "On-Time to Promise \u2265 95%",
-    ]
-    c.setFont("Helvetica", 6.5)
-    for i, g in enumerate(goals):
-        c.drawString(x + 4, y + h - 20 - i * 11, f"\u25aa {g}")
+            # Value label above dot — Helvetica-Bold 6.5pt black
+            c.setFillColor(C_BLACK)
+            c.setFont("Helvetica-Bold", 6.5)
+            if is_pct:
+                lbl = f"{int(round(float(v)))}"
+            elif isinstance(v, float) and v != int(v):
+                lbl = f"{float(v):.1f}"
+            else:
+                lbl = str(int(round(float(v)))) if v is not None else "\u2013"
+            c.drawCentredString(px, py + DOT_H + 3, lbl)
 
 
-# ── Performance table ──────────────────────────────────────────────────────────
-def _draw_performance_table(
+# ── Performance table ─────────────────────────────────────────────────────────
+def _draw_table(
     c: rl_canvas.Canvas,
-    x: float, y: float, w: float, h: float,
-    week_labels: list[str],
-    weeks_data: list[Optional[dict]],
+    week_labels: list,
+    weeks_data: list,
     totals: Optional[dict],
+    year_str: str = "2026",
     sites_str: str = "USORF, USBOS, USSAV, USLAX",
 ):
     n_weeks = len(week_labels)
-    col_count = 1 + n_weeks + 1   # row label + weeks + total
+    table_right = TBL_LABEL_X + TBL_LABEL_W + n_weeks * TBL_WEEK_W + TBL_TOTAL_W
 
-    # Dynamic column widths: label=105, week=73, total=80
-    label_w = 105
-    total_w = 80
-    week_w  = (w - label_w - total_w) / n_weeks
+    # ── Section header ─────────────────────────────────────────────────────
+    # Forensic: centered at x≈396, RL y≈225 baseline, Helvetica-Bold 9.5pt
+    c.setFillColor(C_BLACK)
+    c.setFont("Helvetica-Bold", 9.5)
+    tbl_center = (TBL_LABEL_X + table_right) / 2
+    c.drawCentredString(tbl_center, 225, f"Weekly Performance ({sites_str})")
 
-    row_count  = len(ROW_LABELS)
-    header_h   = 14
-    subhdr_h   = 12
-    row_h      = (h - header_h - subhdr_h) / row_count
+    # ── Column header row ──────────────────────────────────────────────────
+    # Forensic: cells from RL y=199 to y=215, each cell drawn as white-filled rect
+    col_hdr_bot = TBL_COL_HDR_TOP - TBL_ROW_H   # = 199.0
 
-    cur_y = y + h
-
-    # Section header
-    cur_y -= header_h
-    c.setFillColor(C_TABLE_HDR)
-    c.rect(x, cur_y, w, header_h, fill=1, stroke=0)
+    # Label cell
     c.setFillColor(C_WHITE)
-    c.setFont("Helvetica-Bold", 8)
-    c.drawString(x + 4, cur_y + 3, f"Weekly Performance ({sites_str})")
-
-    # Column headers
-    cur_y -= subhdr_h
-    c.setFillColor(C_LTGRAY)
-    c.rect(x, cur_y, w, subhdr_h, fill=1, stroke=0)
-
-    # Draw col headers
+    c.setStrokeColor(C_CELL_BDR)
+    c.setLineWidth(0.5)
+    c.rect(TBL_LABEL_X, col_hdr_bot, TBL_LABEL_W, TBL_ROW_H, fill=1, stroke=1)
     c.setFillColor(C_BLACK)
-    c.setFont("Helvetica-Bold", 7)
-    c.drawString(x + 3, cur_y + 3, "Week")
+    c.setFont("Helvetica-Bold", 7.5)
+    c.drawString(TBL_LABEL_X + 4, col_hdr_bot + 5, "Week")
 
-    col_x = x + label_w
+    # Week cells
+    col_x = TBL_LABEL_X + TBL_LABEL_W
     for wk in week_labels:
-        c.setFont("Helvetica-Bold", 7)
-        cx = col_x + week_w / 2
-        year_str = "2026 " if wk == week_labels[0] else ""
-        c.drawCentredString(cx, cur_y + 3, year_str + wk)
-        col_x += week_w
-
-    # Total header (yellow bg)
-    c.setFillColor(C_TOTAL_BG)
-    c.rect(col_x, cur_y, total_w, subhdr_h, fill=1, stroke=0)
-    c.setFillColor(C_BLACK)
-    c.setFont("Helvetica-Bold", 7)
-    c.drawCentredString(col_x + total_w / 2, cur_y + 3, "Total")
-
-    # Data rows
-    for ri, label in enumerate(ROW_LABELS):
-        cur_y -= row_h
-        # Alternating row shading
-        bg = colors.Color(0.96, 0.96, 0.96) if ri % 2 == 1 else C_WHITE
-        c.setFillColor(bg)
-        c.rect(x, cur_y, w - total_w, row_h, fill=1, stroke=0)
-
-        # Total cell background
-        c.setFillColor(C_TOTAL_BG)
-        c.rect(x + w - total_w, cur_y, total_w, row_h, fill=1, stroke=0)
-
-        # Row label
+        if wk.startswith("W"):
+            wk_display = f"{year_str} W {wk[1:]}"   # "2026 W 24"
+        else:
+            wk_display = wk
+        c.setFillColor(C_WHITE)
+        c.setStrokeColor(C_CELL_BDR)
+        c.setLineWidth(0.5)
+        c.rect(col_x, col_hdr_bot, TBL_WEEK_W, TBL_ROW_H, fill=1, stroke=1)
         c.setFillColor(C_BLACK)
-        c.setFont("Helvetica-Bold", 6.5)
-        c.drawString(x + 3, cur_y + row_h / 2 - 2.5, label)
+        c.setFont("Helvetica-Bold", 7.5)
+        c.drawCentredString(col_x + TBL_WEEK_W / 2, col_hdr_bot + 5, wk_display)
+        col_x += TBL_WEEK_W
 
-        # Week values
-        col_x = x + label_w
-        sla_threshold = ROW_SLA[ri]
-        last_wk_idx   = len(week_labels) - 1
+    # Total cell (yellow bg)
+    c.setFillColor(C_TOTAL_BG)
+    c.setStrokeColor(C_CELL_BDR)
+    c.setLineWidth(0.5)
+    c.rect(col_x, col_hdr_bot, TBL_TOTAL_W, TBL_ROW_H, fill=1, stroke=1)
+    c.setFillColor(C_BLACK)
+    c.setFont("Helvetica-Bold", 7.5)
+    c.drawCentredString(col_x + TBL_TOTAL_W / 2, col_hdr_bot + 5, "Total")
 
+    # ── Data rows ──────────────────────────────────────────────────────────
+    last_wk_idx = n_weeks - 1
+    for ri, (label, key) in enumerate(zip(ROW_LABELS, ROW_KEYS)):
+        row_top = col_hdr_bot - ri * TBL_ROW_H          # top of this row
+        row_bot = row_top - TBL_ROW_H                    # bottom of this row
+        txt_y   = row_bot + 5                            # text baseline (RL)
+
+        # Label cell
+        c.setFillColor(C_WHITE)
+        c.setStrokeColor(C_CELL_BDR)
+        c.setLineWidth(0.5)
+        c.rect(TBL_LABEL_X, row_bot, TBL_LABEL_W, TBL_ROW_H, fill=1, stroke=1)
+        c.setFillColor(C_BLACK)
+        c.setFont("Helvetica-Bold", 7.0)
+        c.drawString(TBL_LABEL_X + 4, txt_y, label)
+
+        # Week data cells
+        col_x = TBL_LABEL_X + TBL_LABEL_W
         for wi, wk_data in enumerate(weeks_data):
-            v   = _row_val(wk_data, ri)
-            txt = _fmt(v, ri)
-            cx  = col_x + week_w / 2
-            cy  = cur_y + row_h / 2 - 2.5
+            v   = wk_data.get(key) if wk_data else None
+            txt = _fmt(v, key)
+            is_last = (wi == last_wk_idx)
 
-            # SLA border on current week SLA% cells
-            if sla_threshold is not None and wi == last_wk_idx and v is not None:
-                border_color = C_GREEN if v >= sla_threshold else C_RED
-                c.setStrokeColor(border_color)
-                c.setLineWidth(1.5)
-                c.rect(col_x + 1, cur_y + 1, week_w - 2, row_h - 2, fill=0, stroke=1)
+            # Determine border for current-week SLA cells
+            if ri in SLA_ROWS and is_last and v is not None:
+                border_c = C_GREEN_SLA if float(v) >= SLA_TARGET else C_RED_SLA
+                border_lw = 2.0
+            else:
+                border_c  = C_CELL_BDR
+                border_lw = 0.5
+
+            c.setFillColor(C_WHITE)
+            c.setStrokeColor(border_c)
+            c.setLineWidth(border_lw)
+            c.rect(col_x, row_bot, TBL_WEEK_W, TBL_ROW_H, fill=1, stroke=1)
 
             c.setFillColor(C_BLACK)
-            c.setFont("Helvetica-Bold" if wi == last_wk_idx else "Helvetica", 7)
-            c.drawCentredString(cx, cy, txt)
-            col_x += week_w
+            c.setFont("Helvetica-Bold" if is_last else "Helvetica", 7.5)
+            c.drawCentredString(col_x + TBL_WEEK_W / 2, txt_y, txt)
+            col_x += TBL_WEEK_W
 
-        # Total cell
-        tv  = _row_val(totals, ri)
-        ttx = _fmt(tv, ri)
+        # Total cell (yellow bg)
+        tv  = totals.get(key) if totals else None
+        ttx = _fmt(tv, key)
+        c.setFillColor(C_TOTAL_BG)
+        c.setStrokeColor(C_CELL_BDR)
+        c.setLineWidth(0.5)
+        c.rect(col_x, row_bot, TBL_TOTAL_W, TBL_ROW_H, fill=1, stroke=1)
         c.setFillColor(C_BLACK)
-        c.setFont("Helvetica-Bold", 7)
-        c.drawCentredString(x + w - total_w + total_w / 2, cur_y + row_h / 2 - 2.5, ttx)
-
-    # Outer border
-    c.setStrokeColor(C_GRIDLINE)
-    c.setLineWidth(0.5)
-    c.rect(x, cur_y, w, y + h - header_h - subhdr_h - cur_y, fill=0, stroke=1)
-
-    # Vertical grid lines
-    col_x = x + label_w
-    table_top = y + h - header_h - subhdr_h
-    for _ in week_labels:
-        c.line(col_x, cur_y, col_x, table_top)
-        col_x += week_w
-    c.line(col_x, cur_y, col_x, table_top)  # before total
+        c.setFont("Helvetica-Bold", 7.5)
+        c.drawCentredString(col_x + TBL_TOTAL_W / 2, txt_y, ttx)
 
 
-# ── Main PDF generator ────────────────────────────────────────────────────────
+# ── Main generator ────────────────────────────────────────────────────────────
 def generate_standard_wbr(
-    week_labels: list[str],
-    weeks_data: list[Optional[dict]],
+    week_labels: list,
+    weeks_data: list,
     totals: Optional[dict],
     report_date: date,
     current_week_label: str = "",
-    report_time: str = "10:00am (CST) | 9:00am (MT) | 8:00am (PT)",
+    report_time: str = "10:00am (CT) | 9:00am (MT) | 8:00am (PT)",
     sites_str: str = "USORF, USBOS, USSAV, USLAX",
 ) -> bytes:
-    """
-    Generate the standard 1-page WBR PDF slide.
-    week_labels: e.g. ["W24","W25","W26","W27","W28","W29"]
-    weeks_data:  list of metric dicts (same length); None = carry-forward missing
-    totals:      pre-computed volume-weighted total dict
-    report_date: date of WBR (Monday submission date)
-    """
     buf = io.BytesIO()
     c = rl_canvas.Canvas(buf, pagesize=(PAGE_W, PAGE_H))
 
-    # ── Header bar ────────────────────────────────────────────────────────
-    c.setFillColor(C_HEADER_BG)
-    c.rect(0, PAGE_H - 45, PAGE_W, 45, fill=1, stroke=0)
+    year_str = str(report_date.year)
+    year_2d  = year_str[2:]   # "26"
 
-    c.setFillColor(C_WHITE)
-    c.setFont("Helvetica-Bold", 14)
-    c.drawString(30, PAGE_H - 28, "Robotics Destination Dray Metrics \u2014 NA")
+    # ── Title ─────────────────────────────────────────────────────────────
+    # Forensic: Helvetica-Bold 20pt, black, RL baseline y=576, x=30
+    c.setFillColor(C_BLACK)
+    c.setFont("Helvetica-Bold", 20)
+    c.drawString(30, 576, "Robotics Destination Dray Metrics \u2014 NA")
 
-    date_str = f"{report_date.month}/{report_date.day}/{report_date.year}"
-    c.setFont("Helvetica", 8)
-    footer_txt = f"{date_str} {report_time}"
-    c.drawRightString(PAGE_W - 10, PAGE_H - 38, footer_txt)
+    # ── Orange accent line ────────────────────────────────────────────────
+    # Forensic: RL y=568, x=30-762, stroke #e8a838, lw=2.0
+    c.setStrokeColor(C_ACCENT)
+    c.setLineWidth(2.0)
+    c.line(30, 568, 762, 568)
 
-    # ── Layout constants ──────────────────────────────────────────────────
-    # Two rows of 3 charts each
-    # Row 1 (top): y range 452–562 (reportlab coords)
-    # Row 2 (mid): y range 318–428
-    # Table: y range 30–300
-    # SLA Goals box: left of Row 1 charts
+    # ── SLA Goals box ─────────────────────────────────────────────────────
+    _draw_sla_goals(c)
 
-    CHART_TOP1 = PAGE_H - 45 - 120   # top of row-1 charts = ~447
-    CHART_H    = 110
-    CHART_TOP2 = CHART_TOP1 - 130
-    TABLE_TOP  = CHART_TOP2 - 12
-    TABLE_H    = TABLE_TOP - 20
+    # ── Charts — Row 1 (AV→OA | OA→Del | E2E Transit) ────────────────────
+    charts_r1 = [
+        ("Leg: AV to OA (avg. days)",        "av_oa_avg",       False),
+        ("Leg: OA to Delivery (avg. days)",  "oa_del_avg",      False),
+        ("Leg: E2E Transit (avg. days)",      "e2e_avg",         False),
+    ]
+    for band_idx, (title, key, is_pct) in enumerate(charts_r1):
+        _draw_chart(c, band_idx, 1, title,
+                    _chart_vals(weeks_data, key), week_labels, year_2d, is_pct)
 
-    # SLA Goals box (left panel, row 1 area)
-    SLA_X = 5
-    SLA_W = 255
-    _draw_sla_goals(c, SLA_X, CHART_TOP1 - CHART_H, SLA_W, CHART_H)
+    # ── Charts — Row 2 (Empty→Term | OTP | Volume) ────────────────────────
+    charts_r2 = [
+        ("Leg: Empty to Termination (avg. days)", "empty_term_pct", True),
+        ("Leg: On-Time to Promise %",              "otp_pct",        True),
+        ("Volume (containers)",                    "containers",     False),
+    ]
+    for band_idx, (title, key, is_pct) in enumerate(charts_r2):
+        _draw_chart(c, band_idx, 2, title,
+                    _chart_vals(weeks_data, key), week_labels, year_2d, is_pct)
 
-    # Row 1: AV->OA | OA->Del | E2E Transit
-    chart_row1_x = SLA_X + SLA_W + 4
-    chart_w1 = (PAGE_W - chart_row1_x - 6) / 3
+    # ── Performance table ─────────────────────────────────────────────────
+    _draw_table(c, week_labels, weeks_data, totals, year_str, sites_str)
 
-    n_wk = len(week_labels)
-    short_labels = week_labels   # ["W24","W25",...]
+    # ── Footer ────────────────────────────────────────────────────────────
+    # Forensic: Helvetica 7.5pt #666666, RL y=13, x=30
+    # Format: "July 20, 2026 10:00am (CT) / 9:00am (MT) / 8:00am (PT)"
+    try:
+        date_str = report_date.strftime("%-B %-d, %Y")
+    except ValueError:
+        # Windows doesn't support %-d; strip leading zero manually
+        date_str = report_date.strftime("%B %d, %Y").replace(" 0", " ")
 
-    _draw_bar_chart(c,
-        chart_row1_x, CHART_TOP1 - CHART_H, chart_w1, CHART_H,
-        "Leg: AV to OA (avg. days)",
-        _chart_vals(weeks_data, "av_oa_avg"), short_labels, sla_val=3.0,
-    )
-    _draw_bar_chart(c,
-        chart_row1_x + chart_w1 + 3, CHART_TOP1 - CHART_H, chart_w1, CHART_H,
-        "Leg: OA to Delivery (avg. days)",
-        _chart_vals(weeks_data, "oa_del_avg"), short_labels, sla_val=3.0,
-    )
-    _draw_bar_chart(c,
-        chart_row1_x + 2*(chart_w1 + 3), CHART_TOP1 - CHART_H, chart_w1, CHART_H,
-        "Leg: E2E Transit (avg. days)",
-        _chart_vals(weeks_data, "e2e_avg"), short_labels,
-    )
+    footer_left  = f"{date_str} {report_time}"
+    footer_right = "\u25aa Powered by Amazon Quick"
 
-    # Row 2: Empty->Term | OTP | Volume
-    row2_y = CHART_TOP2 - CHART_H
-    chart_w2 = (PAGE_W - 14) / 3
-
-    _draw_bar_chart(c,
-        8, row2_y, chart_w2, CHART_H,
-        "Leg: Empty to Termination (avg. days)",
-        _chart_vals(weeks_data, "empty_term_pct"), short_labels,
-        is_pct=True,
-    )
-    _draw_bar_chart(c,
-        8 + chart_w2 + 4, row2_y, chart_w2, CHART_H,
-        "Leg: On-Time to Promise %",
-        _chart_vals(weeks_data, "otp_pct"), short_labels,
-        sla_val=95.0, is_pct=True,
-    )
-    _draw_bar_chart(c,
-        8 + 2*(chart_w2 + 4), row2_y, chart_w2, CHART_H,
-        "Volume (containers)",
-        _chart_vals(weeks_data, "containers"), short_labels,
-    )
-
-    # ── Performance table ──────────────────────────────────────────────────
-    _draw_performance_table(
-        c,
-        x=5, y=20, w=PAGE_W - 10, h=TABLE_H,
-        week_labels=week_labels,
-        weeks_data=weeks_data,
-        totals=totals,
-        sites_str=sites_str,
-    )
-
-    # ── Footer ─────────────────────────────────────────────────────────────
-    c.setFillColor(colors.Color(0.5, 0.5, 0.5))
-    c.setFont("Helvetica", 6)
-    c.drawString(5, 8, f"Amazon Global Logistics | AGL Robotics Dray Program | Generated {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    c.setFillColor(C_GRAY)
+    c.setFont("Helvetica", 7.5)
+    c.drawString(30, 13, footer_left)
+    c.drawRightString(762, 13, footer_right)
 
     c.save()
     return buf.getvalue()
