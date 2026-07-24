@@ -4098,20 +4098,31 @@ with tab8:
                         _email_to   = "doc+destops-36@fusion.amazon.dev"
                         _email_subj = "NA Destination Ops WBR_Robotics"
                         _email_body_txt = (
-                            f"Hi team,\n\n"
-                            f"Attached is the WK{week_num} NA Robotics Destination Dray WBR.\n\n"
-                            f"Reporting Week: {wk_start} to {wk_end}\n"
-                            f"Volume: {_s(_vol)} containers\n\n"
-                            f"KPIs:\n"
-                            f"  AV→OA:       {_s(_av_sla, '%')} SLA | {_s(_av_avg)}d avg | P90 {_s(_av_p90)}d\n"
-                            f"  OA→Del:      {_s(_od_sla, '%')} SLA | {_s(_od_avg)}d avg | P90 {_s(_od_p90)}d  [BOS market]\n"
-                            f"  Empty→Term:  {_s(_et, '%')}\n"
-                            f"  E2E Transit: {_s(_e2e)}d avg\n"
-                            f"  On-Time:     {_s(_otp, '%')}\n\n"
-                            + (_ctx_notes.replace("\n", " | ") + "\n\n" if _ctx_notes else "")
-                            + "Best,\nDominique Kennedy\n"
-                            "Amazon Global Logistics — Robotics Destination Dray\n"
+                            "WBR: NA Destination Ops WBR\n"
+                            "Slide: Robotics-Rocus\n"
+                            "Owner: Dominique Kennedy\n"
+                            "Alias: kennewdo\n"
+                            "Frequency: Weekly\n"
                         )
+
+                        # ── Fusion submission check ───────────────────────────────────
+                        _fusion_url = "https://fusion.amazon.dev/documentset/DOCUMENTSET%23f42d63bd-a96a-4f29-a356-a66ac18602a9"
+                        _fusion_cols = st.columns([2, 1])
+                        with _fusion_cols[0]:
+                            st.markdown(
+                                f"**WBR Slides are published to Fusion.** "
+                                f"After sending, verify your W{week_num} slide appears in the document set:"
+                            )
+                            st.link_button("🔗 Open Fusion Document Set", _fusion_url)
+                        with _fusion_cols[1]:
+                            _submitted_key = f"wbr_submitted_w{week_num}_{year}"
+                            _already_marked = st.session_state.get(_submitted_key, False)
+                            if _already_marked:
+                                st.success(f"✅ W{week_num} marked as sent")
+                            else:
+                                if st.button("✅ Mark as Sent", key=f"wbr_mark_sent_{week_num}"):
+                                    st.session_state[_submitted_key] = True
+                                    st.rerun()
                         _mailto_url = (
                             f"mailto:{_email_to}"
                             f"?subject={urllib.parse.quote(_email_subj)}"
