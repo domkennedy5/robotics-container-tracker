@@ -12,6 +12,7 @@ Methodology (locked against WK29 validation):
 from __future__ import annotations
 
 import io
+import math
 from datetime import date, datetime, timedelta
 from typing import Any
 
@@ -222,7 +223,7 @@ def compute_metrics(gvt, oblt, inbound, week_start, week_end, report_date) -> di
 
     def _pct(m, d): return round(m/d*100) if d else None
     def _avg(lst):  return round(float(np.mean(lst)), 1) if lst else None
-    def _p90(lst):  return round(float(np.percentile(lst, 90))) if lst else None
+    def _p90(lst):  return math.ceil(float(np.percentile(lst, 90))) if lst else None
 
     return {
         'containers':     n,

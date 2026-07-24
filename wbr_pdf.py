@@ -41,15 +41,15 @@ BANDS = [(238, 382), (428, 572), (618, 762)]   # (x_start, x_end) for each of 3 
 DOT_SPACING = 28.8                              # x pts between 6 data points per chart
 
 # Plot y ranges per row
-R1_BOT, R1_TOP = 435.0, 522.0   # row 1 charts (fitz y=177→90)
-R2_BOT, R2_TOP = 290.0, 377.0   # row 2 charts (fitz y=322→235)
+R1_BOT, R1_TOP = 447.0, 542.0   # row 1 charts (fitz y=165→70)
+R2_BOT, R2_TOP = 304.0, 399.0   # row 2 charts (fitz y=308→213)
 
 # Chart title y (baseline)
-R1_TITLE_Y  = 537.0   # row 1 (fitz y=70 baseline ~75)
-R2_TITLE_Y  = 392.0   # row 2 (fitz y=215)
+R1_TITLE_Y  = 554.0   # row 1 (fitz y=58)
+R2_TITLE_Y  = 411.0   # row 2 (fitz y=201)
 
 # X-axis label y (inside chart near bottom)
-R1_XLABEL_Y = 446.0   # fitz y=162.3
+R1_XLABEL_Y = 444.0   # fitz y=168
 R2_XLABEL_Y = 301.0   # fitz y=307.3
 
 # ── Table geometry ────────────────────────────────────────────────────────────
@@ -58,7 +58,7 @@ TBL_LABEL_W   = 130.0   # label column width
 TBL_WEEK_W    = 80.0    # per-week column width
 TBL_TOTAL_W   = 80.0    # total column width
 TBL_ROW_H     = 16.0    # row height (pts)
-TBL_COL_HDR_TOP = 215.0 # RL y-top of column header row
+TBL_COL_HDR_TOP = 260.0 # RL y-top of column header row
 
 # ── Row definitions ───────────────────────────────────────────────────────────
 ROW_LABELS = [
@@ -112,29 +112,29 @@ def _chart_vals(weeks_data, key):
 
 # ── SLA Goals box ─────────────────────────────────────────────────────────────
 def _draw_sla_goals(c: rl_canvas.Canvas):
-    """Forensic: x=30-230, RL y_bottom=492, h=64, black border lw=0.5."""
-    bx, by, bw, bh = 30.0, 492.0, 200.0, 64.0
+    """Forensic: x=30-265, RL y_bottom=477, h=82, black border lw=0.5."""
+    bx, by, bw, bh = 30.0, 477.0, 235.0, 82.0
 
     c.setStrokeColor(C_CELL_BDR)
     c.setLineWidth(0.5)
     c.setFillColor(C_WHITE)
     c.rect(bx, by, bw, bh, fill=1, stroke=1)
 
-    # "SLA Goals" header — Helvetica-Bold 8.5pt, fitz y=58.9 → RL baseline ≈ 547
+    # "SLA Goals" header — Helvetica-Bold 10pt, fitz y=69 → RL baseline 543
     c.setFillColor(C_BLACK)
-    c.setFont("Helvetica-Bold", 8.5)
-    c.drawString(bx + 4, 547, "SLA Goals")
+    c.setFont("Helvetica-Bold", 10.0)
+    c.drawString(bx + 3, 543, "SLA Goals")
 
     goals = [
-        "AV to OA \u2264 3 Days",
-        "OA to Delivery \u2264 3 Days",
-        "Empty to Termination \u2264 3 Days",
-        "E2E Transit / On-Time to Promise \u2265 95%",
+        "\u2022 AV to OA <= 3 Days",
+        "\u2022 OA to Delivery <= 3 Days",
+        "\u2022 Empty to Termination <= 3 Days",
+        "\u2022 E2E Transit / On-Time to Promise >= 95%",
     ]
-    c.setFont("Helvetica", 7.0)
-    # From forensic: bullet rows at fitz y=74.5, 85.5, 96.5, 107.5 → RL ≈ 531, 520, 509, 498
-    for i, (g, rl_y) in enumerate(zip(goals, [531, 520, 509, 498])):
-        c.drawString(bx + 6, rl_y, f"\u25aa {g}")
+    c.setFont("Helvetica", 9.0)
+    # From forensic: bullet rows at fitz y=85,99,113,127 → RL 527,513,499,485
+    for g, rl_y in zip(goals, [527, 513, 499, 485]):
+        c.drawString(bx + 4, rl_y, g)
 
 
 # ── Single line chart (dot+line style) ────────────────────────────────────────
@@ -174,7 +174,7 @@ def _draw_chart(
 
     # ── Title ──────────────────────────────────────────────────────────────
     cx = (x_start + x_end) / 2
-    c.setFont("Helvetica-Bold", 7.5)
+    c.setFont("Helvetica-Bold", 9.0)
     c.setFillColor(C_BLACK)
     c.drawCentredString(cx, title_y, title)
 
@@ -239,10 +239,8 @@ def _draw_chart(
             c.setFont("Helvetica-Bold", 6.5)
             if is_pct:
                 lbl = f"{int(round(float(v)))}"
-            elif isinstance(v, float) and v != int(v):
-                lbl = f"{float(v):.1f}"
             else:
-                lbl = str(int(round(float(v)))) if v is not None else "\u2013"
+                lbl = str(round(float(v)))
             c.drawCentredString(px, py + DOT_H + 3, lbl)
 
 
@@ -261,9 +259,9 @@ def _draw_table(
     # ── Section header ─────────────────────────────────────────────────────
     # Forensic: centered at x≈396, RL y≈225 baseline, Helvetica-Bold 9.5pt
     c.setFillColor(C_BLACK)
-    c.setFont("Helvetica-Bold", 9.5)
+    c.setFont("Helvetica-Bold", 11.0)
     tbl_center = (TBL_LABEL_X + table_right) / 2
-    c.drawCentredString(tbl_center, 225, f"Weekly Performance ({sites_str})")
+    c.drawCentredString(tbl_center, 272, f"Weekly Performance ({sites_str})")
 
     # ── Column header row ──────────────────────────────────────────────────
     # Forensic: cells from RL y=199 to y=215, each cell drawn as white-filled rect
@@ -275,7 +273,7 @@ def _draw_table(
     c.setLineWidth(0.5)
     c.rect(TBL_LABEL_X, col_hdr_bot, TBL_LABEL_W, TBL_ROW_H, fill=1, stroke=1)
     c.setFillColor(C_BLACK)
-    c.setFont("Helvetica-Bold", 7.5)
+    c.setFont("Helvetica-Bold", 9.0)
     c.drawString(TBL_LABEL_X + 4, col_hdr_bot + 5, "Week")
 
     # Week cells
@@ -290,7 +288,7 @@ def _draw_table(
         c.setLineWidth(0.5)
         c.rect(col_x, col_hdr_bot, TBL_WEEK_W, TBL_ROW_H, fill=1, stroke=1)
         c.setFillColor(C_BLACK)
-        c.setFont("Helvetica-Bold", 7.5)
+        c.setFont("Helvetica-Bold", 9.0)
         c.drawCentredString(col_x + TBL_WEEK_W / 2, col_hdr_bot + 5, wk_display)
         col_x += TBL_WEEK_W
 
@@ -300,7 +298,7 @@ def _draw_table(
     c.setLineWidth(0.5)
     c.rect(col_x, col_hdr_bot, TBL_TOTAL_W, TBL_ROW_H, fill=1, stroke=1)
     c.setFillColor(C_BLACK)
-    c.setFont("Helvetica-Bold", 7.5)
+    c.setFont("Helvetica-Bold", 9.0)
     c.drawCentredString(col_x + TBL_TOTAL_W / 2, col_hdr_bot + 5, "Total")
 
     # ── Data rows ──────────────────────────────────────────────────────────
@@ -316,7 +314,7 @@ def _draw_table(
         c.setLineWidth(0.5)
         c.rect(TBL_LABEL_X, row_bot, TBL_LABEL_W, TBL_ROW_H, fill=1, stroke=1)
         c.setFillColor(C_BLACK)
-        c.setFont("Helvetica-Bold", 7.0)
+        c.setFont("Helvetica-Bold", 9.0)
         c.drawString(TBL_LABEL_X + 4, txt_y, label)
 
         # Week data cells
@@ -340,7 +338,7 @@ def _draw_table(
             c.rect(col_x, row_bot, TBL_WEEK_W, TBL_ROW_H, fill=1, stroke=1)
 
             c.setFillColor(C_BLACK)
-            c.setFont("Helvetica-Bold" if is_last else "Helvetica", 7.5)
+            c.setFont("Helvetica-Bold" if is_last else "Helvetica", 9.0)
             c.drawCentredString(col_x + TBL_WEEK_W / 2, txt_y, txt)
             col_x += TBL_WEEK_W
 
@@ -352,7 +350,7 @@ def _draw_table(
         c.setLineWidth(0.5)
         c.rect(col_x, row_bot, TBL_TOTAL_W, TBL_ROW_H, fill=1, stroke=1)
         c.setFillColor(C_BLACK)
-        c.setFont("Helvetica-Bold", 7.5)
+        c.setFont("Helvetica-Bold", 9.0)
         c.drawCentredString(col_x + TBL_TOTAL_W / 2, txt_y, ttx)
 
 
@@ -375,8 +373,8 @@ def generate_standard_wbr(
     # ── Title ─────────────────────────────────────────────────────────────
     # Forensic: Helvetica-Bold 20pt, black, RL baseline y=576, x=30
     c.setFillColor(C_BLACK)
-    c.setFont("Helvetica-Bold", 20)
-    c.drawString(30, 576, "Robotics Destination Dray Metrics \u2014 NA")
+    c.setFont("Helvetica-Bold", 24)
+    c.drawString(30, 580, "Robotics Destination Dray Metrics \u2014 NA")
 
     # ── Orange accent line ────────────────────────────────────────────────
     # Forensic: RL y=568, x=30-762, stroke #e8a838, lw=2.0
@@ -420,12 +418,10 @@ def generate_standard_wbr(
         date_str = report_date.strftime("%B %d, %Y").replace(" 0", " ")
 
     footer_left  = f"{date_str} {report_time}"
-    footer_right = "\u25aa Powered by Amazon Quick"
 
     c.setFillColor(C_GRAY)
     c.setFont("Helvetica", 7.5)
     c.drawString(30, 13, footer_left)
-    c.drawRightString(762, 13, footer_right)
 
     c.save()
     return buf.getvalue()
