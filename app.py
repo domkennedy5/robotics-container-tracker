@@ -3435,28 +3435,29 @@ with tab8:
     import urllib.parse
 
     # ── Week identification + due date ─────────────────────────────────────────
-    _wbr_today2 = datetime.now(_EASTERN).date()
-    _dsm2 = _wbr_today2.weekday()  # Mon=0
-    _next_mon2 = _wbr_today2 if _dsm2 == 0 else _wbr_today2 + timedelta(days=7 - _dsm2)
-    _days_until_wbr = (_next_mon2 - _wbr_today2).days
-    _wbr_sat  = _next_mon2 - timedelta(days=2)   # week-end Saturday
-    _wbr_sun  = _wbr_sat  - timedelta(days=6)    # week-start Sunday
-    _wbr_wnum = int(_wbr_sat.strftime("%V"))
+    # Anchor to LAST Monday — the current WBR always covers the week that just
+    # closed (Sun–Sat ending the prior Saturday). Flips to the next week only
+    # when the new submission Monday arrives.
+    _wbr_today2   = datetime.now(_EASTERN).date()
+    _dsm2         = _wbr_today2.weekday()              # Mon=0, Sun=6
+    _last_mon2    = _wbr_today2 - timedelta(days=_dsm2)  # most recent Monday (today if Mon)
+    _wbr_sat      = _last_mon2  - timedelta(days=2)    # week-end Saturday (prior Sat)
+    _wbr_sun      = _wbr_sat    - timedelta(days=6)    # week-start Sunday
+    _wbr_wnum     = int(_wbr_sat.strftime("%V"))
+    _next_mon2    = _last_mon2  + timedelta(days=7)    # next submission Monday
     _wbr_sun_str  = _wbr_sun.strftime("%m/%d/%Y")
     _wbr_sat_str  = _wbr_sat.strftime("%m/%d/%Y")
-    _wbr_mon_str  = _next_mon2.strftime("%m/%d/%Y")
+    _wbr_mon_str  = _last_mon2.strftime("%m/%d/%Y")    # submission Monday for current WBR
     _wbr_sun_nice = _wbr_sun.strftime("%b %d")
     _wbr_sat_nice = _wbr_sat.strftime("%b %d, %Y")
 
-    # Due date banner
-    if _days_until_wbr == 0:
+    # Due date banner — anchored to last Monday (submission day)
+    if _dsm2 == 0:
         st.error(f"🔴 **WBR W{_wbr_wnum} is DUE TODAY** by 2:00 PM CT — submit to `doc+destops-36@fusion.amazon.dev`")
-    elif _days_until_wbr == 1:
-        st.warning(f"🟡 **WBR W{_wbr_wnum}** due **TOMORROW ({_next_mon2.strftime('%b %d')})** by 2:00 PM CT — start your pulls today")
-    elif _days_until_wbr <= 3:
-        st.warning(f"🟡 **WBR W{_wbr_wnum}** due **{_next_mon2.strftime('%A, %b %d')}** by 2:00 PM CT — {_days_until_wbr} days away")
+    elif _dsm2 <= 2:
+        st.warning(f"🟡 **WBR W{_wbr_wnum}** was due **{_last_mon2.strftime('%b %d')}** — submit ASAP if not yet sent · Next WBR W{_wbr_wnum+1} due {_next_mon2.strftime('%b %d')}")
     else:
-        st.info(f"📅 **WBR W{_wbr_wnum}** due **{_next_mon2.strftime('%A, %b %d')}** by 2:00 PM CT — {_days_until_wbr} days away")
+        st.info(f"📅 **WBR W{_wbr_wnum}** was due {_last_mon2.strftime('%b %d')} · Next WBR **W{_wbr_wnum+1}** due **{_next_mon2.strftime('%A, %b %d')}** — {(_next_mon2 - _wbr_today2).days} days away")
 
     st.caption(f"Reporting week: **W{_wbr_wnum}** · {_wbr_sun_str} to {_wbr_sat_str} (Sun–Sat)")
 
