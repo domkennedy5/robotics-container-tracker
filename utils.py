@@ -174,6 +174,17 @@ TEMPLATE_SHEET_MAP = {
             "notes":           ["Notes"],
         },
     },
+    "DBM6": {
+        "sheet_type": "delivery_dbm6",
+        "fields": {
+            "container_id":    ["Container #", "Container"],
+            "port":            ["Port", "Arriving Port"],
+            "outgate_date":    ["Arrive Date", "Port Arrival Date"],
+            "delivery_date":   ["Act Del Date"],
+            "status":          ["Container returned to Port"],
+            "notes":           ["Notes"],
+        },
+    },
     "Storage ODY": {
         "sheet_type": "ody",
         "fields": {

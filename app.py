@@ -1090,7 +1090,7 @@ with tab4:
                   port, terminal, fc_building, delivery_date, status,
                   within_sla, empty_return_due, appointment_date,
                   accessorial_type, notes, source
-           FROM carrier_submissions ORDER BY submitted_at DESC LIMIT 1000""",
+           FROM carrier_submissions ORDER BY submitted_at DESC""",
         conn
     )
     conn.close()
