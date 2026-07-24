@@ -631,7 +631,8 @@ with tab1:
         )
     with col_b:
         requester = st.text_input("Your name (optional)", placeholder="e.g. Dominique")
-        st.caption("Searches across: Delivery Appts · Empty Returns · On Vessel · Canceled · Demurrage · Accessorials · IDs with or without check digit both work")
+        st.caption("Searches across all DBR sheets: Delivery, Empty Returns, On Vessel, Canceled, Demurrage, and Accessorials.")
+        st.caption("Container IDs work with or without the check digit (e.g. TCNU389902-4 and TCNU389902 both match).")
         search_btn = st.button("Search", type="primary", use_container_width=True)
 
     if search_btn:
