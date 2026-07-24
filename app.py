@@ -868,7 +868,7 @@ with tab2:
     # Bulk DBR File Upload
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     st.markdown("### 📤 Submit DBR Files")
-    st.caption("Upload one or more files in one shot — mix carriers, mix weeks. Carrier is auto-detected from the filename; override per file if needed.")
+    st.caption("Upload one or more files in one shot — mix carriers, mix weeks. Carrier and file date are auto-detected from the filename; override either if needed.")
 
     def _detect_carrier_from_name(fname: str) -> str:
         fn = fname.upper()
@@ -876,6 +876,20 @@ with tab2:
             if sc in fn: return sc
         if "HUDD" in fn or "HDDR" in fn: return "HDDR"
         return ""
+
+    def _detect_date_from_name(fname: str) -> date:
+        import re as _re
+        for pat in [r"(\d{1,2})[.\-](\d{1,2})[.\-](\d{2,4})", r"(\d{2})(\d{2})(\d{2,4})"]:
+            m = _re.search(pat, fname)
+            if m:
+                try:
+                    mo, dy, yr = int(m.group(1)), int(m.group(2)), int(m.group(3))
+                    if yr < 100: yr += 2000
+                    if 1 <= mo <= 12 and 1 <= dy <= 31:
+                        return date(yr, mo, dy)
+                except Exception:
+                    pass
+        return datetime.now(_EASTERN).date()
 
     _CARRIER_OPTS = ["", "ATMI", "ARVY", "HDDR", "RKNE", "TGHE"]
 
@@ -899,9 +913,13 @@ with tab2:
         st.caption(f"{len(bulk_files)} file(s) selected — confirm carrier for each:")
 
         _file_carrier_map = {}
+        _hdr1, _hdr2, _hdr3 = st.columns([4, 1, 2])
+        _hdr2.caption("Carrier")
+        _hdr3.caption("File date — which day is this data from?")
         for _fi, _uf in enumerate(bulk_files):
-            _det = _detect_carrier_from_name(_uf.name)
-            _hd1, _hd2 = st.columns([4, 1])
+            _det      = _detect_carrier_from_name(_uf.name)
+            _det_date = _detect_date_from_name(_uf.name)
+            _hd1, _hd2, _hd3 = st.columns([4, 1, 2])
             with _hd1:
                 st.markdown(f"&nbsp;&nbsp;📄 `{_uf.name}`")
             with _hd2:
@@ -912,16 +930,23 @@ with tab2:
                     key=f"bulk_c_{_fi}",
                     label_visibility="collapsed",
                 )
-            _file_carrier_map[_fi] = (_uf, _chosen)
+            with _hd3:
+                _file_date = st.date_input(
+                    "File date",
+                    value=_det_date,
+                    key=f"bulk_d_{_fi}",
+                    label_visibility="collapsed",
+                )
+            _file_carrier_map[_fi] = (_uf, _chosen, _file_date)
 
-        _unassigned = [_uf.name for _, (_uf, _c) in _file_carrier_map.items() if not _c]
+        _unassigned = [_uf.name for _, (_uf, _c, _fd) in _file_carrier_map.items() if not _c]
         if _unassigned:
             st.warning(f"Assign carrier for: {', '.join(_unassigned)}")
         else:
             # Parse all files, group by carrier
             _all_parsed = {}
             _parse_errs = []
-            for _fi, (_uf, _carrier) in _file_carrier_map.items():
+            for _fi, (_uf, _carrier, _file_date) in _file_carrier_map.items():
                 _ck = f"bulk_{_uf.name}_{_uf.size}"
                 if _ck not in st.session_state:
                     st.session_state[_ck] = _uf.read()
@@ -961,10 +986,16 @@ with tab2:
                                 st.dataframe(_df_p, use_container_width=True, hide_index=True)
 
                 if st.button("✅ Confirm & Submit All", type="primary", key="bulk_submit_btn"):
-                    _now = datetime.now(_EASTERN).isoformat()
+                    _logged_at = datetime.now(_EASTERN).isoformat()
                     _conn = get_db()
                     _logged = 0
+                    # file date per carrier from per-file date pickers
+                    _carrier_file_dates = {}
+                    for _fi, (_uf, _carrier, _fdate) in _file_carrier_map.items():
+                        if _carrier:
+                            _carrier_file_dates.setdefault(_carrier, _fdate)
                     for _carrier, _sheets in _all_parsed.items():
+                        _fdate = _carrier_file_dates.get(_carrier, datetime.now(_EASTERN).date())
                         for _stype, _rows in _sheets.items():
                             for _row in _rows:
                                 _conn.execute(
@@ -975,7 +1006,7 @@ with tab2:
                                         empty_return_due, appointment_date, accessorial_type,
                                         notes, source_file, source)
                                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                                    (_now, _carrier, _row["container_id"], _stype,
+                                    (_fdate.isoformat(), _carrier, _row["container_id"], _stype,
                                      _row.get("port"), _row.get("terminal"), _row.get("fc_building"),
                                      _row.get("flexi_id"), _row.get("outgate_date"),
                                      _row.get("delivery_date"), _row.get("status"),
@@ -985,10 +1016,10 @@ with tab2:
                                      _row.get("_src"), "web")
                                 )
                                 _logged += 1
-                        _wk = (datetime.now(_EASTERN).date() - timedelta(days=datetime.now(_EASTERN).date().weekday())).isoformat()
+                        _wk = (_fdate - timedelta(days=_fdate.weekday())).isoformat()
                         _conn.execute(
                             "INSERT OR IGNORE INTO dbr_receipts (carrier, week_start, received_date, received_via, logged_at) VALUES (?,?,?,?,?)",
-                            (_carrier, _wk, datetime.now(_EASTERN).date().isoformat(), "portal", _now)
+                            (_carrier, _wk, _fdate.isoformat(), "portal", _logged_at)
                         )
                     _conn.commit()
                     _conn.close()
