@@ -534,6 +534,11 @@ with st.sidebar:
 
     st.divider()
 
+    if S3_ENABLED:
+        if st.button("🔄 Refresh data from S3", use_container_width=True, help="Re-download the latest database from S3"):
+            st.session_state.pop("s3_startup_done", None)
+            st.rerun()
+
     # ── Timezone-aware timestamp ───────────────────────────────────────────────
     _US_ZONES = [
         ("America/New_York",    "ET"),
