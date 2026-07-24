@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 
 _EASTERN = ZoneInfo("America/New_York")
 
+from streamlit_js_eval import streamlit_js_eval
 from utils import (
     normalize_container, containers_match,
     parse_container_list, parse_carrier_file,
@@ -390,7 +391,7 @@ def parse_inbound_loads_file(file_bytes: bytes) -> pd.DataFrame:
 
 def upsert_report(df: pd.DataFrame, table: str, key_col: str, source_file: str):
     """Delete existing rows for containers in this upload, then insert fresh."""
-    now = datetime.now().isoformat()
+    now = datetime.now(_EASTERN).isoformat()
     df = df.copy()
     df["source_file"] = source_file
     df["imported_at"]  = now
@@ -532,9 +533,82 @@ with st.sidebar:
         st.caption(f"Inbound Loads: {st.session_state.get('il_source','')}")
 
     st.divider()
-    st.caption("Container Tracker v1.2")
-    if S3_ENABLED:
-        st.caption("S3 sync active")
+
+    # ── Timezone-aware timestamp ───────────────────────────────────────────────
+    _US_ZONES = [
+        ("America/New_York",    "ET"),
+        ("America/Chicago",     "CT"),
+        ("America/Denver",      "MT"),
+        ("America/Los_Angeles", "PT"),
+    ]
+    _US_IANA = [tz for tz, _ in _US_ZONES]
+
+    # Detect browser timezone via JS (returns None on first render, resolves on next)
+    _tz_raw = streamlit_js_eval(
+        js_expressions="Intl.DateTimeFormat().resolvedOptions().timeZone",
+        key="user_tz_detect"
+    )
+    if _tz_raw and _tz_raw != st.session_state.get("_user_tz"):
+        st.session_state["_user_tz"] = _tz_raw
+    _user_tz = st.session_state.get("_user_tz", "America/New_York")
+
+    # Determine primary US zone (or flag as non-US)
+    _primary_tz, _primary_lbl = next(
+        ((tz, lbl) for tz, lbl in _US_ZONES if tz == _user_tz),
+        ("America/New_York", "ET")   # fallback if non-US or unresolved
+    )
+    _non_us = _user_tz not in _US_IANA
+
+    _now_utc = datetime.now(ZoneInfo("UTC"))
+    _pdt = _now_utc.astimezone(ZoneInfo(_primary_tz))
+
+    # Format: "Thursday, July 24, 2026  10:30 PM ET"
+    _fmt_date = f"{_pdt.strftime('%A, %B')} {_pdt.day}, {_pdt.year}"
+    _fmt_time = _pdt.strftime("%I:%M %p").lstrip("0")
+    _primary_line = f"{_fmt_date}  {_fmt_time} **{_primary_lbl}**"
+
+    # Reference zones (the 3 that aren't primary)
+    _ref_parts = []
+    for tz, lbl in _US_ZONES:
+        if tz == _primary_tz:
+            continue
+        _rdt = _now_utc.astimezone(ZoneInfo(tz))
+        _ref_parts.append(f"{_rdt.strftime('%I:%M %p').lstrip('0')} {lbl}")
+    _ref_line = "  ·  ".join(_ref_parts)
+
+    # Non-US local time note
+    _local_note = ""
+    if _non_us:
+        _ldt = _now_utc.astimezone(ZoneInfo(_user_tz))
+        _local_note = f"\nLocal: {_ldt.strftime('%I:%M %p').lstrip('0')} ({_user_tz})"
+
+    # Data last updated — most recent submission in DB
+    try:
+        _ts_conn = get_db()
+        _last_sub = _ts_conn.execute("SELECT MAX(submitted_at) FROM carrier_submissions").fetchone()[0]
+        _ts_conn.close()
+        if _last_sub:
+            _ldt_raw = datetime.fromisoformat(str(_last_sub))
+            if _ldt_raw.tzinfo is None:
+                _ldt_raw = _ldt_raw.replace(tzinfo=ZoneInfo("UTC"))
+            _ldt_local = _ldt_raw.astimezone(ZoneInfo(_primary_tz))
+            _data_updated = (
+                f"{_ldt_local.strftime('%b')} {_ldt_local.day}, "
+                f"{_ldt_local.strftime('%Y')}  "
+                f"{_ldt_local.strftime('%I:%M %p').lstrip('0')} {_primary_lbl}"
+            )
+        else:
+            _data_updated = "—"
+    except Exception:
+        _data_updated = "—"
+
+    st.markdown(
+        f"🕐 {_primary_line}  \n"
+        f"<span style=\'font-size:0.78em;color:#888\'>{_ref_line}{_local_note}</span>",
+        unsafe_allow_html=True
+    )
+    st.caption(f"📦 Data last updated: {_data_updated}")
+    st.caption("Container Tracker v1.2" + (" · S3 sync active" if S3_ENABLED else ""))
 
 # ── tabs ───────────────────────────────────────────────────────────────────────
 st.title("Robotics Container Tracker")
@@ -571,7 +645,7 @@ with tab1:
 
             db_write(
                 "INSERT INTO lookup_log (searched_at, requester, container_ids, found_count, not_found_count) VALUES (?,?,?,?,?)",
-                (datetime.now().isoformat(), requester or "anonymous",
+                (datetime.now(_EASTERN).isoformat(), requester or "anonymous",
                  "\n".join(query_ids), len(query_ids) - len(not_found), len(not_found))
             )
 
@@ -719,7 +793,7 @@ with tab2:
     st.markdown("### 📋 DBR Receipt Tracker")
     st.caption("Track whether each carrier has submitted their weekly DBR. Use the week selector to navigate; missing submissions are flagged automatically.")
 
-    _today_rd  = date.today()
+    _today_rd  = datetime.now(_EASTERN).date()
     _this_mon  = _today_rd - timedelta(days=_today_rd.weekday())
     _wk_input  = st.date_input(
         "Week (select any day)", value=_this_mon, key="receipt_wk_sel",
@@ -953,17 +1027,17 @@ with tab2:
                 st.error("Paste at least one container ID.")
             else:
                 _mids = parse_container_list(_m_ids_text)
-                _mn   = datetime.now().isoformat()
+                _mn   = datetime.now(_EASTERN).isoformat()
                 _mc   = get_db()
                 for _cid in _mids:
                     _mc.execute(
                         "INSERT INTO carrier_submissions (submitted_at, carrier_name, container_id, terminal, status, notes, source) VALUES (?,?,?,?,?,?,?)",
                         (_mn, _m_carrier, normalize_container(_cid), _m_terminal.strip() or None, _m_status, _m_notes.strip() or None, "manual")
                     )
-                _mwk = (date.today() - timedelta(days=date.today().weekday())).isoformat()
+                _mwk = (datetime.now(_EASTERN).date() - timedelta(days=datetime.now(_EASTERN).date().weekday())).isoformat()
                 _mc.execute(
                     "INSERT OR IGNORE INTO dbr_receipts (carrier, week_start, received_date, received_via, logged_at) VALUES (?,?,?,?,?)",
-                    (_m_carrier, _mwk, date.today().isoformat(), "manual", _mn)
+                    (_m_carrier, _mwk, datetime.now(_EASTERN).date().isoformat(), "manual", _mn)
                 )
                 _mc.commit(); _mc.close()
                 if S3_ENABLED:
@@ -3259,7 +3333,7 @@ with tab7:
                     if st.button(
                         f"Import {len(_new_rows)} containers", type="primary", key="imp_go"
                     ):
-                        _now = datetime.now().isoformat()
+                        _now = datetime.now(_EASTERN).isoformat()
                         _icon = get_db()
                         _icon.executemany(
                             """INSERT INTO delivery_plan
