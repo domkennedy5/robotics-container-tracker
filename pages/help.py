@@ -47,8 +47,10 @@ steps = [
         "- **OBLT** — Export milestone events (AV/OA/VD/RD) for the same containers. "
         "Save as `OBLT WK##.xlsx`.\n"
         "- **Inbound Loads Report** — Run from the Reporting Portal as of Monday morning. "
-        "This contains PO Promised Date and Actual Arrival for OTP scoring.\n\n"
-        "The WBR Generator tab shows exact date ranges for the current week automatically — "
+        "This contains PO Promised Date and Actual Arrival for OTP scoring.\n"
+        "- **Import Shipment Status** *(optional)* — Run from Reporting Portal → Import Shipment Status. "
+        "Provides EDI tracking dates and vessel/ETA data that auto-populates the Enhanced WBR forward look table.\n\n"
+        "The WBR Generator tab shows exact date ranges and pull steps for the current week automatically — "
         "expand each **How to pull** instruction before going to the source system."
     ),
     (
@@ -62,7 +64,9 @@ steps = [
         "5. **Left column — Standard WBR:** Download `GLS_Robotics_YYYY-M-D.pdf`, edit the bridge, "
         "click **📧 Open in Email Client** to send to Mitch. Deadline: **2:00 PM CT**.\n"
         "6. **Right column — Enhanced WBR:** Carrier scorecard by AV→OA and OA→Del, root cause notes, "
-        "forward look — for the internal Robotics team meeting."
+        "forward look — for the internal Robotics team meeting.\n\n"
+        "If Import Shipment Status is uploaded, the forward look table auto-populates with live vessel names, "
+        "voyage numbers, and FinalDestETAs for all containers arriving in the next 14 days."
     ),
     (
         "3. Load the weekly DBR",
@@ -165,11 +169,12 @@ The tab auto-detects which week you're working on and shows a live due date coun
 A translucent slide preview updates as you upload each file, giving you a visual progress indicator before you generate.
 
 **What you need:**
-| File | Source | Notes |
-|---|---|---|
-| GVT Data (.xlsx) | Global Visibility Tool | Robotics containers, filtered to reporting week |
-| OBLT Data (.xlsx) | Ocean Bridge Logistics Tracking | Milestone events for the same containers |
-| Inbound Loads (.xlsx) | Reporting Portal → Amazon Robotics | Run Monday morning before generating |
+| File | Required | Source | Notes |
+|---|---|---|---|
+| GVT Data (.xlsx) | ✅ | Global Visibility Tool | Robotics containers, filtered to reporting week |
+| OBLT Data (.xlsx) | ✅ | Ocean Bridge Logistics Tracking | Milestone events for the same containers |
+| Inbound Loads (.xlsx) | ✅ | Reporting Portal → Amazon Robotics | Run Monday morning before generating |
+| Import Shipment Status (.xlsx) | Optional | Reporting Portal → Import Shipment Status | Enriches Enhanced WBR forward look with live vessel/ETA data |
 
 **To use:**
 1. Open the **How to pull** expanders — they show exact date ranges for the current week

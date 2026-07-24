@@ -3510,16 +3510,17 @@ with tab8:
     st.caption(f"Reporting week: **W{_wbr_wnum}** · {_wbr_sun_str} to {_wbr_sat_str} (Sun–Sat)")
 
     # ── Slide preview helper (called pre-generate and post-generate) ───────────
-    def _wbr_slide_preview(has_gvt, has_oblt, has_il, curr=None, prior=None):
-        n_ready = sum([has_gvt, has_oblt, has_il])
+    def _wbr_slide_preview(has_gvt, has_oblt, has_il, has_iss=False, curr=None, prior=None):
+        n_ready = sum([has_gvt, has_oblt, has_il])  # ISS is optional — doesn't gate generate
         overall_op = 0.12 + 0.88 * (n_ready / 3)
 
-        def _seg(label, done):
+        def _seg(label, done, optional=False):
             bg = "#22c55e" if done else "#1e293b"
             fg = "#000" if done else "#4b5563"
-            return f'<span style="background:{bg};color:{fg};padding:2px 7px;border-radius:3px;font-size:10px;margin:0 2px;">{label}</span>'
+            lbl = f"{label}{'*' if optional else ''}"
+            return f'<span style="background:{bg};color:{fg};padding:2px 7px;border-radius:3px;font-size:10px;margin:0 2px;">{lbl}</span>'
 
-        segs = _seg("GVT", has_gvt) + _seg("OBLT", has_oblt) + _seg("IL", has_il)
+        segs = _seg("GVT", has_gvt) + _seg("OBLT", has_oblt) + _seg("IL", has_il) + _seg("ISS", has_iss, optional=True)
 
         def _box(label, key, need_gvt, need_oblt, need_il, suffix="", sla=False, thresh=85):
             req = (not need_gvt or has_gvt) and (not need_oblt or has_oblt) and (not need_il or has_il)
@@ -3582,7 +3583,7 @@ with tab8:
         </div>"""
 
     # ── File uploaders ────────────────────────────────────────────────────────
-    wu1, wu2, wu3 = st.columns(3)
+    wu1, wu2, wu3, wu4 = st.columns(4)
     with wu1:
         with st.expander(f"ℹ️ How to pull GVT — W{_wbr_wnum} ({_wbr_sun_str}–{_wbr_sat_str})"):
             st.markdown(f"""**Global Visibility Tool (GVT) — W{_wbr_wnum} pull**
@@ -3617,6 +3618,18 @@ with tab8:
 - **Supplemental:** DBR Tracker (SharePoint → AGLRobotics) fills gaps for GF/BF deliveries""")
         wbr_il_file = st.file_uploader("Inbound Loads (.xlsx)", type=["xlsx"], key="wbr_il")
 
+    with wu4:
+        with st.expander(f"ℹ️ How to pull Import Shipment Status — W{_wbr_wnum} ({_wbr_mon_str})"):
+            st.markdown(f"""**Import Shipment Status — W{_wbr_wnum} pull**
+- Go to: Reporting Portal → Import Shipment Status → Amazon Robotics
+- Run as of **Monday morning {_wbr_mon_str}** (same time as Inbound Loads)
+- Download the Excel export — no filters needed, pull all active Robotics containers
+- Key columns used: `ContainerNo`, `EDIContainerAvailable`, `EDIContainerOut`, `EDIDelivered`, `VesselName`, `VoyageNo`, `FinalDestETA`
+- **Optional** — Generate works without this file, but the Enhanced WBR forward look will be richer with it
+- Provides: EDI-sourced tracking dates to fill OBLT gaps + vessel pipeline for next 2 weeks""")
+        wbr_iss_file = st.file_uploader("Import Shipment Status (.xlsx)", type=["xlsx"], key="wbr_iss",
+                                         help="Optional — enriches Enhanced WBR forward look with vessel/ETA data")
+
     # ── Report date ───────────────────────────────────────────────────────────
     # Auto-default to most recent Monday — WBR always submitted Monday morning
     _wbr_today = datetime.now(_EASTERN).date()
@@ -3647,6 +3660,7 @@ with tab8:
             has_gvt=wbr_gvt_file is not None,
             has_oblt=wbr_oblt_file is not None,
             has_il=wbr_il_file is not None,
+            has_iss=wbr_iss_file is not None,
             curr=_curr_preview,
             prior=_prior_preview,
         ),
@@ -3658,12 +3672,14 @@ with tab8:
         gvt_bytes  = wbr_gvt_file.read()
         oblt_bytes = wbr_oblt_file.read()
         il_bytes   = wbr_il_file.read()
+        iss_bytes  = wbr_iss_file.read() if wbr_iss_file else None
 
         with st.spinner("Parsing files and computing metrics..."):
             try:
                 gvt_df     = load_gvt(gvt_bytes)
                 oblt_df    = load_oblt(oblt_bytes)
                 inbound_df = load_inbound_loads(il_bytes)
+                iss_df     = parse_shipment_status_file(iss_bytes) if iss_bytes else pd.DataFrame()
 
                 week_num, year = guess_week(gvt_df["ready_date"])
                 if week_num is None:
@@ -3675,7 +3691,7 @@ with tab8:
 
                 # ── Data Preview ──────────────────────────────────────────────
                 with st.expander("📋 Data Preview — inspect raw files before generating", expanded=False):
-                    pv1, pv2, pv3 = st.tabs(["GVT", "OBLT", "Inbound Loads"])
+                    pv1, pv2, pv3, pv4 = st.tabs(["GVT", "OBLT", "Inbound Loads", "Import Shipment Status"])
                     pop_gvt = gvt_df[
                         gvt_df["ready_date"].notna() &
                         (gvt_df["ready_date"] >= wk_start) &
@@ -3711,6 +3727,19 @@ with tab8:
                             st.dataframe(il_pop[_il_cols].reset_index(drop=True), use_container_width=True, height=220)
                         _has_both = (il_pop["po_promised"].notna() & il_pop["actual_arrival"].notna()).sum() if len(il_pop) else 0
                         st.code(f"With PO Promised: {il_pop['po_promised'].notna().sum() if len(il_pop) else 0}   With Actual Arrival: {il_pop['actual_arrival'].notna().sum() if len(il_pop) else 0}   Both: {_has_both}")
+
+                    with pv4:
+                        if iss_df.empty:
+                            st.info("Upload Import Shipment Status file (4th uploader) to preview EDI data.")
+                        else:
+                            iss_pop = iss_df[iss_df["container_no"].isin(_pop_ctrs)] if "container_no" in iss_df.columns else pd.DataFrame()
+                            st.caption(f"Import Shipment Status — {len(iss_df):,} total rows | **{len(iss_pop)} matched to W{week_num}**")
+                            _iss_cols = [c for c in ["container_no","current_status","vessel_name","voyage_no","final_dest_eta","container_available","container_out","delivered","fc"] if c in iss_df.columns]
+                            if len(iss_pop):
+                                st.dataframe(iss_pop[_iss_cols].reset_index(drop=True), use_container_width=True, height=220)
+                            else:
+                                st.warning("No W{} containers matched in ISS. Verify you uploaded the right file.".format(week_num))
+                                st.dataframe(iss_df[_iss_cols].head(20), use_container_width=True, height=220)
 
                 # ── Compute metrics ───────────────────────────────────────────
                 curr_metrics = compute_metrics(
@@ -3805,7 +3834,18 @@ with tab8:
                     else:
                         st.success(f"No duplicate container IDs in GVT population")
 
-                    # Check 3: OBLT has any AV timestamps AFTER OA timestamps (data quality)
+                    # Check 3a: ISS coverage (if provided)
+                    if not iss_df.empty and "container_no" in iss_df.columns:
+                        iss_pop_v = iss_df[iss_df["container_no"].isin(_pop_ctrs)]
+                        iss_cov = len(iss_pop_v) / n_pop * 100 if n_pop else 0
+                        if iss_cov < 30:
+                            st.warning(f"⚠️ ISS only matches {iss_cov:.0f}% of W{week_num} containers. Verify you uploaded the correct Import Shipment Status file.")
+                        else:
+                            st.success(f"ISS coverage: {iss_cov:.0f}% ({len(iss_pop_v)}/{n_pop} containers)")
+                    else:
+                        st.info("ℹ️ Import Shipment Status not uploaded — forward look will show placeholder data. Upload the 4th file to enrich the Enhanced WBR.")
+
+                    # Check 3b: OBLT has any AV timestamps AFTER OA timestamps (data quality)
                     _av_ts = dict(_latest(oblt_df, "AV"))
                     _oa_ts = dict(_latest(oblt_df, "OA"))
                     _bad_ts = [(c, _av_ts[c], _oa_ts[c]) for c in set(_av_ts) & set(_oa_ts)
