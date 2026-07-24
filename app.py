@@ -1794,6 +1794,87 @@ def _config_write(sql: str, params: tuple):
     conn.execute(sql, params)
     conn.commit(); conn.close()
 
+
+# ── DBR Tracker historical importer ──────────────────────────────────────────
+def _parse_dbr_tracker(file_bytes: bytes) -> tuple:
+    """Parse ToteASERs Robotics DBR Tracker.xlsx -> list of delivery_plan dicts.
+    Returns (rows: list[dict], errors: list[str]).
+    """
+    import io as _bio
+    wb = openpyxl.load_workbook(_bio.BytesIO(file_bytes), data_only=True)
+
+    if "Delivery Plan" not in wb.sheetnames:
+        return [], ["File missing 'Delivery Plan' sheet — is this the DBR Tracker?"]
+
+    # Build container -> (product_type, qty) from Consolidated sheet
+    prod_lookup: dict = {}
+    if "Consolidated" in wb.sheetnames:
+        for i, row in enumerate(wb["Consolidated"].iter_rows(values_only=True)):
+            if i == 0:
+                continue
+            cid = row[2]
+            if cid:
+                prod_lookup[str(cid).strip()] = (
+                    str(row[8]).strip() if row[8] else None,
+                    int(row[9]) if row[9] else None,
+                )
+
+    def _scac(carrier_str):
+        # "ARVY (Arrive)" -> "ARVY"
+        if not carrier_str:
+            return None
+        return str(carrier_str).strip().split()[0].upper()
+
+    STATUS_MAP = {
+        "Delivered": "delivered",
+        "At Yard":   "at_yard",
+        "Pending":   "planned",
+    }
+
+    rows, errors = [], []
+    for i, row in enumerate(wb["Delivery Plan"].iter_rows(values_only=True)):
+        if i <= 1:
+            continue  # row 0 = grouping label, row 1 = headers
+        container = row[3]
+        if not container:
+            continue
+        container = str(container).strip()
+        fc_dest  = row[7]
+        fc_sched = row[8]
+        if not fc_dest or not fc_sched:
+            errors.append(f"Row {i+1}: missing FC Destination or FC Sched Del for {container} — skipped")
+            continue
+        # Resolve appt_date
+        if hasattr(fc_sched, "date"):
+            appt_date = fc_sched.date()
+        else:
+            try:
+                appt_date = datetime.strptime(str(fc_sched), "%Y-%m-%d").date()
+            except Exception:
+                errors.append(f"Row {i+1}: unparseable date '{fc_sched}' for {container} — skipped")
+                continue
+        # Notes: merge Notes field + Live/Drop
+        note_parts = []
+        if row[12]:
+            note_parts.append(str(row[12]).strip())
+        if row[14]:
+            note_parts.append(f"[{str(row[14]).strip()}]")
+        prod_type, qty = prod_lookup.get(container, (None, None))
+        rows.append({
+            "week_start":   _plan_week_start(appt_date).isoformat(),
+            "appt_date":    appt_date.isoformat(),
+            "appt_time":    None,
+            "slot_num":     None,
+            "container_id": container,
+            "carrier":      _scac(row[1]),
+            "site_code":    str(fc_dest).strip().upper(),
+            "product_type": prod_type,
+            "qty":          qty,
+            "notes":        " | ".join(note_parts) if note_parts else None,
+            "status":       STATUS_MAP.get(str(row[11]).strip() if row[11] else "", "planned"),
+        })
+    return rows, errors
+
 # ── request parser ────────────────────────────────────────────────────────────
 import re as _re
 
@@ -2280,9 +2361,9 @@ with tab7:
 
     st.divider()
 
-    _tp1, _tp2, _tp3, _tp4, _tp5, _tp6 = st.tabs([
+    _tp1, _tp2, _tp3, _tp4, _tp5, _tp6, _tp7 = st.tabs([
         "Plan Builder", "All Sites", "By Site",
-        "Carrier View", "WoW / History", "Config",
+        "Carrier View", "WoW / History", "Config", "Import History",
     ])
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -2772,3 +2853,110 @@ with tab7:
                         (_cm_site,_cm_scac,_cm_ctc.strip(),_cm_eml.strip(),
                          _cm_pt,float(_cm_alloc),int(_cm_act),_cm_notes.strip()))
                     st.success(f"Saved {_cm_site} ↔ {_cm_scac}."); st.rerun()
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # IMPORT HISTORY
+    # ══════════════════════════════════════════════════════════════════════════
+    with _tp7:
+        st.subheader("Import Historical Delivery Data")
+        st.caption(
+            "Upload the **ToteASERs Robotics DBR Tracker.xlsx** to bulk-load container history. "
+            "Duplicate containers are skipped automatically."
+        )
+
+        _imp_file = st.file_uploader("DBR Tracker (.xlsx)", type=["xlsx"], key="imp_dbr_upload")
+
+        if _imp_file:
+            _imp_bytes = _imp_file.read()
+            _imp_rows, _imp_errors = _parse_dbr_tracker(_imp_bytes)
+
+            if not _imp_rows:
+                st.error("No rows parsed — confirm this is the DBR Tracker file.")
+                for _e in _imp_errors[:5]:
+                    st.warning(_e)
+            else:
+                # Deduplication
+                _con = get_db()
+                _existing_ids = set(
+                    r[0] for r in _con.execute(
+                        "SELECT DISTINCT container_id FROM delivery_plan"
+                    ).fetchall()
+                )
+                _con.close()
+                _new_rows = [r for r in _imp_rows if r["container_id"] not in _existing_ids]
+                _dup_rows = [r for r in _imp_rows if r["container_id"] in _existing_ids]
+
+                # Metrics
+                _im1, _im2, _im3, _im4 = st.columns(4)
+                _im1.metric("In file",        len(_imp_rows))
+                _im2.metric("New (to import)", len(_new_rows))
+                _im3.metric("Already in DB",   len(_dup_rows))
+                _im4.metric("Parse warnings",  len(_imp_errors))
+
+                if _imp_errors:
+                    with st.expander(f"Parse warnings ({len(_imp_errors)})"):
+                        for _e in _imp_errors[:30]:
+                            st.caption(_e)
+
+                if _new_rows:
+                    _prev_df = pd.DataFrame(_new_rows)
+
+                    # Breakdown tables
+                    _ps1, _ps2, _ps3 = st.columns(3)
+                    with _ps1:
+                        st.caption("By Site")
+                        st.dataframe(
+                            _prev_df.groupby("site_code").size().reset_index(name="containers"),
+                            hide_index=True, use_container_width=True,
+                        )
+                    with _ps2:
+                        st.caption("By Carrier")
+                        st.dataframe(
+                            _prev_df.groupby("carrier").size().reset_index(name="containers"),
+                            hide_index=True, use_container_width=True,
+                        )
+                    with _ps3:
+                        st.caption("By Status")
+                        st.dataframe(
+                            _prev_df.groupby("status").size().reset_index(name="containers"),
+                            hide_index=True, use_container_width=True,
+                        )
+
+                    _date_range = sorted(_prev_df["appt_date"].dropna().tolist())
+                    if _date_range:
+                        st.caption(f"Date range: {_date_range[0]} through {_date_range[-1]}")
+
+                    with st.expander("Preview first 25 rows"):
+                        st.dataframe(
+                            _prev_df[[
+                                "container_id","carrier","site_code","appt_date",
+                                "product_type","qty","status","notes"
+                            ]].head(25),
+                            hide_index=True, use_container_width=True,
+                        )
+
+                    if st.button(
+                        f"Import {len(_new_rows)} containers", type="primary", key="imp_go"
+                    ):
+                        _now = datetime.now().isoformat()
+                        _icon = get_db()
+                        _icon.executemany(
+                            """INSERT INTO delivery_plan
+                               (week_start,appt_date,appt_time,slot_num,container_id,carrier,
+                                site_code,product_type,qty,notes,status,created_at,updated_at)
+                               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                            [(r["week_start"],r["appt_date"],r["appt_time"],r["slot_num"],
+                              r["container_id"],r["carrier"],r["site_code"],r["product_type"],
+                              r["qty"],r["notes"],r["status"],_now,_now)
+                             for r in _new_rows],
+                        )
+                        _icon.commit(); _icon.close()
+                        if S3_ENABLED:
+                            data_sync.push_db_to_s3(AWS_KEY, AWS_SECRET, AWS_REGION, S3_BUCKET)
+                        st.success(
+                            f"Imported {len(_new_rows)} containers. "
+                            "WoW / History tab is now populated with historical data."
+                        )
+                        st.rerun()
+                else:
+                    st.info("All containers in this file already exist in the database — nothing new to import.")
