@@ -1805,7 +1805,7 @@ def _parse_site_request(text: str) -> list[dict]:
     results = []
     lines = text.strip().splitlines()
     mat_pattern = _re.compile(
-        r"([A-Z][A-Z ,./&-]+?)[\s:]+(\d+)\s*(TL|container|containers|TLs?)?\s*(.*)$",
+        r"([A-Z][A-Z ,./&-]+?)[\s:]+(\d+)\s*(TLs?|containers?)?\s*(.*)$",
         _re.IGNORECASE
     )
     for line in lines:
@@ -2070,32 +2070,79 @@ def _plan_row_table(df: pd.DataFrame, cols: list) -> pd.DataFrame:
 def _status_editor(df: pd.DataFrame, key_prefix: str):
     if df.empty:
         return
+    _sites_e   = _get_sites_df()
+    _carriers_e = _get_carriers_df()
+    _site_opts  = _sites_e["site_code"].tolist() if not _sites_e.empty else []
+    _scac_opts  = _carriers_e["scac"].tolist() if not _carriers_e.empty else list(_SCAC_COLOR.keys())
+
     ids    = df["id"].tolist()
     labels = [
         f"{r.container_id}  |  {getattr(r,'site_code','') or '?'}  |  {r.carrier}  |  "
-        f"{r.appt_time}  {_STATUS_BADGE.get(r.status, r.status)}"
+        f"{r.appt_time}  ({_STATUS_BADGE.get(r.status, r.status)})"
         for r in df.itertuples()
     ]
-    with st.expander("Edit / Update Status", expanded=False):
-        sel    = st.selectbox("Container", labels, key=f"{key_prefix}_sel")
+    with st.expander("Edit Entry", expanded=False):
+        sel    = st.selectbox("Select container", labels, key=f"{key_prefix}_sel")
         row_id = ids[labels.index(sel)]
-        ec1, ec2, ec3 = st.columns([2,2,1])
-        with ec1:
-            new_stat  = st.selectbox("Status", _PLAN_STATUSES, key=f"{key_prefix}_stat")
-        with ec2:
-            new_notes = st.text_input("Notes override", key=f"{key_prefix}_notes", placeholder="Optional")
-        with ec3:
-            del_flag = st.checkbox("Delete", key=f"{key_prefix}_del")
-        if st.button("Apply", key=f"{key_prefix}_apply", type="primary"):
+        sel_row = df[df["id"] == row_id].iloc[0]
+
+        ef1, ef2, ef3 = st.columns(3)
+        with ef1:
+            st.caption("**Schedule**")
+            # date
+            try:
+                _cur_date = date.fromisoformat(str(sel_row["appt_date"])) if pd.notna(sel_row.get("appt_date")) else date.today()
+            except Exception:
+                _cur_date = date.today()
+            new_date = st.date_input("Delivery date", value=_cur_date, key=f"{key_prefix}_date")
+            # time
+            _t_opts = [t for t, _ in _PLAN_SLOTS]
+            _cur_time = str(sel_row.get("appt_time", "8:30 AM") or "8:30 AM")
+            _t_idx = _t_opts.index(_cur_time) if _cur_time in _t_opts else 1
+            new_time = st.selectbox("Appointment time", _t_opts, index=_t_idx, key=f"{key_prefix}_time")
+            new_slot = dict(_PLAN_SLOTS)[new_time]
+
+        with ef2:
+            st.caption("**Assignment**")
+            _cur_site = str(sel_row.get("site_code") or "")
+            _s_idx = _site_opts.index(_cur_site) if _cur_site in _site_opts else 0
+            new_site = st.selectbox("Site", _site_opts or ["RIC6"], index=_s_idx, key=f"{key_prefix}_site")
+            _cur_scac = str(sel_row.get("carrier") or "")
+            _c_idx = _scac_opts.index(_cur_scac) if _cur_scac in _scac_opts else 0
+            new_scac = st.selectbox("Carrier", _scac_opts, index=_c_idx, key=f"{key_prefix}_carrier")
+            _prod_opts = _PLAN_PRODUCTS
+            _cur_prod = str(sel_row.get("product_type") or _prod_opts[0])
+            _p_idx = _prod_opts.index(_cur_prod) if _cur_prod in _prod_opts else 0
+            new_prod = st.selectbox("Product type", _prod_opts, index=_p_idx, key=f"{key_prefix}_prod")
+
+        with ef3:
+            st.caption("**Status & Notes**")
+            _cur_stat = str(sel_row.get("status") or "SCHEDULED")
+            _st_idx = _PLAN_STATUSES.index(_cur_stat) if _cur_stat in _PLAN_STATUSES else 0
+            new_stat  = st.selectbox("Status", _PLAN_STATUSES, index=_st_idx, key=f"{key_prefix}_stat")
+            _cur_qty  = int(sel_row.get("qty") or 1190)
+            new_qty   = st.number_input("Qty", value=_cur_qty, step=10, min_value=0, key=f"{key_prefix}_qty")
+            new_notes = st.text_input("Notes", value=str(sel_row.get("notes") or ""), key=f"{key_prefix}_notes")
+            del_flag  = st.checkbox("Delete this entry", key=f"{key_prefix}_del")
+
+        if st.button("Save changes", key=f"{key_prefix}_apply", type="primary"):
             if del_flag:
                 _delete_plan_entry(row_id)
-                st.success("Deleted.")
+                st.success("Entry deleted.")
             else:
-                kwargs = {"status": new_stat}
-                if new_notes.strip():
-                    kwargs["notes"] = new_notes.strip()
-                _update_plan_entry(row_id, **kwargs)
-                st.success(f"Updated → {new_stat}")
+                _update_plan_entry(row_id,
+                    appt_date=new_date.isoformat(),
+                    appt_time=new_time,
+                    slot_num=new_slot,
+                    site_code=new_site,
+                    carrier=new_scac,
+                    product_type=new_prod,
+                    status=new_stat,
+                    qty=int(new_qty),
+                    notes=new_notes.strip(),
+                    week_start=_plan_week_start(new_date).isoformat(),
+                )
+                st.success(f"Saved — {sel_row['container_id']} updated.")
             st.rerun()
 
 def _week_grid(plan_df: pd.DataFrame, week_days: list):
@@ -2473,6 +2520,35 @@ with tab7:
                 st.caption(f"**{len(_sp)} pending**")
                 st.dataframe(_plan_row_table(_sp, ["Container #","Carrier","Product","Qty","Notes"]),
                              use_container_width=True, hide_index=True)
+            # ── Daily notification ────────────────────────────────────────────────
+            with st.expander("Daily Notification — Copy for Slack", expanded=False):
+                st.caption("Generates tomorrow's delivery list for this site, ready to paste into Slack.")
+                _notif_date = st.date_input(
+                    "Delivery date to notify",
+                    value=_today + timedelta(days=1),
+                    key=f"notif_date_{_sel_site}"
+                )
+                _notif_df = _pdf[
+                    (_pdf["site_code"] == _sel_site) &
+                    (_pdf["appt_date"] == _notif_date.isoformat()) &
+                    (_pdf["status"].isin(["SCHEDULED", "HOLD"]))
+                ].sort_values("slot_num")
+
+                if _notif_df.empty:
+                    st.info(f"No scheduled deliveries for {_sel_site} on {_notif_date.strftime('%b %d')}.")
+                else:
+                    _day_label = _notif_date.strftime("%A, %B %d")
+                    lines = [f"*{_sel_site} — Scheduled Deliveries for {_day_label}*", ""]
+                    for r in _notif_df.itertuples():
+                        _cn = _get_carriers_df()
+                        _cname_row = _cn[_cn["scac"] == r.carrier]
+                        _cname_n   = _cname_row["carrier_name"].iloc[0] if not _cname_row.empty else r.carrier
+                        lines.append(f"{r.appt_time}  |  {r.container_id}  |  {_cname_n}  |  {r.product_type or ''}")
+                    lines.append("")
+                    lines.append(f"Total: {len(_notif_df)} container(s)")
+                    notif_text = "\n".join(lines)
+                    st.text_area("Copy this", value=notif_text, height=200, key=f"notif_txt_{_sel_site}")
+
             _status_editor(_sdf, f"site_{_sel_site}")
             if not _sdf.empty:
                 xl = _export_site_excel(_pdf, _sel_site, _ws)
