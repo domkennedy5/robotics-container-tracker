@@ -389,6 +389,12 @@ def migrate_db():
 
     conn.commit()
     conn.close()
+    # Push seeded data to S3 so every session gets it (no-op if S3 not configured)
+    if S3_ENABLED:
+        try:
+            data_sync.push_db_to_s3(AWS_KEY, AWS_SECRET, AWS_REGION, S3_BUCKET)
+        except Exception:
+            pass  # non-fatal
 
 migrate_db()
 
