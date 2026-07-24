@@ -3467,12 +3467,17 @@ with tab8:
         wbr_il_file = st.file_uploader("Inbound Loads (.xlsx)", type=["xlsx"], key="wbr_il")
 
     # ── Report date ───────────────────────────────────────────────────────────
+    # Auto-default to most recent Monday — WBR always submitted Monday morning
+    _wbr_today = datetime.now(_EASTERN).date()
+    _last_monday = _wbr_today - timedelta(days=_wbr_today.weekday())  # weekday(): Mon=0
     wd1, wd2 = st.columns([1, 3])
     with wd1:
         wbr_report_date = st.date_input(
-            "Report date (Monday submission)",
-            value=datetime.now(_EASTERN).date(),
+            "Report date",
+            value=_last_monday,
+            max_value=_wbr_today,
             key="wbr_report_date",
+            help="Defaults to most recent Monday. Adjust only if re-running a prior week.",
         )
 
     # ── Main block ────────────────────────────────────────────────────────────
