@@ -636,7 +636,7 @@ with st.sidebar:
 
 # ── tabs ───────────────────────────────────────────────────────────────────────
 st.title("Robotics Container Tracker")
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(["Container Lookup", "Carrier Submission", "Empty Returns", "Carrier Data", "Lane Costs", "Insights", "Planning", "WBR Generator"])
+tab8, tab7, tab6, tab1, tab2, tab4, tab3, tab5 = st.tabs(["WBR Generator", "Planning", "Insights", "Container Lookup", "Carrier Submission", "Carrier Data", "Empty Returns", "Lane Costs"])
 
 
 # ══════════════════════════════════════════════════════════════════════════════
