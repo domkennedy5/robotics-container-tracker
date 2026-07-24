@@ -246,6 +246,7 @@ def init_db():
             week_num       INTEGER NOT NULL,
             week_label     TEXT,
             week_start     TEXT,
+            week_end       TEXT,
             containers     INTEGER,
             av_oa_avg      REAL,
             av_oa_sla_pct  INTEGER,
@@ -356,6 +357,34 @@ def migrate_db():
         """)
     except sqlite3.OperationalError:
         pass
+
+    # ── wbr_results: auto-seed historical W19–W28 if not present ──────────────
+    # Uses INSERT OR IGNORE so existing rows (user-generated) are never overwritten.
+    _hist = [
+        (2026, 19, "W19", "2026-05-03", "2026-05-09",  69,  8.2, 61, 29, 5.0, 48, 13, 100, 45, None),
+        (2026, 20, "W20", "2026-05-10", "2026-05-16",  92,  8.2, 49, 22, 3.5, 61, 11, 100, 42,   58),
+        (2026, 21, "W21", "2026-05-17", "2026-05-23",  12,  7.8, 17, 11, 2.2, 73,  7, 100, 48,   85),
+        (2026, 22, "W22", "2026-05-24", "2026-05-30", 134,  6.2, 60, 15, 4.1, 50,  8, 100, 44,   58),
+        (2026, 23, "W23", "2026-05-31", "2026-06-06",  94,  4.1, 56,  8, 2.9, 52,  5, 100, 53,   85),
+        (2026, 24, "W24", "2026-06-07", "2026-06-13",  89,  2.0, 68,  3, 0.5,100,  1, 100, 44,   97),
+        (2026, 25, "W25", "2026-06-14", "2026-06-20", 101,  1.1,100,  1, 2.9, 71, 10, 100, 45,   45),
+        (2026, 26, "W26", "2026-06-21", "2026-06-27",  83,  2.9, 70,  4, 7.0, 31, 14, 100, 41,   66),
+        (2026, 27, "W27", "2026-06-28", "2026-07-04",  60,  1.7,100,  3, 4.8, 28,  9, 100, 36,   48),
+        (2026, 28, "W28", "2026-07-05", "2026-07-11",  32,  0.8,100,  2, 3.1, 38,  5, 100, 55,   46),
+    ]
+    for row in _hist:
+        try:
+            conn.execute(
+                "INSERT OR IGNORE INTO wbr_results "
+                "(year,week_num,week_label,week_start,week_end,containers,"
+                "av_oa_avg,av_oa_sla_pct,av_oa_p90,"
+                "oa_del_avg,oa_del_sla_pct,oa_del_p90,"
+                "empty_term_pct,e2e_avg,otp_pct,generated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'seed')",
+                row
+            )
+        except Exception:
+            pass  # table may not exist yet on very first run; migrate_db re-runs after init_db
 
     conn.commit()
     conn.close()
