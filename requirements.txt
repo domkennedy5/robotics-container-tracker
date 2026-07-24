@@ -7,3 +7,4 @@ msal>=1.28
 requests>=2.31
 tzdata
 streamlit-js-eval
+reportlab>=4.0

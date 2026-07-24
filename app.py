@@ -240,6 +240,25 @@ def init_db():
             logged_at     TEXT NOT NULL,
             UNIQUE(carrier, week_start, received_date)
         );
+        CREATE TABLE IF NOT EXISTS wbr_results (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            year           INTEGER NOT NULL,
+            week_num       INTEGER NOT NULL,
+            week_label     TEXT,
+            week_start     TEXT,
+            containers     INTEGER,
+            av_oa_avg      REAL,
+            av_oa_sla_pct  INTEGER,
+            av_oa_p90      INTEGER,
+            oa_del_avg     REAL,
+            oa_del_sla_pct INTEGER,
+            oa_del_p90     INTEGER,
+            empty_term_pct INTEGER,
+            e2e_avg        INTEGER,
+            otp_pct        INTEGER,
+            generated_at   TEXT,
+            UNIQUE(year, week_num)
+        );
     """)
     conn.commit()
     conn.close()
@@ -617,7 +636,7 @@ with st.sidebar:
 
 # ── tabs ───────────────────────────────────────────────────────────────────────
 st.title("Robotics Container Tracker")
-tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["Container Lookup", "Carrier Submission", "Empty Returns", "Carrier Data", "Lane Costs", "Insights", "Planning"])
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(["Container Lookup", "Carrier Submission", "Empty Returns", "Carrier Data", "Lane Costs", "Insights", "Planning", "WBR Generator"])
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -3397,3 +3416,175 @@ with tab7:
                 else:
                     st.info("All containers in this file are already in the database — nothing new to import.")
 
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 8 — WBR Generator
+# ══════════════════════════════════════════════════════════════════════════════
+with tab8:
+    st.subheader("WBR Slide Generator")
+    st.caption("Upload this week's GVT, OBLT, and Inbound Loads files. Prior weeks are carried forward from the database.")
+
+    from wbr_engine import (
+        load_gvt, load_oblt, load_inbound_loads,
+        compute_metrics, compute_totals,
+        week_bounds, guess_week,
+        save_week_to_db, load_weeks_from_db,
+    )
+    from wbr_pdf import generate_standard_wbr
+
+    # ── File uploaders ────────────────────────────────────────────────────────
+    wu1, wu2, wu3 = st.columns(3)
+    with wu1:
+        wbr_gvt_file  = st.file_uploader("GVT Data (.xlsx)", type=["xlsx"], key="wbr_gvt")
+    with wu2:
+        wbr_oblt_file = st.file_uploader("OBLT Data (.xlsx)", type=["xlsx"], key="wbr_oblt")
+    with wu3:
+        wbr_il_file   = st.file_uploader("Inbound Loads (.xlsx)", type=["xlsx"], key="wbr_il")
+
+    # ── Report date ───────────────────────────────────────────────────────────
+    wd1, wd2 = st.columns([1,3])
+    with wd1:
+        wbr_report_date = st.date_input(
+            "Report date (Monday submission)",
+            value=datetime.now(_EASTERN).date(),
+            key="wbr_report_date",
+        )
+
+    # ── Compute on upload ─────────────────────────────────────────────────────
+    if wbr_gvt_file and wbr_oblt_file and wbr_il_file:
+        gvt_bytes  = wbr_gvt_file.read()
+        oblt_bytes = wbr_oblt_file.read()
+        il_bytes   = wbr_il_file.read()
+
+        with st.spinner("Parsing files and computing metrics…"):
+            try:
+                gvt_df    = load_gvt(gvt_bytes)
+                oblt_df   = load_oblt(oblt_bytes)
+                inbound_df = load_inbound_loads(il_bytes)
+
+                # Detect week from GVT ready dates
+                week_num, year = guess_week(gvt_df["ready_date"])
+                wk_start, wk_end = week_bounds(week_num, year)
+
+                st.info(f"Detected: **W{week_num}** ({wk_start} – {wk_end})")
+
+                # Compute current week metrics
+                curr_metrics = compute_metrics(
+                    gvt_df, oblt_df, inbound_df,
+                    wk_start, wk_end, wbr_report_date,
+                )
+
+                # Load prior 5 weeks from DB
+                prior_nums = list(range(week_num - 5, week_num))
+                wbr_conn   = get_db()
+                prior_data = load_weeks_from_db(wbr_conn, year, prior_nums)
+                wbr_conn.close()
+
+                # Build display order: 6 weeks ending on current
+                display_nums   = prior_nums + [week_num]
+                display_labels = [f"W{n}" for n in display_nums]
+                display_data   = [prior_data.get(n) for n in prior_nums] + [curr_metrics]
+
+                totals = compute_totals([d for d in display_data if d])
+
+                # ── Metrics preview ───────────────────────────────────────────
+                st.markdown("#### Current Week Metrics (W{})".format(week_num))
+                mc1, mc2, mc3, mc4, mc5 = st.columns(5)
+                mc1.metric("Containers",     curr_metrics.get("containers", "–"))
+                mc2.metric("AV→OA SLA%",     f"{curr_metrics.get('av_oa_sla_pct','–')}%")
+                mc3.metric("OA→Del SLA%",    f"{curr_metrics.get('oa_del_sla_pct','–')}%")
+                mc4.metric("E2E Avg",         curr_metrics.get("e2e_avg", "–"))
+                mc5.metric("OTP%",            f"{curr_metrics.get('otp_pct','–')}%")
+
+                # ── Prior weeks status ────────────────────────────────────────
+                missing = [f"W{n}" for n in prior_nums if n not in prior_data]
+                if missing:
+                    with st.expander(f"⚠️ {len(missing)} prior week(s) not in DB — enter manually"):
+                        st.caption("These weeks have no saved data. Enter values or leave blank (will show — in slide).")
+                        manual_inputs = {}
+                        for mn in missing:
+                            wn = int(mn[1:])
+                            st.markdown(f"**{mn}**")
+                            mi1, mi2, mi3, mi4, mi5, mi6, mi7, mi8, mi9, mi10 = st.columns(10)
+                            manual_inputs[wn] = {
+                                "containers":     mi1.number_input("Vol",  key=f"m_{mn}_vol", min_value=0, value=0),
+                                "av_oa_avg":      mi2.number_input("AO avg", key=f"m_{mn}_aoavg", min_value=0.0, step=0.1),
+                                "av_oa_sla_pct":  mi3.number_input("AO%",  key=f"m_{mn}_aopct", min_value=0, max_value=100),
+                                "av_oa_p90":      mi4.number_input("AO p90", key=f"m_{mn}_aop90", min_value=0),
+                                "oa_del_avg":     mi5.number_input("OD avg", key=f"m_{mn}_odavg", min_value=0.0, step=0.1),
+                                "oa_del_sla_pct": mi6.number_input("OD%",  key=f"m_{mn}_odpct", min_value=0, max_value=100),
+                                "oa_del_p90":     mi7.number_input("OD p90", key=f"m_{mn}_odp90", min_value=0),
+                                "empty_term_pct": mi8.number_input("ET%",  key=f"m_{mn}_etpct", min_value=0, max_value=100),
+                                "e2e_avg":        mi9.number_input("E2E",  key=f"m_{mn}_e2e",  min_value=0),
+                                "otp_pct":        mi10.number_input("OTP%", key=f"m_{mn}_otp",  min_value=0, max_value=100),
+                                "week_start": None, "week_end": None,
+                            }
+                        if st.button("Apply manual values", key="wbr_apply_manual"):
+                            for wn, mv in manual_inputs.items():
+                                display_data[prior_nums.index(wn)] = mv if mv["containers"] > 0 else None
+                            st.rerun()
+
+                # ── Generate PDF ──────────────────────────────────────────────
+                st.markdown("---")
+                wg1, wg2 = st.columns([2, 1])
+                with wg2:
+                    wbr_time_str = st.text_input(
+                        "Footer time string",
+                        value="10:00am (CST) | 9:00am (MT) | 8:00am (PT)",
+                        key="wbr_time_str",
+                    )
+
+                with wg1:
+                    if st.button("Generate WBR Slide PDF", type="primary", key="wbr_generate"):
+                        with st.spinner("Building PDF…"):
+                            pdf_bytes = generate_standard_wbr(
+                                week_labels   = display_labels,
+                                weeks_data    = display_data,
+                                totals        = totals,
+                                report_date   = wbr_report_date,
+                                report_time   = wbr_time_str,
+                            )
+                            # Save current week to DB
+                            wbr_conn2 = get_db()
+                            save_week_to_db(
+                                wbr_conn2, year, week_num,
+                                curr_metrics,
+                                datetime.now(_EASTERN).isoformat(),
+                            )
+                            wbr_conn2.commit()
+                            wbr_conn2.close()
+                            if S3_ENABLED:
+                                data_sync.push_db_to_s3(AWS_KEY, AWS_SECRET, AWS_REGION, S3_BUCKET)
+
+                        # File name: GLS_Robotics_YYYY-M-DD.pdf (report date)
+                        rd = wbr_report_date
+                        fname = f"GLS_Robotics_{rd.year}-{rd.month}-{rd.day}.pdf"
+                        st.download_button(
+                            label=f"⬇️ Download {fname}",
+                            data=pdf_bytes,
+                            file_name=fname,
+                            mime="application/pdf",
+                            key="wbr_dl",
+                        )
+                        st.success(f"W{week_num} metrics saved to DB for future carry-forward.")
+
+            except Exception as e:
+                st.error(f"Error: {e}")
+                import traceback
+                st.code(traceback.format_exc())
+    else:
+        st.info("Upload all three files above to generate the WBR slide.")
+
+        # Show what\'s already saved in DB
+        wbr_conn3 = get_db()
+        saved = wbr_conn3.execute(
+            "SELECT year, week_num, containers, av_oa_sla_pct, oa_del_sla_pct, otp_pct, generated_at FROM wbr_results ORDER BY year DESC, week_num DESC LIMIT 12"
+        ).fetchall()
+        wbr_conn3.close()
+        if saved:
+            st.markdown("**Previously saved weeks (carry-forward available):**")
+            st.dataframe(
+                pd.DataFrame([dict(r) for r in saved]),
+                hide_index=True, use_container_width=True,
+            )
