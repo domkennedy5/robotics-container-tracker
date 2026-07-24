@@ -3497,6 +3497,97 @@ with tab8:
                 mc4.metric("E2E Avg",         curr_metrics.get("e2e_avg", "–"))
                 mc5.metric("OTP%",            f"{curr_metrics.get('otp_pct','–')}%")
 
+                # ── Data Quality & Validation panel ──────────────────────────
+                with st.expander("🔍 Data Quality & Validation — check this before generating the slide", expanded=False):
+                    st.caption("These checks flag potential data gaps or anomalies. Address any warnings before distributing the WBR.")
+
+                    pop_set = set(gvt_df[
+                        gvt_df['ready_date'].notna() &
+                        (gvt_df['ready_date'] >= wk_start) &
+                        (gvt_df['ready_date'] <= wk_end)
+                    ]['container'])
+                    n_pop = len(pop_set)
+
+                    # Check 1: Container count
+                    n_ctr = curr_metrics.get("containers", 0) or 0
+                    if n_ctr == 0:
+                        st.error("❌ Zero containers in population. Verify GVT file is for the correct week.")
+                    elif n_ctr < 20:
+                        st.warning(f"⚠️ Low container count ({n_ctr}). Typical weeks are 30–100+. Confirm week boundaries are correct.")
+                    elif n_ctr > 150:
+                        st.warning(f"⚠️ High container count ({n_ctr}). Verify week auto-detection picked the right week.")
+                    else:
+                        st.success(f"✅ Container count: {n_ctr} (normal range)")
+
+                    # Check 2: OBLT coverage
+                    oblt_set = set(oblt_df['container'])
+                    oblt_cov = len(pop_set & oblt_set) / n_pop * 100 if n_pop else 0
+                    if oblt_cov < 60:
+                        st.warning(f"⚠️ OBLT coverage is low ({oblt_cov:.0f}% of GVT containers have OBLT events). AV→OA and OA→Del metrics may be understated. Check that the OBLT file matches the same week and market.")
+                    elif oblt_cov < 80:
+                        st.info(f"ℹ️ OBLT coverage: {oblt_cov:.0f}%. Some containers have no OBLT milestone data — in-transit shipments or missing feeds.")
+                    else:
+                        st.success(f"✅ OBLT coverage: {oblt_cov:.0f}% of containers have OBLT milestone data.")
+
+                    # Check 3: In-transit OA→Del (no RD yet)
+                    oa_set = set(oblt_df[oblt_df['status']=='OA']['container']) & pop_set
+                    rd_set = set(oblt_df[oblt_df['status']=='RD']['container']) & pop_set
+                    in_transit = len(oa_set - rd_set)
+                    if in_transit > 0:
+                        st.info(f"ℹ️ {in_transit} container(s) have OA but no RD event (in-transit or delivery not yet reported). "
+                                f"Their elapsed time to report date is included in OA→Del avg — this inflates the average if containers are still moving.")
+
+                    # Check 4: E2E completeness
+                    if curr_metrics.get("e2e_avg") is None:
+                        st.warning("⚠️ E2E avg is null — no complete VD→Enter Facility journeys found. "
+                                   "Confirm OBLT has VD events and GVT 'Enter Facility' column is populated.")
+                    else:
+                        e2e_v = curr_metrics["e2e_avg"]
+                        if e2e_v > 100:
+                            st.warning(f"⚠️ E2E avg ({e2e_v}d) seems high. Check for VD date outliers or containers with data entry errors.")
+                        else:
+                            st.success(f"✅ E2E avg: {e2e_v} days (completed journeys only)")
+
+                    # Check 5: OTP match rate
+                    il_matched = inbound_df[inbound_df['container'].isin(pop_set)].dropna(subset=['po_promised','actual_arrival'])
+                    otp_match = len(il_matched) / n_pop * 100 if n_pop else 0
+                    if otp_match < 40:
+                        st.warning(f"⚠️ OTP match rate: only {otp_match:.0f}% of containers found in Inbound Loads with both PO Promised Date and Actual Arrival. "
+                                   f"OTP% ({curr_metrics.get('otp_pct','–')}%) may not be representative. "
+                                   "Verify the Inbound Loads file covers the same containers as GVT.")
+                    elif otp_match < 70:
+                        st.info(f"ℹ️ OTP match rate: {otp_match:.0f}%. Some containers unmatched — OTP denominator is {len(il_matched)}/{n_pop} containers.")
+                    else:
+                        st.success(f"✅ OTP match rate: {otp_match:.0f}% ({len(il_matched)}/{n_pop} containers matched with PO dates)")
+
+                    # Check 6: Empty→Term completeness
+                    et_pct = curr_metrics.get("empty_term_pct")
+                    gvt_with_empty = gvt_df[gvt_df['container'].isin(pop_set)]['container_empty'].notna().sum()
+                    gvt_with_rtp   = gvt_df[gvt_df['container'].isin(pop_set)]['return_to_port'].notna().sum()
+                    if gvt_with_empty == 0:
+                        st.warning("⚠️ No 'Container Empty' timestamps found in GVT. Empty→Term metric cannot be computed. "
+                                   "This is expected early in the week — containers may not have returned yet.")
+                    else:
+                        st.success(f"✅ Empty→Term: {gvt_with_empty} containers with Empty timestamp, {gvt_with_rtp} with Return to Port.")
+
+                    st.markdown("---")
+                    # Week detection confidence
+                    st.markdown(f"**Auto-detected week:** W{week_num} | {wk_start} (Sun) → {wk_end} (Sat)")
+                    st.caption("If this is wrong, double-check the GVT file or manually override using the date picker above.")
+
+                    # Excluded facility reminder
+                    st.info("**Scope:** OA→Del excludes **A320-RBTCS** (ORF facility, non-operational). "
+                            "All other BOS-market containers are included.")
+
+                    # Operational callouts
+                    st.markdown("**Operational callouts** — add business context to your bridge/email notes:")
+                    st.text_area(
+                        "Site shutdowns, container reroutes, carrier disruptions, or other anomalies:",
+                        placeholder="e.g. BOS closed Mon–Tue holiday, 8 containers rerouted ORF→BOS mid-week, DRAYCO on-time reliability issue",
+                        key="wbr_op_notes",
+                        height=72,
+                    )
+
                 # ── Prior weeks status ────────────────────────────────────────
                 missing = [f"W{n}" for n in prior_nums if n not in prior_data]
                 if missing:
@@ -3588,3 +3679,49 @@ with tab8:
                 pd.DataFrame([dict(r) for r in saved]),
                 hide_index=True, use_container_width=True,
             )
+
+        # ── Seed W24–W28 historical data ──────────────────────────────────────
+        st.markdown("---")
+        with st.expander("🗂️ Seed W24–W28 carry-forward values (from WK29 slide)", expanded=False):
+            st.caption(
+                "Pre-loads W24–W28 from the submitted GLS_Robotics_2026-7-20 slide. "
+                "Run once to populate the DB — the slide will then auto-fill prior weeks."
+            )
+            already_seeded = wbr_conn3 = None
+            _sc = get_db()
+            _seeded_rows = _sc.execute(
+                "SELECT COUNT(*) FROM wbr_results WHERE year=2026 AND week_num IN (24,25,26,27,28)"
+            ).fetchone()[0]
+            _sc.close()
+            if _seeded_rows == 5:
+                st.success("✅ W24–W28 already in DB.")
+            else:
+                st.info(f"{_seeded_rows}/5 historical weeks currently in DB.")
+                if st.button("Seed W24–W28 to DB", key="wbr_seed_hist", type="primary"):
+                    _seed = {
+                        24: dict(containers=89,  av_oa_avg=2.0, av_oa_sla_pct=68,  av_oa_p90=3,
+                                 oa_del_avg=0.5, oa_del_sla_pct=100, oa_del_p90=1,
+                                 empty_term_pct=100, e2e_avg=44, otp_pct=97,  week_start="2026-06-07", week_end="2026-06-13"),
+                        25: dict(containers=101, av_oa_avg=1.1, av_oa_sla_pct=100, av_oa_p90=1,
+                                 oa_del_avg=2.9, oa_del_sla_pct=71,  oa_del_p90=10,
+                                 empty_term_pct=100, e2e_avg=45, otp_pct=45,  week_start="2026-06-14", week_end="2026-06-20"),
+                        26: dict(containers=83,  av_oa_avg=2.9, av_oa_sla_pct=70,  av_oa_p90=4,
+                                 oa_del_avg=7.0, oa_del_sla_pct=31,  oa_del_p90=14,
+                                 empty_term_pct=100, e2e_avg=41, otp_pct=66,  week_start="2026-06-21", week_end="2026-06-27"),
+                        27: dict(containers=60,  av_oa_avg=1.7, av_oa_sla_pct=100, av_oa_p90=3,
+                                 oa_del_avg=4.8, oa_del_sla_pct=28,  oa_del_p90=9,
+                                 empty_term_pct=100, e2e_avg=36, otp_pct=48,  week_start="2026-06-28", week_end="2026-07-04"),
+                        28: dict(containers=32,  av_oa_avg=0.8, av_oa_sla_pct=100, av_oa_p90=2,
+                                 oa_del_avg=3.1, oa_del_sla_pct=38,  oa_del_p90=5,
+                                 empty_term_pct=100, e2e_avg=55, otp_pct=46,  week_start="2026-07-05", week_end="2026-07-11"),
+                    }
+                    from wbr_engine import save_week_to_db as _swdb
+                    _sconn = get_db()
+                    _ts = datetime.now(_EASTERN).isoformat()
+                    for _wn, _m in _seed.items():
+                        _swdb(_sconn, 2026, _wn, _m, _ts)
+                    _sconn.close()
+                    if S3_ENABLED:
+                        data_sync.push_db_to_s3(AWS_KEY, AWS_SECRET, AWS_REGION, S3_BUCKET)
+                    st.success("✅ W24–W28 seeded. Upload files above to generate the W29 slide with full carry-forward.")
+                    st.rerun()

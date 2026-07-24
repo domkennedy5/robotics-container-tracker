@@ -1,4 +1,4 @@
-﻿"""
+"""
 wbr_engine.py — WBR metric calculations for Robotics Destination Dray
 
 Methodology (locked against WK29 validation):
@@ -144,6 +144,9 @@ def compute_metrics(gvt, oblt, inbound, week_start, week_end, report_date) -> di
     rpt   = pd.Timestamp(report_date)
 
     # AV->OA
+    # Denominator: containers with OA (regardless of AV) + containers with AV expired (>3d, no OA)
+    # Avg/P90: only containers with both AV+OA (computable delta)
+    # SLA met: OA-AV <= 3 days (if both present) OR has OA but no AV (treat as met, delta unknown)
     ao_days = []; ao_met = 0; ao_den = 0
     for c in pop['container']:
         hav = c in av_ev.index; hoa = c in oa_ev.index
@@ -151,9 +154,14 @@ def compute_metrics(gvt, oblt, inbound, week_start, week_end, report_date) -> di
             d = (oa_ev[c] - av_ev[c]).total_seconds() / 86400
             ao_days.append(d); ao_den += 1
             if d <= AV_OA_SLA_DAYS: ao_met += 1
+        elif hoa and not hav:
+            # Has OA but no AV recorded — in denominator, count as SLA met (arrived, OA happened)
+            ao_den += 1; ao_met += 1
         elif hav and not hoa:
-            if (rpt - av_ev[c]).total_seconds() / 86400 > AV_OA_SLA_DAYS:
-                ao_den += 1
+            # Use week_end (not report_date) as expiry threshold: a container
+            # available before Saturday close is in-scope regardless of when we run.
+            if (pd.Timestamp(week_end) - av_ev[c]).total_seconds() / 86400 > AV_OA_SLA_DAYS:
+                ao_den += 1  # expired without OA = miss
 
     # OA->Del (BOS only, excl A320-RBTCS)
     pop_bos = pop[pop['facility'] != EXCL_FACILITY]

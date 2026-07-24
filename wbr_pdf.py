@@ -44,7 +44,7 @@ ROW_LABELS = [
 ]
 
 # SLA threshold for coloring (None = no border)
-ROW_SLA = [None, None, 95, None, None, 95, None, 95, None, 95]
+ROW_SLA = [None, None, 95, None, None, 95, None, None, None, 95]
 
 
 def _fmt(v, row_idx: int) -> str:
@@ -128,7 +128,7 @@ def _draw_bar_chart(
         # Value label on top
         c.setFillColor(C_BLACK)
         c.setFont("Helvetica-Bold", 6)
-        label = f"{int(v)}%" if is_pct else str(int(v)) if v == int(v) else f"{v:.1f}"
+        label = f"{round(v)}%" if is_pct else str(round(v))
         c.drawCentredString(bx + bar_w / 2, by + bh + 1, label)
 
         # Week label below
