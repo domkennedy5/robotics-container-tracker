@@ -518,7 +518,8 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["Container Lookup", "Carrier
 # ══════════════════════════════════════════════════════════════════════════════
 with tab1:
     st.subheader("Container Lookup")
-    st.caption("Paste any list of IDs — dashes, no dashes, with or without check digit.")
+    st.caption("🎯 **Purpose:** Find the current status of any container across all DBR sheets. Paste a list of IDs and get instant results — no manual spreadsheet searching required.")
+    st.caption("📋 **How to use:** Upload the DBR in the sidebar, paste container IDs (one per line) into the box, then click Search.")
 
     col_a, col_b = st.columns([2, 1])
     with col_a:
@@ -578,6 +579,8 @@ with tab1:
 # ══════════════════════════════════════════════════════════════════════════════
 with tab2:
     st.subheader("Carrier Submission Portal")
+    st.caption("🎯 **Purpose:** The single intake point for all carrier status updates. Carriers upload their weekly template here so you have one place to review submissions instead of managing files across email.")
+    st.caption("📋 **How to use:** Upload a completed AGL Carrier Template and click Confirm & Submit, or share the vendor portal link with carriers to submit directly.")
 
     col_info, col_tmpl = st.columns([3, 1])
     with col_info:
@@ -793,10 +796,8 @@ with tab2:
 # ══════════════════════════════════════════════════════════════════════════════
 with tab3:
     st.subheader("Empty Returns")
-    st.caption(
-        "Tracks containers that still need to be returned to the port terminal after FC delivery. "
-        "Terminated = return confirmed or obligation closed — not an issue."
-    )
+    st.caption("🎯 **Purpose:** Shows which containers still owe a terminal return after FC delivery, ranked by urgency. Overdue returns can trigger fees — this view tells you what needs carrier follow-up today.")
+    st.caption("📋 **How to use:** Upload the DBR in the sidebar, then check Overdue and Due Soon first — those need immediate carrier follow-up.")
 
     if not dbr_sheets:
         st.info("Upload the DBR file in the sidebar to see empty returns data.")
@@ -884,8 +885,9 @@ with tab3:
 # TAB 4 — Carrier Data (structured view of all submissions)
 # ══════════════════════════════════════════════════════════════════════════════
 with tab4:
-    st.subheader("Carrier Submission Data")
-    st.caption("All data submitted by carriers via template upload or email.")
+    st.subheader("Carrier Data")
+    st.caption("🎯 **Purpose:** A full record of every container status submission from carriers. Use this to verify what a carrier reported, check SLA performance, or audit delivery and return activity.")
+    st.caption("📋 **How to use:** Filter by carrier or sheet type at the top, then drill into sub-tabs for Delivery, Empty Returns, Demurrage, and Accessorials.")
 
     conn = get_db()
     all_df = pd.read_sql(
@@ -962,7 +964,8 @@ with tab4:
 # ══════════════════════════════════════════════════════════════════════════════
 with tab5:
     st.subheader("Lane Cost Simulator")
-    st.caption("Rate matrix by port + destination, carrier options, and scenario cost projection.")
+    st.caption("🎯 **Purpose:** Compare drayage rates across carriers by lane and model the total cost of a delivery scenario. Use this when allocating containers across carriers or evaluating cost trade-offs.")
+    st.caption("📋 **How to use:** Check the Rate Matrix for cheapest carrier per lane, then use the Scenario Builder to model cost by entering lane and container count.")
 
     # ── Load rate + route data ────────────────────────────────────────────────
     conn = get_db()
@@ -1254,7 +1257,8 @@ with tab5:
 # ══════════════════════════════════════════════════════════════════════════════
 with tab6:
     st.subheader("Weekly Insights")
-    st.caption("Auto-generated from DBR, carrier submissions, shipment status, and inbound loads data.")
+    st.caption("🎯 **Purpose:** Your weekly operations briefing — auto-generated from all loaded data sources. Start here to see what needs attention before you open anything else.")
+    st.caption("📋 **How to use:** Upload the DBR and supplemental reports in the sidebar — sections activate automatically. Start with Detention & Demurrage Risk.")
 
     today_ts = pd.Timestamp(date.today())
 
@@ -2333,6 +2337,8 @@ def _week_grid(plan_df: pd.DataFrame, week_days: list):
 # ══════════════════════════════════════════════════════════════════════════════
 with tab7:
     st.subheader("Delivery Plan Scheduler")
+    st.caption("🎯 **Purpose:** Build, manage, and distribute the weekly container delivery plan across all sites and carriers.")
+    st.caption("📋 **How to use:** Select the week, add containers in Plan Builder, generate Slack messages from By Site, and export carrier-specific plans from Carrier View.")
 
     # ── global week selector ──────────────────────────────────────────────────
     _wc1, _wc2, _wc3, _wc4 = st.columns([3,1,1,1])
