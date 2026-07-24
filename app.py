@@ -979,7 +979,14 @@ with tab2:
     _log_df  = pd.read_sql(
         """SELECT submitted_at, carrier_name, container_id, sheet_type,
                   terminal, status, notes, source_file, source
-           FROM carrier_submissions ORDER BY submitted_at DESC""",
+           FROM (
+               SELECT *, ROW_NUMBER() OVER (
+                   PARTITION BY carrier_name, container_id, sheet_type
+                   ORDER BY submitted_at DESC
+               ) AS rn
+               FROM carrier_submissions
+           ) WHERE rn = 1
+           ORDER BY submitted_at DESC""",
         _sl_conn
     )
     _sl_conn.close()
@@ -1118,7 +1125,14 @@ with tab4:
                   port, terminal, fc_building, delivery_date, status,
                   within_sla, empty_return_due, appointment_date,
                   accessorial_type, notes, source
-           FROM carrier_submissions ORDER BY submitted_at DESC""",
+           FROM (
+               SELECT *, ROW_NUMBER() OVER (
+                   PARTITION BY carrier_name, container_id, sheet_type
+                   ORDER BY submitted_at DESC
+               ) AS rn
+               FROM carrier_submissions
+           ) WHERE rn = 1
+           ORDER BY submitted_at DESC""",
         conn
     )
     conn.close()
@@ -1127,6 +1141,7 @@ with tab4:
     if all_df.empty:
         st.info("No carrier submissions yet.")
     else:
+        st.caption("📌 Showing **latest status per container** — duplicate weekly file entries are collapsed. Full history is retained in the database.")
         # top filters
         f1, f2, f3 = st.columns(3)
         with f1:
