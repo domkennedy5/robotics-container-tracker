@@ -320,6 +320,7 @@ CREATE TABLE IF NOT EXISTS wbr_results (
     week_num       INTEGER NOT NULL,
     week_label     TEXT,
     week_start     TEXT,
+    week_end       TEXT,
     containers     INTEGER,
     av_oa_avg      REAL,
     av_oa_sla_pct  INTEGER,
@@ -339,12 +340,12 @@ CREATE TABLE IF NOT EXISTS wbr_results (
 def save_week_to_db(conn, year, week_num, m, generated_at):
     conn.execute('''
         INSERT OR REPLACE INTO wbr_results
-        (year,week_num,week_label,week_start,containers,
+        (year,week_num,week_label,week_start,week_end,containers,
          av_oa_avg,av_oa_sla_pct,av_oa_p90,
          oa_del_avg,oa_del_sla_pct,oa_del_p90,
          empty_term_pct,e2e_avg,otp_pct,generated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-    ''', (year, week_num, f'W{week_num}', m.get('week_start'), m.get('containers'),
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    ''', (year, week_num, f'W{week_num}', m.get('week_start'), m.get('week_end'), m.get('containers'),
           m.get('av_oa_avg'), m.get('av_oa_sla_pct'), m.get('av_oa_p90'),
           m.get('oa_del_avg'), m.get('oa_del_sla_pct'), m.get('oa_del_p90'),
           m.get('empty_term_pct'), m.get('e2e_avg'), m.get('otp_pct'), generated_at))
@@ -372,6 +373,6 @@ def load_weeks_from_db(conn, year, week_nums):
             'e2e_avg':        d['e2e_avg'],
             'otp_pct':        d['otp_pct'],
             'week_start':     d.get('week_start'),
-            'week_end':       None,
+            'week_end':       d.get('week_end'),
         }
     return result

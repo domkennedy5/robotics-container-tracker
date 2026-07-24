@@ -266,8 +266,11 @@ def init_db():
 init_db()
 
 def migrate_db():
-    """Add columns missing in old-schema DBs pulled from S3."""
-    new_cols = [
+    """Apply schema migrations for existing DBs — safe to run on every startup."""
+    conn = get_db()
+
+    # ── carrier_submissions column additions ─────────────────────────────────
+    cs_cols = [
         ("sheet_type",       "TEXT"),
         ("port",             "TEXT"),
         ("fc_building",      "TEXT"),
@@ -280,12 +283,57 @@ def migrate_db():
         ("appointment_date", "TEXT"),
         ("accessorial_type", "TEXT"),
     ]
-    conn = get_db()
-    for col, col_type in new_cols:
+    for col, col_type in cs_cols:
         try:
             conn.execute(f"ALTER TABLE carrier_submissions ADD COLUMN {col} {col_type}")
         except sqlite3.OperationalError:
             pass  # column already exists
+
+    # ── wbr_results: add week_end column if missing ──────────────────────────
+    try:
+        conn.execute("ALTER TABLE wbr_results ADD COLUMN week_end TEXT")
+    except (sqlite3.OperationalError, sqlite3.DatabaseError):
+        pass  # table doesn't exist yet (created on first WBR generate) or column already there
+
+    # ── rate_lanes: dedup exact (scac, port, destination) duplicates, then add UNIQUE index ──
+    try:
+        conn.execute("""
+            DELETE FROM rate_lanes WHERE id NOT IN (
+                SELECT MIN(id) FROM rate_lanes GROUP BY scac, port, destination
+            )
+        """)
+        conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_rate_lanes_lane
+            ON rate_lanes(scac, port, destination)
+        """)
+    except sqlite3.OperationalError:
+        pass
+
+    # ── delivery_plan: add UNIQUE index to prevent double-booking same container same week ──
+    try:
+        conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_delivery_plan_uniq
+            ON delivery_plan(week_start, container_id)
+        """)
+    except sqlite3.OperationalError:
+        pass  # index already exists or conflict — don't fail startup
+
+    # ── carrier_submissions: dedup exact matches, then add UNIQUE index ────────
+    # Keeps the first (lowest id) row for each (carrier_name, container_id, sheet_type, submitted_at)
+    try:
+        conn.execute("""
+            DELETE FROM carrier_submissions WHERE id NOT IN (
+                SELECT MIN(id) FROM carrier_submissions
+                GROUP BY carrier_name, container_id, sheet_type, submitted_at
+            )
+        """)
+        conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_cs_dedup
+            ON carrier_submissions(carrier_name, container_id, sheet_type, submitted_at)
+        """)
+    except sqlite3.OperationalError:
+        pass
+
     conn.commit()
     conn.close()
 
@@ -1024,7 +1072,7 @@ with tab2:
                         for _stype, _rows in _sheets.items():
                             for _row in _rows:
                                 _conn.execute(
-                                    """INSERT INTO carrier_submissions
+                                    """INSERT OR IGNORE INTO carrier_submissions
                                        (submitted_at, carrier_name, container_id, sheet_type,
                                         port, terminal, fc_building, flexi_id, outgate_date,
                                         delivery_date, status, within_sla, sla_notes,
@@ -3618,6 +3666,10 @@ with tab8:
                 inbound_df = load_inbound_loads(il_bytes)
 
                 week_num, year = guess_week(gvt_df["ready_date"])
+                if week_num is None:
+                    st.error("❌ GVT file has no parseable Ready Date/Time values. "
+                             "Re-pull GVT and ensure the Ready Date column is populated before continuing.")
+                    st.stop()
                 wk_start, wk_end = week_bounds(week_num, year)
                 st.info(f"Detected: **W{week_num}** ({wk_start} to {wk_end})")
 
@@ -3724,6 +3776,48 @@ with tab8:
 
                     st.markdown(f"**Week detected:** W{week_num} | {wk_start} (Sun) → {wk_end} (Sat)")
                     st.info("OA→Del excludes A320-RBTCS (ORF, non-operational). BOS-market containers scored.")
+
+                    # ── Additional cross-checks ────────────────────────────────
+                    st.markdown("**Cross-file checks**")
+
+                    # Check 1: GVT week vs report_date mismatch
+                    _rd = wbr_report_date
+                    _rd_week_sat = _rd - timedelta(days=(_rd.weekday() + 2) % 7)  # prior Saturday
+                    _expected_sat = wk_end  # week_end from detected GVT week
+                    _date_delta = abs((_expected_sat - _rd_week_sat).days)
+                    if _date_delta > 7:
+                        st.warning(
+                            f"⚠️ Report date ({_rd}) and GVT week end ({wk_end}) are {_date_delta} days apart. "
+                            "Verify you're uploading the right week's GVT file and the report date is set correctly."
+                        )
+                    else:
+                        st.success(f"Report date vs GVT week: aligned ({wk_end} end, {_rd} submission)")
+
+                    # Check 2: Duplicate container IDs within GVT population
+                    _dup_ctrs = pop_gvt[pop_gvt.duplicated("container", keep=False)]
+                    if len(_dup_ctrs):
+                        _dup_list = _dup_ctrs["container"].unique().tolist()
+                        st.warning(
+                            f"⚠️ {len(_dup_list)} container ID(s) appear more than once in GVT for W{week_num}. "
+                            f"Duplicate(s): {', '.join(_dup_list[:5])}{'...' if len(_dup_list) > 5 else ''}. "
+                            "Re-pull GVT — this inflates the container count."
+                        )
+                    else:
+                        st.success(f"No duplicate container IDs in GVT population")
+
+                    # Check 3: OBLT has any AV timestamps AFTER OA timestamps (data quality)
+                    _av_ts = dict(_latest(oblt_df, "AV"))
+                    _oa_ts = dict(_latest(oblt_df, "OA"))
+                    _bad_ts = [(c, _av_ts[c], _oa_ts[c]) for c in set(_av_ts) & set(_oa_ts)
+                               if _oa_ts[c] < _av_ts[c]]
+                    if _bad_ts:
+                        st.warning(
+                            f"⚠️ {len(_bad_ts)} OBLT row(s) have OA timestamp earlier than AV (bad source data). "
+                            "These are excluded from AV→OA averages automatically but counted toward denominator."
+                        )
+                    else:
+                        st.success("OBLT timestamps: no AV/OA inversions detected")
+
                     st.text_area(
                         "Operational callouts (add to bridge):",
                         placeholder="e.g. RIC6 shutdown Fri 7/17, 9 containers rerouted to NCKR, ATMI delivered last DBM6 containers",
