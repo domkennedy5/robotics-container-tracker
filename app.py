@@ -792,10 +792,14 @@ with tab2:
 # TAB 3 — Empty Returns Dashboard
 # ══════════════════════════════════════════════════════════════════════════════
 with tab3:
-    st.subheader("Empty Returns Dashboard")
+    st.subheader("Empty Returns")
+    st.caption(
+        "Tracks containers that still need to be returned to the port terminal after FC delivery. "
+        "Terminated = return confirmed or obligation closed — not an issue."
+    )
 
     if not dbr_sheets:
-        st.info("Upload the DBR file to see empty returns data.")
+        st.info("Upload the DBR file in the sidebar to see empty returns data.")
     else:
         er_raw = dbr_sheets.get("Empty Returns", pd.DataFrame()).copy()
         if er_raw.empty:
@@ -806,6 +810,11 @@ with tab3:
                 er_raw["Empty Return Due Date"], errors="coerce")
             today = pd.Timestamp(date.today())
 
+            # Terminated = resolved. Only open containers are tracked for risk.
+            terminated = er_raw[
+                er_raw["Status"].fillna("").str.upper() == "TERMINATED"
+            ] if "Status" in er_raw.columns else pd.DataFrame()
+
             active = er_raw[
                 er_raw["Status"].fillna("").str.upper().ne("TERMINATED") &
                 er_raw["Empty Return Due Date"].notna()
@@ -815,50 +824,61 @@ with tab3:
                 lambda d: "OVERDUE" if d < 0 else ("Due soon" if d <= 3 else "OK")
             )
 
-            overdue   = active[active["Days Until Due"] < 0]
-            due_soon  = active[(active["Days Until Due"] >= 0) & (active["Days Until Due"] <= 3)]
-            on_track  = active[active["Days Until Due"] > 3]
+            overdue  = active[active["Days Until Due"] < 0]
+            due_soon = active[(active["Days Until Due"] >= 0) & (active["Days Until Due"] <= 3)]
+            on_track = active[active["Days Until Due"] > 3]
 
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Active", len(active))
-            m2.metric("Overdue", len(overdue))
+            m1, m2, m3, m4, m5 = st.columns(5)
+            m1.metric("Open",         len(active))
+            m2.metric("Overdue",      len(overdue))
             m3.metric("Due ≤ 3 days", len(due_soon))
-            m4.metric("On track", len(on_track))
+            m4.metric("On track",     len(on_track))
+            m5.metric("Terminated",   len(terminated), help="Return confirmed or obligation closed — no action needed")
             st.divider()
 
-            view = st.radio("Show", ["Overdue", "Due Soon (≤3 days)",
-                                      "All Active", "All incl. Terminated"],
-                            horizontal=True)
-            display = (overdue if view == "Overdue"
-                       else due_soon if view == "Due Soon (≤3 days)"
-                       else active   if view == "All Active"
-                       else er_raw)
-
-            show_cols = [c for c in ["Alert", "Container #", "Terminal",
-                                      "Empty Return Due Date", "Appointment Date",
-                                      "Status", "Days Until Due",
-                                      "If Outside Window - Reason"]
-                         if c in display.columns]
-
-            st.dataframe(
-                display[show_cols].sort_values("Days Until Due", ascending=True)
-                if "Days Until Due" in display.columns else display[show_cols],
-                use_container_width=True, hide_index=True
+            view = st.radio(
+                "Show",
+                ["Overdue", "Due Soon (≤3 days)", "All Open"],
+                horizontal=True,
+            )
+            display = (
+                overdue  if view == "Overdue" else
+                due_soon if view == "Due Soon (≤3 days)" else
+                active
             )
 
-            if not display.empty:
+            show_cols = [c for c in [
+                "Alert", "Container #", "Terminal",
+                "Empty Return Due Date", "Appointment Date",
+                "Status", "Days Until Due", "If Outside Window - Reason",
+            ] if c in display.columns]
+
+            if display.empty:
+                st.success("No containers in this category.")
+            else:
+                st.dataframe(
+                    display[show_cols].sort_values("Days Until Due", ascending=True)
+                    if "Days Until Due" in display.columns else display[show_cols],
+                    use_container_width=True, hide_index=True,
+                )
                 buf = io.BytesIO()
                 display.to_excel(buf, index=False)
                 buf.seek(0)
-                st.download_button("⬇️ Export (.xlsx)", data=buf,
+                st.download_button(
+                    "Export (.xlsx)", data=buf,
                     file_name=f"empty_returns_{date.today()}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
 
-            st.divider()
-            st.markdown("### Terminated")
-            term = er_raw[er_raw["Status"].fillna("").str.upper() == "TERMINATED"] if "Status" in er_raw.columns else pd.DataFrame()
-            if not term.empty:
-                st.dataframe(term, use_container_width=True, hide_index=True)
+            # Terminated — collapsed by default, clearly labelled as resolved
+            if not terminated.empty:
+                with st.expander(f"Terminated / Resolved ({len(terminated)} containers)", expanded=False):
+                    st.caption("These containers have had their return obligation closed. No action needed.")
+                    term_cols = [c for c in ["Container #", "Terminal", "Empty Return Due Date",
+                                              "Status", "If Outside Window - Reason"]
+                                 if c in terminated.columns]
+                    st.dataframe(terminated[term_cols] if term_cols else terminated,
+                                 use_container_width=True, hide_index=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 4 — Carrier Data (structured view of all submissions)
