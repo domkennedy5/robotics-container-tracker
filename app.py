@@ -636,13 +636,20 @@ with tab1:
                         "Detail":    st.column_config.TextColumn("Detail",    width="large"),
                     },
                 )
-                with st.expander("🔍 Full details (all fields)"):
-                    st.dataframe(results_df, use_container_width=True, hide_index=True)
+            else:
+                st.warning("None of the queried containers found in the DBR.")
 
+            if not_found:
+                st.markdown(f"**Not found in this DBR ({len(not_found)}):**")
+                st.dataframe(pd.DataFrame({"Container ID": not_found}),
+                             use_container_width=True, hide_index=True)
+
+            if not summary_df.empty or not_found:
                 buf = io.BytesIO()
                 with pd.ExcelWriter(buf, engine="openpyxl") as w:
-                    summary_df.to_excel(w, index=False, sheet_name="Summary")
-                    results_df.to_excel(w, index=False, sheet_name="Full Details")
+                    if not summary_df.empty:
+                        summary_df.to_excel(w, index=False, sheet_name="Summary")
+                        results_df.to_excel(w, index=False, sheet_name="Full Details")
                     if not_found:
                         pd.DataFrame({"Not Found": not_found}).to_excel(
                             w, index=False, sheet_name="Not Found")
@@ -652,13 +659,11 @@ with tab1:
                     file_name=f"container_lookup_{date.today()}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 )
-            else:
-                st.warning("None of the queried containers found in the DBR.")
 
-            if not_found:
-                st.markdown("**Not found in this DBR:**")
-                st.dataframe(pd.DataFrame({"Container ID": not_found}),
-                             use_container_width=True, hide_index=True)
+            if not results_df.empty:
+                with st.expander("🔍 Full details (all fields)"):
+                    st.dataframe(results_df, use_container_width=True, hide_index=True)
+
 
 
 
