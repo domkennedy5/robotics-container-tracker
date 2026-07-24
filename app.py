@@ -1876,7 +1876,11 @@ with tab6:
         fresh = (sub_df.groupby("carrier_name")["submitted_at"].max()
                  .reset_index().rename(columns={"carrier_name":"Carrier","submitted_at":"Last Submitted"})
                  .sort_values("Last Submitted",ascending=False))
-        fresh["Days Since"] = (today_ts - fresh["Last Submitted"].dt.normalize()).dt.days
+        # Strip tz-awareness before arithmetic — submitted_at may be naive or tz-aware
+        _ls_naive = fresh["Last Submitted"].apply(
+            lambda x: x.tz_localize(None) if pd.notna(x) and getattr(x, "tzinfo", None) is not None else x
+        )
+        fresh["Days Since"] = (today_ts - _ls_naive.dt.normalize()).dt.days
         fresh["Alert"] = fresh["Days Since"].apply(
             lambda d: "Stale (7+ days)" if d>=7 else ("4-6 days" if d>=4 else "Recent")
         )
