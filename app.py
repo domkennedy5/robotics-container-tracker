@@ -1819,10 +1819,11 @@ def _parse_dbr_tracker(file_bytes: bytes) -> tuple:
                 )
 
     def _scac(carrier_str):
-        # "ARVY (Arrive)" -> "ARVY"
+        # "ARVY (Arrive)" -> "ARVY"; normalize HUDD → HDDR (Maersk)
         if not carrier_str:
             return None
-        return str(carrier_str).strip().split()[0].upper()
+        code = str(carrier_str).strip().split()[0].upper()
+        return "HDDR" if code == "HUDD" else code
 
     STATUS_MAP = {
         "Delivered": "delivered",
