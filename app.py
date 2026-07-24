@@ -952,7 +952,7 @@ with tab2:
     _log_df  = pd.read_sql(
         """SELECT submitted_at, carrier_name, container_id, sheet_type,
                   terminal, status, notes, source_file, source
-           FROM carrier_submissions ORDER BY submitted_at DESC LIMIT 500""",
+           FROM carrier_submissions ORDER BY submitted_at DESC""",
         _sl_conn
     )
     _sl_conn.close()
