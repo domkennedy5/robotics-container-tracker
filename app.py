@@ -6,6 +6,9 @@ import openpyxl
 import io
 import os
 from datetime import datetime, date, timedelta
+from zoneinfo import ZoneInfo
+
+_EASTERN = ZoneInfo("America/New_York")
 
 from utils import (
     normalize_container, containers_match,
@@ -876,7 +879,7 @@ with tab2:
                                 st.dataframe(_df_p, use_container_width=True, hide_index=True)
 
                 if st.button("✅ Confirm & Submit All", type="primary", key="bulk_submit_btn"):
-                    _now = datetime.now().isoformat()
+                    _now = datetime.now(_EASTERN).isoformat()
                     _conn = get_db()
                     _logged = 0
                     for _carrier, _sheets in _all_parsed.items():
@@ -900,10 +903,10 @@ with tab2:
                                      _row.get("_src"), "web")
                                 )
                                 _logged += 1
-                        _wk = (date.today() - timedelta(days=date.today().weekday())).isoformat()
+                        _wk = (datetime.now(_EASTERN).date() - timedelta(days=datetime.now(_EASTERN).date().weekday())).isoformat()
                         _conn.execute(
                             "INSERT OR IGNORE INTO dbr_receipts (carrier, week_start, received_date, received_via, logged_at) VALUES (?,?,?,?,?)",
-                            (_carrier, _wk, date.today().isoformat(), "portal", _now)
+                            (_carrier, _wk, datetime.now(_EASTERN).date().isoformat(), "portal", _now)
                         )
                     _conn.commit()
                     _conn.close()
