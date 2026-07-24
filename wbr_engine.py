@@ -176,7 +176,8 @@ def compute_metrics(gvt, oblt, inbound, week_start, week_end, report_date) -> di
         elif hav and not hoa:
             # Use week_end (not report_date) as expiry threshold: a container
             # available before Saturday close is in-scope regardless of when we run.
-            if (pd.Timestamp(week_end) - av_ev[c]).total_seconds() / 86400 > AV_OA_SLA_DAYS:
+            # Expired = AV > SLA_DAYS before report_date (not week_end) — per spec
+            if (rpt - av_ev[c]).total_seconds() / 86400 > AV_OA_SLA_DAYS:
                 ao_den += 1  # expired without OA = miss
 
     # OA->Del (BOS only, excl A320-RBTCS)
@@ -278,7 +279,8 @@ def compute_carrier_scorecard(gvt, oblt, week_start, week_end, report_date) -> l
             elif hoa and not hav:
                 ao_den += 1; ao_met += 1
             elif hav and not hoa:
-                if (wk_end_ts - av_ev[c]).total_seconds() / 86400 > AV_OA_SLA_DAYS:
+                # Expired = AV > SLA_DAYS before report_date — per spec
+                if (rpt - av_ev[c]).total_seconds() / 86400 > AV_OA_SLA_DAYS:
                     ao_den += 1  # expired miss
 
         # OA→Del (BOS only, excl A320-RBTCS)
@@ -324,8 +326,12 @@ def compute_totals(weeks_data: list) -> dict:
         vals = [(w[k], w['containers']) for w in valid if w.get(k) is not None]
         return round(sum(v*c for v,c in vals)/sum(c for _,c in vals), 1) if vals else None
 
+    def _raw(k):
+        vals = [(w[k], w['containers']) for w in valid if w.get(k) is not None]
+        return sum(v*c for v,c in vals)/sum(c for _,c in vals) if vals else None
+
     def wavgi(k):
-        v = wavg(k); return round(v) if v is not None else None
+        v = _raw(k); return int(v + 0.5) if v is not None else None
 
     return {
         'containers':     total_vol,
