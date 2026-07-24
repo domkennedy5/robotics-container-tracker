@@ -3432,38 +3432,140 @@ with tab8:
         save_week_to_db, load_weeks_from_db,
     )
     from wbr_pdf import generate_standard_wbr
+    import urllib.parse
+
+    # ── Week identification + due date ─────────────────────────────────────────
+    _wbr_today2 = datetime.now(_EASTERN).date()
+    _dsm2 = _wbr_today2.weekday()  # Mon=0
+    _next_mon2 = _wbr_today2 if _dsm2 == 0 else _wbr_today2 + timedelta(days=7 - _dsm2)
+    _days_until_wbr = (_next_mon2 - _wbr_today2).days
+    _wbr_sat  = _next_mon2 - timedelta(days=2)   # week-end Saturday
+    _wbr_sun  = _wbr_sat  - timedelta(days=6)    # week-start Sunday
+    _wbr_wnum = int(_wbr_sat.strftime("%V"))
+    _wbr_sun_str  = _wbr_sun.strftime("%m/%d/%Y")
+    _wbr_sat_str  = _wbr_sat.strftime("%m/%d/%Y")
+    _wbr_mon_str  = _next_mon2.strftime("%m/%d/%Y")
+    _wbr_sun_nice = _wbr_sun.strftime("%b %d")
+    _wbr_sat_nice = _wbr_sat.strftime("%b %d, %Y")
+
+    # Due date banner
+    if _days_until_wbr == 0:
+        st.error(f"🔴 **WBR W{_wbr_wnum} is DUE TODAY** by 2:00 PM CT — submit to `doc+destops-36@fusion.amazon.dev`")
+    elif _days_until_wbr == 1:
+        st.warning(f"🟡 **WBR W{_wbr_wnum}** due **TOMORROW ({_next_mon2.strftime('%b %d')})** by 2:00 PM CT — start your pulls today")
+    elif _days_until_wbr <= 3:
+        st.warning(f"🟡 **WBR W{_wbr_wnum}** due **{_next_mon2.strftime('%A, %b %d')}** by 2:00 PM CT — {_days_until_wbr} days away")
+    else:
+        st.info(f"📅 **WBR W{_wbr_wnum}** due **{_next_mon2.strftime('%A, %b %d')}** by 2:00 PM CT — {_days_until_wbr} days away")
+
+    st.caption(f"Reporting week: **W{_wbr_wnum}** · {_wbr_sun_str} to {_wbr_sat_str} (Sun–Sat)")
+
+    # ── Slide preview helper (called pre-generate and post-generate) ───────────
+    def _wbr_slide_preview(has_gvt, has_oblt, has_il, curr=None, prior=None):
+        n_ready = sum([has_gvt, has_oblt, has_il])
+        overall_op = 0.12 + 0.88 * (n_ready / 3)
+
+        def _seg(label, done):
+            bg = "#22c55e" if done else "#1e293b"
+            fg = "#000" if done else "#4b5563"
+            return f'<span style="background:{bg};color:{fg};padding:2px 7px;border-radius:3px;font-size:10px;margin:0 2px;">{label}</span>'
+
+        segs = _seg("GVT", has_gvt) + _seg("OBLT", has_oblt) + _seg("IL", has_il)
+
+        def _box(label, key, need_gvt, need_oblt, need_il, suffix="", sla=False, thresh=85):
+            req = (not need_gvt or has_gvt) and (not need_oblt or has_oblt) and (not need_il or has_il)
+            if curr and curr.get(key) is not None:
+                v = curr[key]
+                v_str = f"{v}{'%' if sla else suffix}"
+                clr = ("#22c55e" if v >= thresh else "#ef4444") if sla else "#60a5fa"
+                op = 1.0; note = f"✅ W{_wbr_wnum}"
+            elif req and prior and prior.get(key) is not None:
+                v = prior[key]; wn = prior.get("week_num","?")
+                v_str = f"{v}{'%' if sla else suffix}"
+                clr = "#f59e0b"; op = 0.65; note = f"↖ W{wn} (prior — upload files)"
+            elif prior and prior.get(key) is not None:
+                v = prior[key]; wn = prior.get("week_num","?")
+                v_str = f"{v}{'%' if sla else suffix}"
+                clr = "#374151"; op = 0.22; note = f"W{wn} placeholder"
+            else:
+                v_str = "—"; clr = "#1f2937"; op = 0.18; note = "no data yet"
+            border = "#1d4ed8" if op >= 1.0 else ("#92400e" if op >= 0.5 else "#1f2937")
+            return f"""<div style="background:#111827;border:1px solid {border};border-radius:6px;
+                        padding:10px 12px;opacity:{op};transition:opacity 0.5s ease;">
+                <div style="color:#6b7280;font-size:9px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:3px;">{label}</div>
+                <div style="color:{clr};font-size:22px;font-weight:700;line-height:1.1;">{v_str}</div>
+                <div style="color:#374151;font-size:9px;margin-top:4px;">{note}</div>
+            </div>"""
+
+        boxes = [
+            _box("Containers",   "containers",    True,  False, False),
+            _box("AV→OA SLA",   "av_oa_sla_pct", True,  True,  False, sla=True),
+            _box("AV→OA Avg",   "av_oa_avg",     True,  True,  False, suffix="d"),
+            _box("OA→Del SLA",  "oa_del_sla_pct",False, True,  False, sla=True),
+            _box("OA→Del Avg",  "oa_del_avg",    False, True,  False, suffix="d"),
+            _box("OTP",         "otp_pct",       False, False, True,  sla=True),
+        ]
+
+        status_txt = "✅ Ready — click Generate" if n_ready == 3 else f"⏳ {3-n_ready} file(s) remaining"
+        status_clr = "#22c55e" if n_ready == 3 else "#6b7280"
+        chart_note  = "✅ Charts ready in PDF" if curr else "📈 Charts rendered in PDF after Generate"
+        chart_clr   = "#22c55e" if curr else "#374151"
+
+        return f"""<div style="font-family:system-ui,sans-serif;background:#0d1117;border-radius:10px;
+                    padding:16px;border:1px solid #21262d;margin:6px 0;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+                <div>
+                    <span style="color:#f97316;font-weight:700;font-size:13px;">📊 WBR W{_wbr_wnum} Slide Preview</span>
+                    <span style="color:#4b5563;font-size:11px;margin-left:8px;">· {_wbr_sun_nice} – {_wbr_sat_nice}</span>
+                </div>
+                <div style="display:flex;align-items:center;gap:6px;">{segs}
+                    <span style="color:{status_clr};font-size:10px;margin-left:4px;">{status_txt}</span>
+                </div>
+            </div>
+            <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:10px;">
+                {"".join(boxes)}
+            </div>
+            <div style="background:#111827;border-radius:5px;padding:7px 12px;display:flex;
+                        justify-content:space-between;align-items:center;opacity:{overall_op:.2f};">
+                <span style="color:#374151;font-size:10px;">AV→OA trend line · OA→Del trend line · Table W{_wbr_wnum-5}–W{_wbr_wnum}</span>
+                <span style="color:{chart_clr};font-size:10px;">{chart_note}</span>
+            </div>
+        </div>"""
 
     # ── File uploaders ────────────────────────────────────────────────────────
     wu1, wu2, wu3 = st.columns(3)
     with wu1:
-        with st.expander("ℹ️ How to pull GVT"):
-            st.markdown("""**Global Visibility Tool (GVT)**
-- Export all Robotics containers for the reporting week (Sun–Sat)
-- Filter: Robotics BU, all BOS / ORF / SAV / LAX markets
-- **Verify:** `Ready Date/Time` and `Container` columns populated
-- Sheet: `Sheet1` · Filename pattern: `GVT Data WK##.xlsx`
-- ⚠️ If `Ready Date/Time` is mostly blank, re-pull — weekly cut hasn't processed yet""")
+        with st.expander(f"ℹ️ How to pull GVT — W{_wbr_wnum} ({_wbr_sun_str}–{_wbr_sat_str})"):
+            st.markdown(f"""**Global Visibility Tool (GVT) — W{_wbr_wnum} pull**
+- Navigate to GVT → Container Search
+- Filter **Ready Date/Time**: `{_wbr_sun_str}` to `{_wbr_sat_str}` *(W{_wbr_wnum}, Sun–Sat)*
+- Filter: Robotics BU · markets: BOS, ORF, SAV, LAX (all)
+- Export to Excel → save as `GVT Data WK{_wbr_wnum}.xlsx`
+- **Verify:** `Ready Date/Time` and `Container` columns are populated
+- ⚠️ If `Ready Date/Time` is mostly blank, the weekly cut hasn't processed yet — re-pull after EOD {_wbr_sat_str}""")
         wbr_gvt_file = st.file_uploader("GVT Data (.xlsx)", type=["xlsx"], key="wbr_gvt")
 
     with wu2:
-        with st.expander("ℹ️ How to pull OBLT"):
-            st.markdown("""**OBLT (Ocean Bridge Logistics Tracking)**
-- Export milestone events for all Robotics containers
+        with st.expander(f"ℹ️ How to pull OBLT — W{_wbr_wnum}"):
+            st.markdown(f"""**OBLT (Ocean Bridge Logistics Tracking) — W{_wbr_wnum} pull**
+- Navigate to OBLT → Export
+- Pull containers with **AV date between `{_wbr_sun_str}` and `{_wbr_sat_str}`** (W{_wbr_wnum})
 - Required sheet: `ObltData`
 - Key columns: `tracking_id`, `status` (AV/OA/VD/RD), `status_date`
-- Status: AV=Available · OA=Outgate/Pickup · VD=Vessel Departed · RD=Received
-- Filename pattern: `OBLT WK##.xlsx`""")
+- Status key: AV=Available · OA=Outgate/Pickup · VD=Vessel Departed · RD=Received
+- Save as `OBLT WK{_wbr_wnum}.xlsx`""")
         wbr_oblt_file = st.file_uploader("OBLT Data (.xlsx)", type=["xlsx"], key="wbr_oblt")
 
     with wu3:
-        with st.expander("ℹ️ How to pull Inbound Loads"):
-            st.markdown("""**Amazon Robotics Inbound Loads Report**
-- Run as of Monday morning before generating the slide
+        with st.expander(f"ℹ️ How to pull Inbound Loads — W{_wbr_wnum} ({_wbr_mon_str})"):
+            st.markdown(f"""**Amazon Robotics Inbound Loads Report — W{_wbr_wnum} pull**
+- Run report **Monday morning {_wbr_mon_str}** before generating the slide
+- Go to: Reporting Portal → Inbound Loads → Amazon Robotics
 - Required sheet: `Inbound Loads`
 - Key columns: `Container Id`, `PO Promised Date`, `Actual Arrival At Final Destination`
-- Filename pattern: `Amazon Robotics Inbound Loads Report[date].xlsx`
+- Expected filename: `Amazon Robotics Inbound Loads Report{_next_mon2.strftime("%d-%b-%Y")} ######.xlsx`
 - ⚠️ Actual Arrival blank for undelivered containers — expected. OTP scored on delivered only.
-- **Supplemental:** DBR Tracker (SharePoint > AGLRobotics) fills gaps for GF/BF deliveries""")
+- **Supplemental:** DBR Tracker (SharePoint → AGLRobotics) fills gaps for GF/BF deliveries""")
         wbr_il_file = st.file_uploader("Inbound Loads (.xlsx)", type=["xlsx"], key="wbr_il")
 
     # ── Report date ───────────────────────────────────────────────────────────
@@ -3479,6 +3581,28 @@ with tab8:
             key="wbr_report_date",
             help="Defaults to most recent Monday. Adjust only if re-running a prior week.",
         )
+
+    # ── Slide preview (live, pre-generate) ────────────────────────────────────
+    _pconn = get_db()
+    _prow  = _pconn.execute(
+        "SELECT week_num,containers,av_oa_avg,av_oa_sla_pct,oa_del_avg,oa_del_sla_pct,"
+        "empty_term_pct,e2e_avg,otp_pct FROM wbr_results "
+        "WHERE year=? ORDER BY week_num DESC LIMIT 1",
+        (_wbr_today2.year,)
+    ).fetchone()
+    _pconn.close()
+    _prior_preview = dict(_prow) if _prow else None
+    _curr_preview  = st.session_state.get("wbr_preview_metrics")
+    st.markdown(
+        _wbr_slide_preview(
+            has_gvt=wbr_gvt_file is not None,
+            has_oblt=wbr_oblt_file is not None,
+            has_il=wbr_il_file is not None,
+            curr=_curr_preview,
+            prior=_prior_preview,
+        ),
+        unsafe_allow_html=True,
+    )
 
     # ── Main block ────────────────────────────────────────────────────────────
     if wbr_gvt_file and wbr_oblt_file and wbr_il_file:
@@ -3553,6 +3677,9 @@ with tab8:
                 display_labels = [f"W{n}" for n in display_nums]
                 display_data   = [prior_data.get(n) for n in prior_nums] + [curr_metrics]
                 totals = compute_totals([d for d in display_data if d])
+
+                # Store in session state so slide preview lights up immediately
+                st.session_state["wbr_preview_metrics"] = curr_metrics
 
                 # ── Metrics tiles ─────────────────────────────────────────────
                 st.markdown("#### W{} — Computed Metrics".format(week_num))
@@ -3709,6 +3836,40 @@ Path to Green:
 - [Action | Owner | Target Date]
 """
                         st.text_area("Bridge — Standard (editable before sending)", value=_bridge_std, height=280, key="wbr_bridge_std")
+
+                        # ── Email submission ──────────────────────────────────
+                        st.markdown("---")
+                        st.markdown("**📧 Submit to Mitch**")
+                        _email_to   = "doc+destops-36@fusion.amazon.dev"
+                        _email_subj = "NA Destination Ops WBR_Robotics"
+                        _email_body = (
+                            f"Hi team,\n\n"
+                            f"Attached is the WK{week_num} NA Robotics Destination Dray WBR.\n\n"
+                            f"Reporting Week: {wk_start} to {wk_end}\n"
+                            f"Volume: {_s(_vol)} containers\n\n"
+                            f"KPIs:\n"
+                            f"  AV→OA:        {_s(_av_sla, '%')} SLA | {_s(_av_avg)}d avg | P90 {_s(_av_p90)}d\n"
+                            f"  OA→Delivery:  {_s(_od_sla, '%')} SLA | {_s(_od_avg)}d avg | P90 {_s(_od_p90)}d  [BOS market]\n"
+                            f"  Empty→Term:   {_s(_et, '%')}\n"
+                            f"  E2E Transit:  {_s(_e2e)} days avg\n"
+                            f"  On-Time:      {_s(_otp, '%')}\n\n"
+                            f"[Add bridge callouts here — copy from the text area above]\n\n"
+                            f"Best,\nDominique Kennedy\n"
+                            f"Amazon Global Logistics — Robotics Destination Dray\n"
+                        )
+                        _mailto_url = (
+                            f"mailto:{_email_to}"
+                            f"?subject={urllib.parse.quote(_email_subj)}"
+                            f"&body={urllib.parse.quote(_email_body)}"
+                        )
+                        _ec1, _ec2 = st.columns([3, 2])
+                        with _ec1:
+                            st.caption(f"**To:** `{_email_to}`")
+                            st.caption(f"**Subject:** `{_email_subj}` · **Deadline:** 2:00 PM CT")
+                        with _ec2:
+                            st.link_button("📧 Open in Email Client", _mailto_url, type="primary")
+                        with st.expander("📋 Email body (copy-paste if mailto doesn't open)", expanded=False):
+                            st.code(_email_body, language="")
 
                     # ── RIGHT: Enhanced WBR (Robotics team) ──────────────────
                     with out2:
