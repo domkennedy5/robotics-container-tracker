@@ -211,6 +211,17 @@ def init_db():
             source_file              TEXT,
             imported_at              TEXT
         );
+        CREATE TABLE IF NOT EXISTS dbr_receipts (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            carrier       TEXT NOT NULL,
+            week_start    TEXT NOT NULL,
+            received_date TEXT NOT NULL,
+            received_via  TEXT DEFAULT 'manual',
+            file_name     TEXT,
+            notes         TEXT,
+            logged_at     TEXT NOT NULL,
+            UNIQUE(carrier, week_start, received_date)
+        );
     """)
     conn.commit()
     conn.close()
@@ -750,6 +761,13 @@ with tab2:
                         )
                         count += 1
                 conn.commit()
+                # auto-log DBR receipt
+                _al1_wk = (date.today() - timedelta(days=date.today().weekday())).isoformat()
+                get_db().execute(
+                    "INSERT OR IGNORE INTO dbr_receipts (carrier, week_start, received_date, received_via, file_name, logged_at) VALUES (?,?,?,?,?,?)",
+                    (carrier_name_input.strip(), _al1_wk, date.today().isoformat(), "portal", carrier_file_top.name, datetime.now().isoformat())
+                )
+                get_db().commit()
                 conn.close()
                 if S3_ENABLED:
                     data_sync.push_db_to_s3(AWS_KEY, AWS_SECRET, AWS_REGION, S3_BUCKET)
@@ -825,12 +843,120 @@ with tab2:
                          notes.strip() or None, source_file, "web")
                     )
                 conn.commit()
+                # auto-log DBR receipt
+                _al2_wk = (date.today() - timedelta(days=date.today().weekday())).isoformat()
+                get_db().execute(
+                    "INSERT OR IGNORE INTO dbr_receipts (carrier, week_start, received_date, received_via, file_name, logged_at) VALUES (?,?,?,?,?,?)",
+                    (carrier_name.strip(), _al2_wk, date.today().isoformat(), "portal", source_file, datetime.now().isoformat())
+                )
+                get_db().commit()
                 conn.close()
                 if S3_ENABLED:
                     data_sync.push_db_to_s3(AWS_KEY, AWS_SECRET, AWS_REGION, S3_BUCKET)
                 st.success(f"Logged {len(ids)} containers from **{carrier_name}**")
 
     st.divider()
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # DBR Receipt Tracker
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    st.markdown("### 📋 DBR Receipt Tracker")
+    st.caption("Track whether each carrier has submitted their weekly DBR. Use the week selector to navigate; missing submissions are flagged automatically.")
+
+    _today_rd  = date.today()
+    _this_mon  = _today_rd - timedelta(days=_today_rd.weekday())
+    _wk_input  = st.date_input(
+        "Week (select any day)", value=_this_mon, key="receipt_wk_sel",
+        label_visibility="collapsed",
+    )
+    _wk_start = _wk_input - timedelta(days=_wk_input.weekday())
+    _wk_end   = _wk_start + timedelta(days=4)
+    st.caption(f"**{_wk_start.strftime('%b %-d')} – {_wk_end.strftime('%b %-d, %Y')}**")
+
+    TRACKED_CARRIERS = ["ATMI", "ARVY", "HDDR", "RKNE", "TGHE"]
+
+    _conn_rd = get_db()
+    _rec_df  = pd.read_sql(
+        "SELECT carrier, received_date FROM dbr_receipts WHERE week_start = ?",
+        _conn_rd, params=[_wk_start.isoformat()]
+    )
+    _conn_rd.close()
+
+    _rec_map = {}
+    for _, _r in _rec_df.iterrows():
+        _rec_map.setdefault(_r["carrier"], set()).add(_r["received_date"])
+
+    _days     = [_wk_start + timedelta(days=i) for i in range(5)]
+    _day_cols = [f"{d.strftime('%a')} {d.month}/{d.day}" for d in _days]
+
+    _grid_rows, _missing_carriers = [], []
+    for _carrier in TRACKED_CARRIERS:
+        _row = {"Carrier": _carrier}
+        _got = False
+        for _d, _dc in zip(_days, _day_cols):
+            if _d.isoformat() in _rec_map.get(_carrier, set()):
+                _row[_dc] = "✅"
+                _got = True
+            else:
+                _row[_dc] = ""
+        if _got:
+            _row["Status"] = "✅ Received"
+        elif _wk_start <= _today_rd:
+            _row["Status"] = "⚠️ Missing"
+            _missing_carriers.append(_carrier)
+        else:
+            _row["Status"] = "—"
+        _grid_rows.append(_row)
+
+    _grid_df = pd.DataFrame(_grid_rows)
+    st.dataframe(
+        _grid_df, use_container_width=True, hide_index=True,
+        column_config={
+            "Carrier": st.column_config.TextColumn("Carrier", width="small"),
+            "Status":  st.column_config.TextColumn("Status",  width="medium"),
+            **{dc: st.column_config.TextColumn(dc, width="small") for dc in _day_cols},
+        },
+    )
+
+    if _missing_carriers and _wk_start <= _today_rd:
+        st.warning(f"**{len(_missing_carriers)} carrier(s) missing this week:** {', '.join(_missing_carriers)}")
+        for _mc in _missing_carriers:
+            with st.expander(f"📧 Follow-up message — {_mc}"):
+                _tmpl = (
+                    f"Hi {_mc} Team,\n\n"
+                    f"We haven\u2019t received your container status DBR for the week of "
+                    f"{_wk_start.strftime('%B %-d, %Y')}. Could you please submit your weekly "
+                    f"update at your earliest convenience?\n\n"
+                    f"You can submit via the AGL carrier portal or reply with your completed template.\n\n"
+                    f"Thank you,\nAGL Robotics Logistics"
+                )
+                st.code(_tmpl.replace("\n", "\n"), language=None)
+
+    with st.expander("➕ Log a receipt manually (email / out-of-band submission)"):
+        with st.form("dbr_manual_receipt_form"):
+            _mrc1, _mrc2 = st.columns(2)
+            with _mrc1:
+                _log_carrier = st.selectbox("Carrier", TRACKED_CARRIERS, key="dbr_log_c")
+            with _mrc2:
+                _log_date = st.date_input("Date received", value=_today_rd, key="dbr_log_d")
+            _log_via   = st.selectbox("Received via", ["email", "portal", "other"], key="dbr_log_via")
+            _log_fname = st.text_input("File name (optional)", key="dbr_log_fn")
+            _log_note  = st.text_input("Notes (optional)",     key="dbr_log_nt")
+            _log_sub   = st.form_submit_button("Log Receipt", type="primary")
+        if _log_sub:
+            _lw = (_log_date - timedelta(days=_log_date.weekday())).isoformat()
+            _lc = get_db()
+            _lc.execute(
+                "INSERT OR IGNORE INTO dbr_receipts (carrier, week_start, received_date, received_via, file_name, notes, logged_at) VALUES (?,?,?,?,?,?,?)",
+                (_log_carrier, _lw, _log_date.isoformat(), _log_via,
+                 _log_fname.strip() or None, _log_note.strip() or None,
+                 datetime.now().isoformat())
+            )
+            _lc.commit(); _lc.close()
+            if S3_ENABLED:
+                data_sync.push_db_to_s3(AWS_KEY, AWS_SECRET, AWS_REGION, S3_BUCKET)
+            st.success(f"Logged receipt for **{_log_carrier}** on {_log_date.strftime('%b %-d, %Y')}")
+            st.rerun()
+
     st.markdown("### Submission Log")
 
     conn = get_db()
