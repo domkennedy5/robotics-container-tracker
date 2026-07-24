@@ -3,389 +3,381 @@ import streamlit as st
 
 st.set_page_config(
     page_title="How to Use — Container Tracker",
-    page_icon="📖",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
 
-APP_URL = "https://robotics-container-tracker-7uf88f7ez9tga3k44phfjm.streamlit.app"
+APP_URL    = "https://robotics-container-tracker-7uf88f7ez9tga3k44phfjm.streamlit.app"
 VENDOR_URL = f"{APP_URL}/vendor_upload"
 
-st.title("📖 AGL Robotics Container Tracker — User Guide")
-st.caption("Reference guide for the AGL ops team. Last updated July 2026.")
-
-# ── Quick navigation ──────────────────────────────────────────────────────────
-st.markdown("""
-**Jump to a section:**
-[Quick Start](#quick-start) · [Tab Reference](#tab-reference) · [Data Sources](#data-sources) · [Vendor Portal](#vendor-portal) · [FAQ](#faq)
-""")
+st.title("AGL Robotics Container Tracker — User Guide")
+st.caption("Quick reference for the AGL ops team. Last updated July 2026.")
 st.divider()
 
-# ══════════════════════════════════════════════════════════════════════════════
-# SECTION 1 — WHAT THIS TOOL DOES
-# ══════════════════════════════════════════════════════════════════════════════
+# ── What this tool does ───────────────────────────────────────────────────────
 st.markdown("## What This Tool Does")
 st.markdown("""
-The **AGL Robotics Container Tracker** replaces manual container lookups across the weekly DBR 
-and related Excel reports. It gives you a single place to:
+The **AGL Robotics Container Tracker** is a single place to manage inbound robotics container
+deliveries — from weekly planning through carrier tracking and risk monitoring.
 
-- **Find any container instantly** across all DBR sheets (Delivery Appts, Empty Returns, On Vessel, Demurrage, etc.)
-- **Track detention and demurrage deadlines** before costs start accruing
-- **Receive carrier submissions** through a standardized portal instead of ad-hoc emails
-- **Project dray costs** using the 2025–26 Robotics rate card by lane
-- **See a weekly intelligence summary** — action items, LFD risk, carrier SLA, and in-transit pipeline — without building it manually
-
-All data is synced to S3 so updates are shared across users automatically.
+| Workflow | What you need to start | Where to go |
+|---|---|---|
+| Build and manage the weekly delivery plan | Nothing | Planning tab |
+| Look up containers, track empties, view risk | Weekly DBR (sidebar) | All other tabs |
+| Load historical data for trend comparisons | DBR Tracker Excel | Planning → Import History |
 """)
 st.divider()
 
-# ══════════════════════════════════════════════════════════════════════════════
-# SECTION 2 — QUICK START
-# ══════════════════════════════════════════════════════════════════════════════
-st.markdown("## Quick Start")
-st.markdown("**Weekly setup takes about 2 minutes. Do this every time you get a new report.**")
+# ── Weekly workflow ───────────────────────────────────────────────────────────
+st.markdown("## Weekly Workflow")
+st.markdown("Do these steps every Monday. Total time: about 5 minutes.")
 
 steps = [
-    ("1. Upload the DBR", "sidebar",
-     "In the **sidebar**, under **DBR File**, upload the latest weekly DBR Excel file. "
-     "The app parses all 6 sheets automatically and shows row counts. This unlocks Container Lookup, "
-     "Empty Returns, and most of the Insights tab."),
-    ("2. Upload Import Shipment Status", "sidebar",
-     "Under **Additional Reports** in the sidebar, upload the **Import Shipment Status** Excel. "
-     "This adds vessel names, discharge ETAs, container availability dates, and delivery status "
-     "for every active container."),
-    ("3. Upload Inbound Loads Report", "sidebar",
-     "Upload the **Inbound Loads Report** Excel in the same sidebar section. "
-     "This is the most time-sensitive one — it contains **Last Free Detention** and "
-     "**Last Free Demurrage** deadlines. The Insights tab will flag any containers "
-     "with deadlines within 7 days."),
-    ("4. Check the Insights tab", "Tab 6",
-     "Go to **📈 Insights**. Review the **Action Items** section at the bottom first — "
-     "it surfaces the highest-priority flags across all data sources. Then review "
-     "Detention & Demurrage Risk and the LFD Risk table."),
-    ("5. Look up containers as needed", "Tab 1",
-     "Paste any list of container IDs into **🔍 Container Lookup**. Dashes, no dashes, "
-     "check digit or not — the tool normalizes all formats. Results show which DBR sheet "
-     "each container appears on and its current status."),
+    (
+        "1. Refresh historical data",
+        "Planning → Import History",
+        "Download `ToteASERs Robotics DBR Tracker.xlsx` from SharePoint. "
+        "Go to **Planning → Import History**, upload the file, click **Import**. "
+        "New containers since last week are added automatically — duplicates are skipped. "
+        "This keeps the WoW / History tab current."
+    ),
+    (
+        "2. Load the weekly DBR",
+        "Sidebar",
+        "Open the sidebar (top-left arrow). Under **DBR File**, upload the current week's "
+        "DBR Excel. The app parses all sheets automatically and shows row counts. "
+        "This activates Container Lookup, Empty Returns, and the Insights DBR Snapshot."
+    ),
+    (
+        "3. Upload supplemental reports",
+        "Sidebar → Additional Reports",
+        "Upload the **Import Shipment Status** and **Inbound Loads Report** under "
+        "**Additional Reports** in the sidebar. The Inbound Loads Report is the most "
+        "time-sensitive — it contains detention and demurrage free-time deadlines."
+    ),
+    (
+        "4. Build the week's delivery plan",
+        "Planning → Plan Builder",
+        "Select the week at the top of the Planning tab. Paste Miguel's or site ops' "
+        "message into **Step 1 — Parse Stakeholder Request** and click Parse. "
+        "Add containers using Single or Bulk Paste. Review the week grid at the bottom."
+    ),
+    (
+        "5. Send daily notifications",
+        "Planning → By Site",
+        "Select a site, open **Daily Notification — Copy for Slack**, pick the delivery "
+        "date, copy the generated text, paste into Slack."
+    ),
+    (
+        "6. Check for risk",
+        "Insights tab",
+        "Review Detention & Demurrage Risk and the LFD Risk table. These flag containers "
+        "with deadlines within 7 days. Check this before you plan the week — "
+        "it affects which containers need priority scheduling."
+    ),
 ]
 
 for title, location, desc in steps:
-    with st.expander(f"**{title}** _(via {location})_"):
+    with st.expander(f"**{title}** — *{location}*"):
         st.markdown(desc)
 
 st.divider()
 
-# ══════════════════════════════════════════════════════════════════════════════
-# SECTION 3 — TAB REFERENCE
-# ══════════════════════════════════════════════════════════════════════════════
-st.markdown("## Tab Reference", anchor="tab-reference")
+# ── Quick reference ───────────────────────────────────────────────────────────
+st.markdown("## Quick Reference")
+st.markdown("Find what you need without reading the full guide.")
+st.markdown("""
+| I want to... | Go here |
+|---|---|
+| Find a container's current status | Container Lookup — paste ID, click Search |
+| See which empty returns are overdue | Empty Returns tab |
+| Build next week's delivery schedule | Planning → Plan Builder |
+| Send tomorrow's delivery list to a site | Planning → By Site → Daily Notification |
+| Share the plan with a carrier | Planning → Carrier View → Export |
+| Compare this week to last week | Planning → WoW / History |
+| Update a container's time, site, or status | Planning → By Site or All Sites → Edit Entry |
+| See containers at risk of detention fees | Insights → Detention & Demurrage Risk |
+| Load the weekly DBR | Sidebar → DBR File |
+| Load the Inbound Loads or Shipment Status report | Sidebar → Additional Reports |
+| Add a new site or carrier | Planning → Config |
+| Load historical container data | Planning → Import History |
+| Submit carrier status data | Carrier Submission tab or Vendor Portal |
+""")
+st.divider()
+
+# ── Tab reference ─────────────────────────────────────────────────────────────
+st.markdown("## Tab Reference")
 
 tab_ref = st.tabs([
-    "🔍 Container Lookup",
-    "📤 Carrier Submission",
-    "📋 Empty Returns",
-    "📊 Carrier Data",
-    "🎛️ Allocation",
-    "📈 Insights",
+    "Container Lookup",
+    "Carrier Submission",
+    "Empty Returns",
+    "Carrier Data",
+    "Lane Costs",
+    "Insights",
+    "Planning",
 ])
 
 with tab_ref[0]:
-    st.markdown("### Container Lookup")
     st.markdown("""
-**What it does:** Searches the loaded DBR for any container ID you paste in. Returns the sheet, 
-status, terminal, FC/Building, appointment date, and LFD for every match.
+**Searches the DBR for any container ID you paste in.** Returns sheet, status, terminal,
+FC/building, appointment date, and LFD for every match.
 
-**How to use:**
-1. Paste container IDs in the text box — one per line, or comma-separated
-2. Format doesn't matter: `TCNU3899024`, `TCNU389902-4`, and `TCNU389902` all match the same container
+**To use:**
+1. Upload the DBR in the sidebar first (required)
+2. Paste container IDs — one per line or comma-separated; dashes and check digits are optional
 3. Enter your name (optional — logged for audit trail)
 4. Click **Search**
 5. Download results as Excel if needed
 
-**Searches across:** Delivery Appointments · Empty Returns · On Vessel · Canceled · Demurrage · Accessorials
+**Searches across:** Delivery Appointments, Empty Returns, On Vessel, Canceled, Demurrage, Accessorials
 
-**Not found?** The container isn't in the current DBR. It may be delivered, not yet created, or on a different vessel not yet in the system.
-    """)
+**Not found?** The container is not in the current DBR. It may be delivered, not yet entered,
+or on a different vessel not yet in the system.
+""")
 
 with tab_ref[1]:
-    st.markdown("### Carrier Submission Portal")
     st.markdown(f"""
-**What it does:** Two ways for carriers to submit their weekly container status:
-1. **Template upload** (recommended) — upload a filled AGL Carrier Template directly in this tab
-2. **Vendor Portal** — share `{VENDOR_URL}` with the carrier; they go there directly, no login required
+**Two ways for carriers to submit their weekly container status:**
 
-**Template sheets:**
-| Sheet | Used for |
-|-------|----------|
-| Delivery | Standard container deliveries |
-| ILM1 | ILM1-specific deliveries |
-| RIC6 | RIC6-specific deliveries |
-| Empty Return | Empty container return appointments |
-| ODY/Storage | Containers in off-dock storage |
-| Demurrage | Containers accruing demurrage charges |
-| Accessorials | Accessorial charge records |
+**Option 1 — Template upload (preferred):**
+1. Download the AGL Carrier Template from the button at the top of the tab
+2. Give it to your carrier to fill out
+3. Enter carrier name, upload the completed file, click **Confirm & Submit All**
 
-**Submission log** at the bottom of the tab shows all submitted containers with filter options. Export to Excel any time.
+**Option 2 — Vendor Portal (carrier self-service):**
+Share this URL with your carrier — no login required:
+`{VENDOR_URL}`
 
-**Note:** The legacy manual form (below the template uploader) still works but the template is preferred — it captures more structured data.
-    """)
+**Template sheets:** Delivery, ILM1, RIC6, Empty Return, ODY/Storage, Demurrage, Accessorials.
+Carriers only fill in sheets relevant to that week.
+
+**Submission Log** at the bottom of the tab shows all historical entries, filterable by carrier,
+status, and source. Export to Excel any time.
+""")
 
 with tab_ref[2]:
-    st.markdown("### Empty Returns Dashboard")
     st.markdown("""
-**What it does:** Dedicated view of the DBR's Empty Returns sheet with due-date tracking and risk flagging.
+**Dedicated view of the DBR's Empty Returns sheet with urgency flags.**
 
-**Key features:**
-- **4 KPI cards:** Active, Overdue, Due ≤3 days, On track
-- **Radio filter:** switch between Overdue / Due Soon / All Active / All incl. Terminated
-- Sorted by days until due — most urgent at top
-- Export the filtered view to Excel
+Requires DBR to be loaded in the sidebar.
 
-**Color coding:**
-- 🔴 OVERDUE — empty return is past due
-- 🟡 Due soon — 3 days or less remaining
-- 🟢 OK — more than 3 days remaining
+**Filters:** Overdue / Due Soon (3 days) / All Active / All incl. Terminated
 
-**Terminated section** at the bottom shows containers with TERMINATED status for record-keeping.
-    """)
+**Columns to watch:** Container #, Terminal, Empty Return Due Date, Days Until Due, Alert
+
+The table sorts by most urgent at the top. Export the filtered view to Excel as needed.
+""")
 
 with tab_ref[3]:
-    st.markdown("### Carrier Data")
     st.markdown("""
-**What it does:** Structured view of everything submitted by carriers through the template portal 
-or vendor portal. Organized by sheet type.
+**Full view of all carrier submissions, organized by sheet type.**
 
-**Filters:** Carrier name · Sheet type · Within SLA  
+**Filters:** Carrier name, Sheet type, Within SLA
 
-**Tabs inside the view:** Each sheet type (Delivery, Empty Return, Demurrage, etc.) gets its own 
-sub-tab, and only non-empty columns are shown.
+Sub-tabs appear automatically for each sheet type (Delivery, Empty Returns, Demurrage, etc.).
+Only columns with data are shown.
 
-**Export:** Full carrier data download available at the bottom.
-
-**This tab grows over time** as carriers submit weekly. It's the historical record of all 
-carrier-reported container status.
-    """)
+This tab is the historical record of everything carriers have submitted.
+Export all carrier data to Excel from the button at the bottom.
+""")
 
 with tab_ref[4]:
-    st.markdown("### Lane Cost Simulator")
     st.markdown("""
-**What it does:** Uses the 2025–26 Robotics rate card to project dray costs by lane (port → destination).
+**Rate matrix and scenario cost builder by port → destination → carrier.**
 
-**Rate Matrix (top):**
-- Shows every active lane with all carrier options and rates side by side
-- **Green** = cheapest carrier on that lane · **Red** = most expensive
-- Filter by port of arrival, rate source, and lane type (Static / GF/BF / Backup)
+Requires rate data to be loaded by the app admin. Shows an info message if empty.
+
+**Rate Matrix:** All active lanes with carrier options side by side.
+Green = cheapest on that lane. Red = most expensive.
 
 **Scenario Builder:**
-1. Select a **Port of Arrival** (USBOS, USEWR, USLAX, etc.)
-2. Select a **Destination Node** (A100 = Tighe Woburn, A310 = DCB2 Mansfield, etc.)
-3. Pick a **Carrier** — dropdown shows all carriers serving that lane with their rate
-4. Enter **container count**
-5. Click **Add Lane** — it builds up a running portfolio
+1. Select Port → Destination Node → Carrier
+2. Enter container count → click **Add Lane to Scenario**
+3. Build a multi-lane scenario; total cost and savings vs. cheapest are calculated automatically
 
-**Portfolio view:**
-- Edit container counts inline after adding
-- Cost by carrier breakdown + bar chart
-- Cost by port breakdown + bar chart
-- **Savings vs Cheapest** — shows how much you'd save by switching to the cheapest available carrier on each lane
-
-**Tip:** Use "Static" lanes for your primary allocation, "GF/BF" and "Backup" for overflow or contingency scenarios.
-    """)
+Edit container counts inline after adding. Export scenario to Excel.
+""")
 
 with tab_ref[5]:
-    st.markdown("### Insights")
     st.markdown("""
-**What it does:** Auto-generated weekly intelligence across all loaded data sources. Designed to 
-answer "what needs my attention right now?" without manual analysis.
+**Auto-generated weekly summary across all loaded data sources.**
 
-**Sections:**
+Each section activates as its source data is uploaded:
 
-**DBR Snapshot**
-KPI cards for all active containers. LFD Risk table shows any delivery appointment 
-with Last Free Day within 5 days. Status and terminal breakdowns.
+| Section | Requires | Shows |
+|---|---|---|
+| DBR Snapshot | DBR in sidebar | Delivery counts, empty return risk, LFD risk table, status/terminal breakdown |
+| Detention & Demurrage Risk | Inbound Loads Report | Containers within 7 days of free-time expiry — most actionable section |
+| In-Transit Pipeline | Import Shipment Status | Active containers by status, vessel, FC destination |
 
-**Detention & Demurrage Risk** _(requires Inbound Loads Report)_
-The most operationally critical section. Flags containers where:
-- **Detention** free time expires within 7 days (container available at terminal but not yet picked up)
-- **Demurrage** free time expires within 7 days (container still sitting at port/on vessel)
+Upload supplemental reports via Sidebar → Additional Reports.
+""")
 
-Both accrue daily fees once the free period ends. The earlier you see this, the cheaper.
+with tab_ref[6]:
+    st.markdown("""
+**Full delivery plan builder — standalone, no DBR upload required.**
 
-**In-Transit Pipeline** _(requires Import Shipment Status)_
-Active containers by status, FC destination, and carrier. Includes an "Arriving at Port in 30 days" 
-table so you can anticipate upcoming dray volume.
+| Sub-tab | Use it to |
+|---|---|
+| Plan Builder | Parse stakeholder requests, add containers (single or bulk), review the week grid |
+| All Sites | Full compiled view of the week; Excel export |
+| By Site | Site-specific view, daily Slack notification, inline edit |
+| Carrier View | Carrier-specific view, shareable Excel (no internal status) |
+| WoW / History | Compare this week vs. prior weeks; search historical containers |
+| Config | Add/edit sites, carriers, and site-carrier mappings |
+| Import History | Upload the DBR Tracker to load historical container data |
 
-**Carrier Intelligence**
-SLA rate per carrier (color-coded), submission volume, and a freshness check — flags carriers 
-who haven't submitted in 7+ days.
+**Week selector** at the top of the Planning tab controls which week you're viewing or editing.
 
-**Action Items**
-Auto-prioritized flags across all sources. Check this section first every week. 
-Items are ranked: 🔴 Critical (costs accruing or imminent deadline) → 🟡 Urgent → 🟡 Attention.
-    """)
+**Receiving days** — the day toggles below the week selector let you activate/deactivate
+days for that week. Mon–Fri is the default. Changing active days offers to redistribute
+any unassigned containers automatically.
+
+**Edit Entry** — available in By Site and All Sites. Select a container from the dropdown
+and update date, time, site, carrier, product, status, qty, or notes. Check **Delete this entry**
+to remove it.
+
+**Daily Notification** — in By Site, open the expander, pick a date, copy the generated
+text block, paste directly into Slack.
+""")
 
 st.divider()
 
-# ══════════════════════════════════════════════════════════════════════════════
-# SECTION 4 — DATA SOURCES
-# ══════════════════════════════════════════════════════════════════════════════
-st.markdown("## Data Sources", anchor="data-sources")
-st.markdown("""
-The tool pulls from four data sources. Here's what each contributes and how to get it into the app.
-""")
+# ── Data sources ──────────────────────────────────────────────────────────────
+st.markdown("## Data Sources")
 
 col1, col2 = st.columns(2)
 
 with col1:
     with st.container(border=True):
-        st.markdown("#### 📁 DBR (Weekly)")
+        st.markdown("#### DBR (Weekly)")
         st.markdown("""
-**What it is:** The weekly Delivery Booking Report Excel file maintained by the drayage team.
+The weekly Delivery Booking Report Excel maintained by the drayage team.
 
-**What it provides:** Container status across 6 sheets — Delivery Appointments, Empty Returns, 
-On Vessel, CANCELED, Demurrage, Accessorials.
+**Provides:** Container status across Delivery Appointments, Empty Returns,
+On Vessel, Canceled, Demurrage, Accessorials.
 
-**How to load:** Sidebar → DBR File → Upload. Saved to S3 automatically.
+**Load via:** Sidebar → DBR File → Upload
 
-**Refresh cadence:** Weekly (upload the new file each Monday or when received).
-        """)
+**Cadence:** Weekly — upload each Monday or when received.
+""")
 
     with st.container(border=True):
-        st.markdown("#### 📊 Import Shipment Status (Weekly)")
+        st.markdown("#### Import Shipment Status (Weekly)")
         st.markdown("""
-**What it is:** A 73-column shipment lifecycle report from Amazon's procurement/TMS system 
-covering all Robotics ocean containers.
+Shipment lifecycle report from Amazon's TMS.
 
-**What it provides:** Container-level EDI dates (ingate, departure, arrival, available, 
-out-gate, empty return, delivered, customs cleared), vessel/voyage, carrier code, 
-discharge port ETA, destination FC, vendor name.
+**Provides:** EDI dates (ingate, departure, arrival, available, out-gate,
+empty return, delivered), vessel/voyage, carrier code, discharge port ETA,
+destination FC, vendor name.
 
-**How to load:** Sidebar → Additional Reports → Import Shipment Status → Upload.
+**Load via:** Sidebar → Additional Reports → Import Shipment Status
 
-**Source:** Emailed report — filename is typically "Import Shipment Status.xlsx".
-        """)
+**Source:** Emailed report — filename typically "Import Shipment Status.xlsx"
+""")
 
 with col2:
     with st.container(border=True):
-        st.markdown("#### 📊 Inbound Loads Report (Weekly/Daily)")
+        st.markdown("#### Inbound Loads Report (Weekly)")
         st.markdown("""
-**What it is:** Amazon's internal supply chain report (AR Inbound Loads) with PO-level 
-detail for every Robotics container in the pipeline.
+Amazon's internal AR Inbound Loads report with PO-level container detail.
 
-**What it provides:** **Last Free Detention Time**, **Last Free Demurrage Time**, 
-Gate-out Terminal Time, Estimated Appointment Date, actual arrival at final destination, 
-empty container return time.
+**Provides:** Last Free Detention time, Last Free Demurrage time,
+gate-out terminal time, estimated appointment date, actual arrival,
+empty return time.
 
-**How to load:** Sidebar → Additional Reports → Inbound Loads Report → Upload.
+**Load via:** Sidebar → Additional Reports → Inbound Loads Report
 
-**Source:** Emailed report — filename includes a timestamp 
-(e.g. "Amazon Robotics Inbound Loads Report23-Jul-2026 083003.xlsx").
-
-**⚠️ Most time-sensitive source** — upload this first when it arrives.
-        """)
+**Most time-sensitive source** — upload this as soon as it arrives.
+""")
 
     with st.container(border=True):
-        st.markdown("#### 📤 Carrier Submissions (Ongoing)")
+        st.markdown("#### DBR Tracker — Historical (Weekly)")
         st.markdown("""
-**What it is:** Container status data submitted by dray carriers using the AGL Carrier Template.
+The master `ToteASERs Robotics DBR Tracker.xlsx` on SharePoint.
 
-**What it provides:** Per-container delivery status, SLA compliance, empty return dates, 
-appointment dates, accessorial charges — as reported by the carrier.
+**Provides:** Full delivery history by container — carrier, site, scheduled
+and actual FC delivery dates, product type, quantity, status.
 
-**How to load:** Carriers submit via the **Vendor Portal** or you can upload directly 
-in the **Carrier Submission tab**.
+**Load via:** Planning → Import History → Upload → Import
 
-**Source:** Ongoing — carriers submit weekly. Data persists in the database.
-        """)
+**Cadence:** Weekly — upload Monday to capture prior week's new containers.
+""")
 
 st.divider()
 
-# ══════════════════════════════════════════════════════════════════════════════
-# SECTION 5 — VENDOR PORTAL
-# ══════════════════════════════════════════════════════════════════════════════
-st.markdown("## Vendor Portal", anchor="vendor-portal")
-st.markdown(f"""
-The vendor portal is a **public-facing, no-login page** for dray carriers to submit their 
-weekly container status templates.
-
-**URL to share with carriers:**
-""")
+# ── Vendor portal ─────────────────────────────────────────────────────────────
+st.markdown("## Vendor Portal")
+st.markdown("A public-facing, no-login page for carriers to submit weekly status templates.")
 st.code(VENDOR_URL, language=None)
 st.markdown(f"""
 **What carriers do:**
 1. Go to the URL above
-2. Download the AGL Carrier Template (button on the page)
+2. Download the AGL Carrier Template
 3. Fill in their container data across the relevant sheets
-4. Enter their company name and contact name
-5. Upload the completed file
-6. Preview and submit — data goes directly into the tracker
+4. Enter company name and contact name
+5. Upload and submit — data goes directly into the tracker
 
-**What you get:**
-- All submissions appear in the **Carrier Data tab** and the **Carrier Submission tab** log
-- Submissions are tagged `source = vendor_portal` so you can filter them
-- The Insights tab tracks which carriers have submitted recently
+**What you see:** All submissions appear in Carrier Data and Carrier Submission tabs,
+tagged `source = vendor_portal` so you can filter them.
 
-**Onboarding a new carrier:**
-1. Send them the vendor portal URL and the AGL Carrier Template download link
-2. On their first submission, their carrier name will auto-populate in filters
-3. The Insights tab will start tracking their SLA performance as data accumulates
-
-**Template sheets:** The template has 7 sheets — carriers only need to fill in the 
-sheets relevant to their activity that week. Empty sheets are ignored on upload.
+**Onboarding a new carrier:** Send them the vendor portal URL. On their first submission
+their name auto-populates in all filters.
 """)
 st.divider()
 
-# ══════════════════════════════════════════════════════════════════════════════
-# SECTION 6 — FAQ
-# ══════════════════════════════════════════════════════════════════════════════
-st.markdown("## FAQ", anchor="faq")
+# ── FAQ ───────────────────────────────────────────────────────────────────────
+st.markdown("## FAQ")
 
 faqs = [
-    ("The app is showing old DBR data. How do I refresh it?",
-     "Upload the new DBR file in the sidebar. The app pulls from S3 on load, "
-     "so if someone else on the team already uploaded a newer file, you'll see it "
-     "on your next page refresh. If not, upload the new file — it overwrites the "
-     "S3 copy and the cache refreshes automatically."),
-
-    ("A container I'm looking for isn't showing up in the search.",
-     "A few possible reasons: (1) It's not in the current week's DBR — check if "
-     "it might be in a previous week. (2) The container ID format is unusual — try "
-     "just the first 10 characters without any suffix. (3) It's already delivered "
-     "and not included in the active DBR. If you need to search historical containers, "
-     "that's a feature to add — note it and flag it."),
-
-    ("A carrier says they submitted but I don't see it in the Carrier Data tab.",
-     "Check the Carrier Submission tab's submission log and filter by carrier name. "
-     "If it's not there, the submission may have failed — ask them to resubmit via the vendor portal. "
-     "Common issues: they used an old template format, or they submitted without entering their company name."),
-
-    ("The Detention/Demurrage Risk section is empty.",
-     "That section requires the Inbound Loads Report to be uploaded. Upload it in the sidebar "
-     "under Additional Reports. If it still shows nothing after upload, either all containers "
-     "have already gated out (which is good) or the file didn't parse correctly — check that "
-     "you're uploading the right file (AR Inbound Loads, not the Import Shipment Status)."),
-
-    ("How do I share access to the main app with someone on the team?",
-     f"Send them the app URL ({APP_URL}) and the password: **robotics2026**. "
-     "They'll need to enter the password on first visit. The vendor portal does not "
-     "require a password — it's public-facing by design."),
-
-    ("The lane cost simulator says 'No rates on this lane' for a destination.",
-     "The rate card only covers lanes where a dray bid has been completed. Some newer "
-     "destination nodes (A322 and above) are marked 'NO - Need SIM' in the Robotics "
-     "Lanes file and don't have rates yet. For those lanes, work with the sourcing team "
-     "to get rates added to the rate card, then re-import."),
-
-    ("Can I add a carrier to the rate card?",
-     "Rate card data is managed by re-importing the rate card Excel files. If rates change "
-     "or a new carrier is added, contact the app admin to run the import script. This is "
-     "intentionally not a self-service operation to avoid accidental overrides."),
-
-    ("How often does the data auto-refresh?",
-     "The app does not auto-pull new reports. All data sources (DBR, Shipment Status, "
-     "Inbound Loads) require a manual upload. The team is working on automatic email "
-     "ingestion — once configured, reports will be processed within minutes of arriving "
-     "in your inbox."),
+    (
+        "The app is showing old DBR data. How do I refresh it?",
+        "Upload the new DBR in the sidebar. The app syncs from S3 on load — if a teammate "
+        "already uploaded a newer file, refresh the page and you'll see it. "
+        "If not, upload the file yourself and it overwrites S3 automatically."
+    ),
+    (
+        "A container isn't showing up in the search.",
+        "A few possible causes: (1) It's not in the current DBR — it may be delivered or "
+        "on a vessel not yet in the system. (2) Try just the first 10 characters without "
+        "any suffix. (3) Search historical containers in Planning → WoW / History."
+    ),
+    (
+        "A carrier says they submitted but I don't see it.",
+        "Check the Carrier Submission tab's log and filter by carrier name. If it's not "
+        "there, ask them to resubmit. Common issues: old template format, or they didn't "
+        "enter a company name before submitting."
+    ),
+    (
+        "Detention / Demurrage Risk section is empty.",
+        "That section requires the Inbound Loads Report. Upload it in Sidebar → Additional "
+        "Reports. If it still shows nothing after upload, either all containers have already "
+        "gated out (good), or you uploaded the wrong file — check you're using the AR "
+        "Inbound Loads, not the Import Shipment Status."
+    ),
+    (
+        "The Planning tab shows no containers for this week.",
+        "Either no containers have been added yet for the selected week, or the week "
+        "selector is on a week with no entries. Use the arrow buttons next to the date "
+        "to move to the right week, or go to Plan Builder and add containers."
+    ),
+    (
+        "How do I share access with someone on the team?",
+        f"Send them the app URL ({APP_URL}) and the password: **robotics2026**. "
+        "The vendor portal does not require a password — it's public-facing by design."
+    ),
+    (
+        "How often should I upload the DBR Tracker for Import History?",
+        "Weekly — Monday morning before you build the plan. Each upload only adds "
+        "containers that aren't already in the database, so it's safe to run it "
+        "more often if needed."
+    ),
+    (
+        "Lane Costs shows 'No rate data loaded'.",
+        "Rate card data is managed by the app admin. Contact Dominique Kennedy (AGL) "
+        "to get rates loaded. This tab is a framework for when rate data is available."
+    ),
 ]
 
 for question, answer in faqs:
@@ -393,4 +385,4 @@ for question, answer in faqs:
         st.markdown(answer)
 
 st.divider()
-st.caption("For issues or feature requests, contact the app owner. Built by AGL Ops · July 2026.")
+st.caption(f"Password: robotics2026  ·  App: {APP_URL}  ·  Questions? Contact Dominique Kennedy, AGL")
