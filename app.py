@@ -3498,6 +3498,7 @@ with tab8:
 
                 st.info(f"Detected: **W{week_num}** ({wk_start} to {wk_end})")
 
+
                 curr_metrics = compute_metrics(
                     gvt_df, oblt_df, inbound_df,
                     wk_start, wk_end, wbr_report_date,
@@ -3626,6 +3627,50 @@ with tab8:
 
                 # STANDARD WBR TAB
                 with wbr_v1:
+                    # ── Data Preview ──────────────────────────────────────────────
+                    with st.expander("📋 Data Preview — inspect raw files before generating", expanded=False):
+                        pv1, pv2, pv3 = st.tabs(["GVT", "OBLT", "Inbound Loads"])
+
+                        with pv1:
+                            pop_gvt = gvt_df[
+                                gvt_df["ready_date"].notna() &
+                                (gvt_df["ready_date"] >= wk_start) &
+                                (gvt_df["ready_date"] <= wk_end)
+                            ].copy()
+                            st.caption(f"GVT — {len(gvt_df):,} total rows | **{len(pop_gvt)} containers in W{week_num} population** ({wk_start} to {wk_end})")
+                            _gvt_cols = [c for c in ["container","ready_date","facility","market","port","scac","status","container_empty","return_to_port","enter_facility"] if c in gvt_df.columns]
+                            st.dataframe(pop_gvt[_gvt_cols].sort_values("ready_date").reset_index(drop=True), use_container_width=True, height=240)
+                            st.caption("Ready Date range in file:")
+                            _rdates = gvt_df["ready_date"].dropna()
+                            if len(_rdates):
+                                st.code(f"Min: {_rdates.min()}   Max: {_rdates.max()}   Distinct: {_rdates.nunique()}")
+                            _fac = pop_gvt["facility"].value_counts() if "facility" in pop_gvt.columns else None
+                            if _fac is not None and len(_fac):
+                                st.caption("Containers by facility:")
+                                st.dataframe(_fac.reset_index().rename(columns={"index":"facility","facility":"count"}), hide_index=True, use_container_width=True)
+
+                        with pv2:
+                            _pop_ctrs = set(pop_gvt["container"]) if len(pop_gvt) else set()
+                            oblt_pop = oblt_df[oblt_df["container"].isin(_pop_ctrs)]
+                            st.caption(f"OBLT — {len(oblt_df):,} total rows | **{len(oblt_pop)} events for W{week_num} containers** ({oblt_pop['container'].nunique()} unique containers)")
+                            _status_counts = oblt_df["status"].value_counts()
+                            st.caption("Status distribution (full file):")
+                            st.dataframe(_status_counts.reset_index().rename(columns={"index":"status","status":"count"}), hide_index=True, use_container_width=True)
+                            st.caption(f"W{week_num} OBLT events:")
+                            _oblt_cols = [c for c in ["container","status","date"] if c in oblt_pop.columns]
+                            st.dataframe(oblt_pop[_oblt_cols].sort_values(["container","date"]).reset_index(drop=True), use_container_width=True, height=240)
+
+                        with pv3:
+                            il_pop = inbound_df[inbound_df["container"].isin(_pop_ctrs)] if len(_pop_ctrs) else inbound_df.head(0)
+                            st.caption(f"Inbound Loads — {len(inbound_df):,} total rows | **{len(il_pop)} rows matched to W{week_num} containers**")
+                            _il_cols = [c for c in ["container","po_promised","actual_arrival"] if c in il_pop.columns]
+                            if _il_cols:
+                                st.dataframe(il_pop[_il_cols].reset_index(drop=True), use_container_width=True, height=240)
+                            _has_arrival = il_pop["actual_arrival"].notna().sum() if "actual_arrival" in il_pop.columns else 0
+                            _has_po      = il_pop["po_promised"].notna().sum()    if "po_promised"    in il_pop.columns else 0
+                            st.code(f"With PO Promised Date: {_has_po}   With Actual Arrival: {_has_arrival}   Both: {(il_pop['po_promised'].notna() & il_pop['actual_arrival'].notna()).sum() if len(il_pop) else 0}")
+
+
                     st.markdown("**1-page slide PDF.** Submit to: `doc+destops-36@fusion.amazon.dev` | Subject: `NA Destination Ops WBR_Robotics` | **Deadline: 2:00 PM CT Monday**")
 
                     wg1, wg2 = st.columns([2, 1])
@@ -3697,6 +3742,50 @@ On-Time to Promise: {_s(_otp, "%")}
 
                 # ENHANCED WBR TAB
                 with wbr_v2:
+                    # ── Data Preview ──────────────────────────────────────────────
+                    with st.expander("📋 Data Preview — inspect raw files before generating", expanded=False):
+                        pv1, pv2, pv3 = st.tabs(["GVT", "OBLT", "Inbound Loads"])
+
+                        with pv1:
+                            pop_gvt = gvt_df[
+                                gvt_df["ready_date"].notna() &
+                                (gvt_df["ready_date"] >= wk_start) &
+                                (gvt_df["ready_date"] <= wk_end)
+                            ].copy()
+                            st.caption(f"GVT — {len(gvt_df):,} total rows | **{len(pop_gvt)} containers in W{week_num} population** ({wk_start} to {wk_end})")
+                            _gvt_cols = [c for c in ["container","ready_date","facility","market","port","scac","status","container_empty","return_to_port","enter_facility"] if c in gvt_df.columns]
+                            st.dataframe(pop_gvt[_gvt_cols].sort_values("ready_date").reset_index(drop=True), use_container_width=True, height=240)
+                            st.caption("Ready Date range in file:")
+                            _rdates = gvt_df["ready_date"].dropna()
+                            if len(_rdates):
+                                st.code(f"Min: {_rdates.min()}   Max: {_rdates.max()}   Distinct: {_rdates.nunique()}")
+                            _fac = pop_gvt["facility"].value_counts() if "facility" in pop_gvt.columns else None
+                            if _fac is not None and len(_fac):
+                                st.caption("Containers by facility:")
+                                st.dataframe(_fac.reset_index().rename(columns={"index":"facility","facility":"count"}), hide_index=True, use_container_width=True)
+
+                        with pv2:
+                            _pop_ctrs = set(pop_gvt["container"]) if len(pop_gvt) else set()
+                            oblt_pop = oblt_df[oblt_df["container"].isin(_pop_ctrs)]
+                            st.caption(f"OBLT — {len(oblt_df):,} total rows | **{len(oblt_pop)} events for W{week_num} containers** ({oblt_pop['container'].nunique()} unique containers)")
+                            _status_counts = oblt_df["status"].value_counts()
+                            st.caption("Status distribution (full file):")
+                            st.dataframe(_status_counts.reset_index().rename(columns={"index":"status","status":"count"}), hide_index=True, use_container_width=True)
+                            st.caption(f"W{week_num} OBLT events:")
+                            _oblt_cols = [c for c in ["container","status","date"] if c in oblt_pop.columns]
+                            st.dataframe(oblt_pop[_oblt_cols].sort_values(["container","date"]).reset_index(drop=True), use_container_width=True, height=240)
+
+                        with pv3:
+                            il_pop = inbound_df[inbound_df["container"].isin(_pop_ctrs)] if len(_pop_ctrs) else inbound_df.head(0)
+                            st.caption(f"Inbound Loads — {len(inbound_df):,} total rows | **{len(il_pop)} rows matched to W{week_num} containers**")
+                            _il_cols = [c for c in ["container","po_promised","actual_arrival"] if c in il_pop.columns]
+                            if _il_cols:
+                                st.dataframe(il_pop[_il_cols].reset_index(drop=True), use_container_width=True, height=240)
+                            _has_arrival = il_pop["actual_arrival"].notna().sum() if "actual_arrival" in il_pop.columns else 0
+                            _has_po      = il_pop["po_promised"].notna().sum()    if "po_promised"    in il_pop.columns else 0
+                            st.code(f"With PO Promised Date: {_has_po}   With Actual Arrival: {_has_arrival}   Both: {(il_pop['po_promised'].notna() & il_pop['actual_arrival'].notna()).sum() if len(il_pop) else 0}")
+
+
                     st.markdown("**3-page package for Wednesday Robotics meeting.** Carrier accountability + root cause + forward look.")
 
                     st.markdown("### Page 2 — Carrier Scorecard")
