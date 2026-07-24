@@ -2910,60 +2910,21 @@ with tab7:
     # IMPORT HISTORY
     # ══════════════════════════════════════════════════════════════════════════
     with _tp7:
-        st.subheader("Sync from DBR Tracker")
+        st.subheader("Import Historical Delivery Data")
         st.caption(
-            "Pulls the latest **ToteASERs Robotics DBR Tracker.xlsx** from SharePoint and "
-            "imports all new containers into the delivery plan. Duplicates are skipped."
+            "Upload the **ToteASERs Robotics DBR Tracker.xlsx** (downloaded from SharePoint) "
+            "to load container history. Run weekly before planning to keep WoW comparisons current. "
+            "Containers already in the database are skipped automatically."
         )
 
-        _sp_tid, _sp_cid, _sp_sec = _sp_secrets()
-        _sp_configured = all([_sp_tid, _sp_cid, _sp_sec])
+        _up = st.file_uploader(
+            "ToteASERs Robotics DBR Tracker.xlsx",
+            type=["xlsx"],
+            key="imp_dbr_upload",
+            help="Download the file from SharePoint, then upload it here.",
+        )
+        _imp_bytes = _up.read() if _up else None
 
-        if not _sp_configured:
-            st.warning(
-                "SharePoint credentials not configured. Add the following to your Streamlit secrets "
-                "to enable auto-fetch:"
-            )
-            st.code(
-                "[sharepoint]\n"
-                "TENANT_ID     = \"your-azure-tenant-id\"\n"
-                "CLIENT_ID     = \"your-app-registration-client-id\"\n"
-                "CLIENT_SECRET = \"your-client-secret\"",
-                language="toml",
-            )
-            st.markdown(
-                "**Setup steps:**  \n"
-                "1. Register an Azure AD app in Amazon's tenant with **Sites.Read.All** permission  \n"
-                "2. Grant admin consent  \n"
-                "3. Add the three values above to Streamlit Cloud \u2192 App Settings \u2192 Secrets  \n\n"
-                "Until then, use the manual upload below."
-            )
-            st.divider()
-
-        # ── Fetch trigger (if credentials exist) or manual upload ─────────────
-        _imp_bytes = None
-
-        if _sp_configured:
-            _fetch_col, _status_col = st.columns([2, 4])
-            with _fetch_col:
-                _do_fetch = st.button("Fetch latest from SharePoint", type="primary", key="sp_fetch_btn")
-            if _do_fetch:
-                _result = _fetch_dbr_from_sharepoint(_sp_tid, _sp_cid, _sp_sec)
-                if isinstance(_result, str):
-                    st.error(f"SharePoint fetch failed: {_result}")
-                elif _result is None:
-                    st.error("Could not authenticate to SharePoint. Check your credentials.")
-                else:
-                    _imp_bytes = _result
-                    with _status_col:
-                        st.success(f"Downloaded {len(_result):,} bytes from SharePoint.")
-        else:
-            st.caption("Manual upload (fallback):")
-            _up = st.file_uploader("ToteASERs Robotics DBR Tracker.xlsx", type=["xlsx"], key="imp_dbr_manual")
-            if _up:
-                _imp_bytes = _up.read()
-
-        # ── Parse + import ─────────────────────────────────────────────────────
         if _imp_bytes:
             _imp_rows, _imp_errors = _parse_dbr_tracker(_imp_bytes)
 
@@ -2972,7 +2933,7 @@ with tab7:
                 for _e in _imp_errors[:5]:
                     st.warning(_e)
             else:
-                # Deduplication
+                # Deduplication check
                 _con2 = get_db()
                 _existing_ids = set(
                     r[0] for r in _con2.execute(
@@ -2984,10 +2945,10 @@ with tab7:
                 _dup_count = len(_imp_rows) - len(_new_rows)
 
                 _im1, _im2, _im3, _im4 = st.columns(4)
-                _im1.metric("In file",         len(_imp_rows))
-                _im2.metric("New (to import)",  len(_new_rows))
-                _im3.metric("Already in DB",    _dup_count)
-                _im4.metric("Parse warnings",   len(_imp_errors))
+                _im1.metric("In file",          len(_imp_rows))
+                _im2.metric("New (to import)",   len(_new_rows))
+                _im3.metric("Already in DB",     _dup_count)
+                _im4.metric("Parse warnings",    len(_imp_errors))
 
                 if _imp_errors:
                     with st.expander(f"Parse warnings ({len(_imp_errors)})"):
@@ -3054,4 +3015,4 @@ with tab7:
                         )
                         st.rerun()
                 else:
-                    st.info("All containers in this file already exist in the database — nothing new to import.")
+                    st.info("All containers in this file are already in the database — nothing new to import.")
