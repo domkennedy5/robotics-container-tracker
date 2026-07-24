@@ -158,15 +158,24 @@ status, and source. Export to Excel any time.
 
 with tab_ref[2]:
     st.markdown("""
-**Dedicated view of the DBR's Empty Returns sheet with urgency flags.**
+**Tracks containers that still need to be returned to the port terminal after FC delivery.**
+When a container is delivered to an FC, the dray carrier has a deadline to return the empty
+to the terminal. Missing that deadline results in fees.
 
 Requires DBR to be loaded in the sidebar.
 
-**Filters:** Overdue / Due Soon (3 days) / All Active / All incl. Terminated
+**Filters:** Overdue / Due Soon (≤3 days) / All Open
 
 **Columns to watch:** Container #, Terminal, Empty Return Due Date, Days Until Due, Alert
 
-The table sorts by most urgent at the top. Export the filtered view to Excel as needed.
+The table shows only open obligations, sorted by most urgent at the top.
+
+**Terminated = resolved.** If a container's status is Terminated, the return obligation is
+closed — it was returned or the requirement was waived. Terminated containers are never
+counted as overdue. They appear in a collapsed "Terminated / Resolved" section at the
+bottom for reference only.
+
+Export the filtered view to Excel as needed.
 """)
 
 with tab_ref[3]:
