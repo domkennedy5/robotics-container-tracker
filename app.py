@@ -805,11 +805,19 @@ with tab2:
 
     _CARRIER_OPTS = ["", "ATMI", "ARVY", "HDDR", "RKNE", "TGHE"]
 
+    # Key counter resets the file uploader widget after a successful submit
+    if "bulk_upload_key" not in st.session_state:
+        st.session_state.bulk_upload_key = 0
+
+    # Show toast confirmation from previous submit (fires once, then cleared)
+    if st.session_state.get("upload_toast"):
+        st.toast(st.session_state.pop("upload_toast"), icon="✅")
+
     bulk_files = st.file_uploader(
         "Drop DBR files here",
         type=["xlsx", "csv"],
         accept_multiple_files=True,
-        key="bulk_dbr_upload",
+        key=f"bulk_dbr_upload_{st.session_state.bulk_upload_key}",
         label_visibility="collapsed",
     )
 
@@ -912,7 +920,9 @@ with tab2:
                     _conn.close()
                     if S3_ENABLED:
                         data_sync.push_db_to_s3(AWS_KEY, AWS_SECRET, AWS_REGION, S3_BUCKET)
-                    st.success(f"✅ Submitted {_logged} containers across {len(_all_parsed)} carrier(s)")
+                    _msg = f"✅ Submitted {_logged} containers across {len(_all_parsed)} carrier(s)"
+                    st.session_state["upload_toast"] = _msg
+                    st.session_state.bulk_upload_key += 1
                     st.rerun()
 
     st.divider()
