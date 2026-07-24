@@ -35,7 +35,7 @@ def week_bounds(week_num: int, year: int) -> tuple:
 def guess_week(ready_dates) -> tuple:
     dates = pd.to_datetime(ready_dates, errors='coerce').dropna()
     if dates.empty:
-        return 0, date.today().year
+        return None, date.today().year
     iso_weeks = dates.apply(lambda d: (d + timedelta(days=1)).isocalendar()[:2])
     most_common = pd.Series(iso_weeks).value_counts().idxmax()
     return int(most_common[1]), int(most_common[0])
@@ -152,7 +152,8 @@ def compute_metrics(gvt, oblt, inbound, week_start, week_end, report_date) -> di
         hav = c in av_ev.index; hoa = c in oa_ev.index
         if hoa and hav:
             d = (oa_ev[c] - av_ev[c]).total_seconds() / 86400
-            ao_days.append(d); ao_den += 1
+            if d > 0: ao_days.append(d)  # skip bad OBLT rows where OA < AV
+            ao_den += 1
             if d <= AV_OA_SLA_DAYS: ao_met += 1
         elif hoa and not hav:
             # Has OA but no AV recorded — in denominator, count as SLA met (arrived, OA happened)
@@ -170,7 +171,8 @@ def compute_metrics(gvt, oblt, inbound, week_start, week_end, report_date) -> di
         if c not in oa_ev.index: continue
         oa = oa_ev[c]
         d = (rd_ev[c] - oa).total_seconds()/86400 if c in rd_ev.index else (rpt - oa).total_seconds()/86400
-        od_days.append(d); od_den += 1
+        if d > 0: od_days.append(d)  # skip bad rows where delivery < outgate
+        od_den += 1
         if d <= OA_DEL_SLA_DAYS: od_met += 1
 
     # Empty->Term (completed only)
@@ -206,7 +208,7 @@ def compute_metrics(gvt, oblt, inbound, week_start, week_end, report_date) -> di
         'oa_del_avg':     _avg(od_days),
         'oa_del_sla_pct': _pct(od_met, od_den),
         'oa_del_p90':     _p90(od_days),
-        'empty_term_pct': _pct(et_met, et_den) if et_den else 100,
+        'empty_term_pct': _pct(et_met, et_den) if et_den else None,  # None = no CE/RTP data → shown as – on slide
         'e2e_avg':        round(float(np.mean(e2e))) if e2e else None,
         'otp_pct':        _pct(otp_met, otp_den),
         'week_start':     week_start.isoformat(),
@@ -245,7 +247,8 @@ def compute_carrier_scorecard(gvt, oblt, week_start, week_end, report_date) -> l
             hav = c in av_ev.index; hoa = c in oa_ev.index
             if hoa and hav:
                 d = (oa_ev[c] - av_ev[c]).total_seconds() / 86400
-                ao_days.append(d); ao_den += 1
+                if d > 0: ao_days.append(d)  # skip bad OBLT rows where OA < AV
+                ao_den += 1
                 if d <= AV_OA_SLA_DAYS: ao_met += 1
             elif hoa and not hav:
                 ao_den += 1; ao_met += 1
@@ -260,7 +263,8 @@ def compute_carrier_scorecard(gvt, oblt, week_start, week_end, report_date) -> l
             if c not in oa_ev.index: continue
             oa = oa_ev[c]
             d = (rd_ev[c] - oa).total_seconds()/86400 if c in rd_ev.index else (rpt - oa).total_seconds()/86400
-            od_days.append(d); od_den += 1
+            if d > 0: od_days.append(d)  # skip bad rows where delivery < outgate
+            od_den += 1
             if d <= OA_DEL_SLA_DAYS: od_met += 1
 
         scorecard.append({
