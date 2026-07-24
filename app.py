@@ -4072,16 +4072,39 @@ Path to Green:
                                         if cnt > 0:
                                             st.markdown(f"`{label}` {cnt} ({round(cnt/total_rc*100)}%)")
 
-                        # Forward look
-                        with st.expander("2-Week Forward Look"):
-                            fwd_data = pd.DataFrame([
-                                {"Port": "ORF",     "W+1 Proj": 0, "W+2 Proj": 0, "Carrier(s)": "", "Capacity": 0, "Gap / Action": ""},
-                                {"Port": "BOS",     "W+1 Proj": 0, "W+2 Proj": 0, "Carrier(s)": "", "Capacity": 0, "Gap / Action": ""},
-                                {"Port": "SAV",     "W+1 Proj": 0, "W+2 Proj": 0, "Carrier(s)": "", "Capacity": 0, "Gap / Action": ""},
-                                {"Port": "LAX/LGB", "W+1 Proj": 0, "W+2 Proj": 0, "Carrier(s)": "", "Capacity": 0, "Gap / Action": ""},
-                                {"Port": "OAK",     "W+1 Proj": 0, "W+2 Proj": 0, "Carrier(s)": "", "Capacity": 0, "Gap / Action": ""},
-                            ])
-                            st.data_editor(fwd_data, key="wbr_fwd_look", use_container_width=True, hide_index=True)
+                        # Forward look — ISS-driven if available, manual otherwise
+                        with st.expander("📦 2-Week Forward Look — Inbound Pipeline", expanded=True):
+                            if not iss_df.empty and "final_dest_eta" in iss_df.columns:
+                                _fwd_cut1 = wbr_report_date + timedelta(days=7)
+                                _fwd_cut2 = wbr_report_date + timedelta(days=14)
+                                _iss_fwd  = iss_df.copy()
+                                _iss_fwd["_eta"] = pd.to_datetime(_iss_fwd["final_dest_eta"], errors="coerce").dt.date
+                                _w1 = _iss_fwd[_iss_fwd["_eta"].notna() & (_iss_fwd["_eta"] > wbr_report_date) & (_iss_fwd["_eta"] <= _fwd_cut1)]
+                                _w2 = _iss_fwd[_iss_fwd["_eta"].notna() & (_iss_fwd["_eta"] > _fwd_cut1)        & (_iss_fwd["_eta"] <= _fwd_cut2)]
+                                st.caption(f"ETA within 7d: **{len(_w1)} containers** | within 14d: **{len(_w2)} containers**")
+                                _in_window = _iss_fwd[_iss_fwd["_eta"].notna() & (_iss_fwd["_eta"] > wbr_report_date) & (_iss_fwd["_eta"] <= _fwd_cut2)]
+                                if len(_in_window):
+                                    _vcols = [c for c in ["vessel_name","voyage_no","_eta","container_no","fc","carrier_code"] if c in _in_window.columns]
+                                    _vg = (
+                                        _in_window.groupby([c for c in ["vessel_name","voyage_no","_eta"] if c in _in_window.columns])
+                                        .agg(Containers=("container_no","count"),
+                                             FC=(("fc","lambda x: ', '.join(x.dropna().unique()[:3])") if "fc" in _in_window.columns else ("container_no","count")))
+                                        .reset_index().rename(columns={"vessel_name":"Vessel","voyage_no":"Voyage","_eta":"ETA"})
+                                        .sort_values("ETA")
+                                    )
+                                    st.dataframe(_vg, hide_index=True, use_container_width=True)
+                                else:
+                                    st.info("No containers with FinalDestETA in the next 14 days in this ISS file.")
+                            else:
+                                st.caption("⬆️ Upload Import Shipment Status (4th uploader) to auto-populate from live vessel ETAs.")
+                                fwd_data = pd.DataFrame([
+                                    {"Port": "ORF",     "W+1 Proj": 0, "W+2 Proj": 0, "Carrier(s)": "", "Notes": ""},
+                                    {"Port": "BOS",     "W+1 Proj": 0, "W+2 Proj": 0, "Carrier(s)": "", "Notes": ""},
+                                    {"Port": "SAV",     "W+1 Proj": 0, "W+2 Proj": 0, "Carrier(s)": "", "Notes": ""},
+                                    {"Port": "LAX/LGB", "W+1 Proj": 0, "W+2 Proj": 0, "Carrier(s)": "", "Notes": ""},
+                                    {"Port": "OAK",     "W+1 Proj": 0, "W+2 Proj": 0, "Carrier(s)": "", "Notes": ""},
+                                ])
+                                st.data_editor(fwd_data, key="wbr_fwd_look", use_container_width=True, hide_index=True)
 
                         # Enhanced bridge
                         op_notes_val    = st.session_state.get("wbr_op_notes", "")
