@@ -4216,13 +4216,18 @@ with tab8:
                                 _in_window = _iss_fwd[_iss_fwd["_eta"].notna() & (_iss_fwd["_eta"] > wbr_report_date) & (_iss_fwd["_eta"] <= _fwd_cut2)]
                                 if len(_in_window):
                                     _vcols = [c for c in ["vessel_name","voyage_no","_eta","container_no","fc","carrier_code"] if c in _in_window.columns]
-                                    _vg = (
-                                        _in_window.groupby([c for c in ["vessel_name","voyage_no","_eta"] if c in _in_window.columns])
-                                        .agg(Containers=("container_no","count"),
-                                             FC=(("fc","lambda x: ', '.join(x.dropna().unique()[:3])") if "fc" in _in_window.columns else ("container_no","count")))
-                                        .reset_index().rename(columns={"vessel_name":"Vessel","voyage_no":"Voyage","_eta":"ETA"})
-                                        .sort_values("ETA")
-                                    )
+                                    _grp_cols = [c for c in ["vessel_name","voyage_no","_eta"] if c in _in_window.columns]
+                                _fc_agg   = lambda x: ", ".join(x.dropna().astype(str).unique()[:3])
+                                if "fc" in _in_window.columns:
+                                    _vg = (_in_window.groupby(_grp_cols)
+                                           .agg(Containers=("container_no","count"), FC=("fc", _fc_agg))
+                                           .reset_index().rename(columns={"vessel_name":"Vessel","voyage_no":"Voyage","_eta":"ETA"})
+                                           .sort_values("ETA"))
+                                else:
+                                    _vg = (_in_window.groupby(_grp_cols)
+                                           .agg(Containers=("container_no","count"))
+                                           .reset_index().rename(columns={"vessel_name":"Vessel","voyage_no":"Voyage","_eta":"ETA"})
+                                           .sort_values("ETA"))
                                     st.dataframe(_vg, hide_index=True, use_container_width=True)
                                 else:
                                     st.info("No containers with FinalDestETA in the next 14 days in this ISS file.")
@@ -4239,7 +4244,10 @@ with tab8:
 
                         # Enhanced bridge
                         op_notes_val    = st.session_state.get("wbr_op_notes", "")
-                        rc_insight_val  = st.session_state.get("wbr_rc_insight", "")
+                        rc_insight_val  = "\n".join(
+                            f"  {cs['carrier']}: {st.session_state.get(f'wbr_rc_{cs["carrier"]}', '') or '—'}"
+                            for cs in carrier_sc
+                        ) if carrier_sc else ""
                         carrier_summary = "\n".join(
                             "  {}: Vol={}, AV-OA {}%{}".format(
                                 cs["carrier"], cs["volume"],
