@@ -529,7 +529,7 @@ with tab1:
         )
     with col_b:
         requester = st.text_input("Your name (optional)", placeholder="e.g. Dominique")
-        st.caption("Searches: Delivery Appts · Empty Returns · On Vessel · Canceled · Demurrage · Accessorials")
+        st.caption("Searches across: Delivery Appts · Empty Returns · On Vessel · Canceled · Demurrage · Accessorials · IDs with or without check digit both work")
         search_btn = st.button("Search", type="primary", use_container_width=True)
 
     if search_btn:
@@ -547,31 +547,108 @@ with tab1:
                  "\n".join(query_ids), len(query_ids) - len(not_found), len(not_found))
             )
 
-            m1, m2, m3 = st.columns(3)
-            m1.metric("Queried", len(query_ids))
-            m2.metric("Found", len(query_ids) - len(not_found))
-            m3.metric("Not found", len(not_found))
+            # ── Status + Detail helpers ────────────────────────────────────────────────
+            def _smart_status(sheet, row):
+                sv = str(row.get("Status", "") or "").strip().lower()
+                if sheet == "Delivery Appointments":
+                    if "delivered" in sv: return "Delivered"
+                    if "in transit" in sv: return "In Transit"
+                    return "Scheduled for Delivery"
+                if sheet == "Empty Returns":
+                    if "terminat" in sv or "returned" in sv:
+                        return "Delivered / Empty Returned"
+                    return "Delivered / Pending Return"
+                if sheet == "On Vessel":    return "On Vessel"
+                if sheet == "Canceled":     return "Canceled"
+                if sheet == "Demurrage":    return "Demurrage Hold"
+                if sheet == "Accessorials": return "Accessorial Charge"
+                return sheet
+
+            def _key_detail(sheet, row):
+                def g(col): return str(row.get(col) or "").strip()
+                if sheet == "Delivery Appointments":
+                    appt = g("Del Appointment Date/Time") or g("Outgate Date")
+                    return " · ".join(p for p in [g("FC/Building"), appt] if p)
+                if sheet == "Empty Returns":
+                    due = g("Empty Return Due Date")
+                    return " · ".join(p for p in [g("Terminal"), ("Due " + due) if due else ""] if p)
+                if sheet == "On Vessel":
+                    lfd = g("LFD")
+                    return " · ".join(p for p in [g("Location"), ("LFD " + lfd) if lfd else ""] if p)
+                if sheet == "Canceled":
+                    return " · ".join(p for p in [g("FC/Building"), g("Del Appointment Date/Time")] if p)
+                if sheet == "Demurrage":
+                    days = g("Days in Hold")
+                    return " · ".join(p for p in [g("Type of Hold"), (days + " days") if days else ""] if p)
+                if sheet == "Accessorials":
+                    return " · ".join(p for p in [g("Accessorial"), g("Date(s) Incurred")] if p)
+                return ""
+
+            # ── Build summary table ───────────────────────────────────────────────
+            summary_rows = []
+            if not results_df.empty:
+                for _, row in results_df.iterrows():
+                    sheet = row.get("Sheet", "")
+                    container = row.get("Container #") or row.get("Searched As", "")
+                    summary_rows.append({
+                        "Container": str(container).strip(),
+                        "Status":    _smart_status(sheet, row),
+                        "Detail":    _key_detail(sheet, row),
+                    })
+            summary_df = (pd.DataFrame(summary_rows) if summary_rows
+                          else pd.DataFrame(columns=["Container", "Status", "Detail"]))
+
+            # ── Status bucket metrics ──────────────────────────────────────────────────
+            BUCKET_ORDER = [
+                "Scheduled for Delivery", "In Transit", "On Vessel",
+                "Delivered", "Delivered / Pending Return", "Delivered / Empty Returned",
+                "Demurrage Hold", "Accessorial Charge", "Canceled",
+            ]
+            counts = {b: 0 for b in BUCKET_ORDER}
+            for s in (summary_df["Status"] if not summary_df.empty else []):
+                if s in counts: counts[s] += 1
+            active = [(k, v) for k, v in counts.items() if v > 0]
+            active.append(("Not Found", len(not_found)))
+            metric_cols = st.columns(len(active))
+            for col, (label, val) in zip(metric_cols, active):
+                col.metric(label, val)
+
             st.divider()
 
-            if not results_df.empty:
-                st.dataframe(results_df, use_container_width=True, hide_index=True)
+            # ── Consolidated summary table ────────────────────────────────────────────
+            if not summary_df.empty:
+                st.dataframe(
+                    summary_df, use_container_width=True, hide_index=True,
+                    column_config={
+                        "Container": st.column_config.TextColumn("Container", width="small"),
+                        "Status":    st.column_config.TextColumn("Status",    width="medium"),
+                        "Detail":    st.column_config.TextColumn("Detail",    width="large"),
+                    },
+                )
+                with st.expander("🔍 Full details (all fields)"):
+                    st.dataframe(results_df, use_container_width=True, hide_index=True)
+
                 buf = io.BytesIO()
                 with pd.ExcelWriter(buf, engine="openpyxl") as w:
-                    results_df.to_excel(w, index=False, sheet_name="Found")
+                    summary_df.to_excel(w, index=False, sheet_name="Summary")
+                    results_df.to_excel(w, index=False, sheet_name="Full Details")
                     if not_found:
                         pd.DataFrame({"Not Found": not_found}).to_excel(
                             w, index=False, sheet_name="Not Found")
                 buf.seek(0)
-                st.download_button("⬇️ Download results (.xlsx)", data=buf,
+                st.download_button(
+                    "⬇️ Download results (.xlsx)", data=buf,
                     file_name=f"container_lookup_{date.today()}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
             else:
                 st.warning("None of the queried containers found in the DBR.")
 
             if not_found:
-                st.markdown("### Not Found in DBR")
+                st.markdown("**Not found in this DBR:**")
                 st.dataframe(pd.DataFrame({"Container ID": not_found}),
                              use_container_width=True, hide_index=True)
+
 
 
 # ══════════════════════════════════════════════════════════════════════════════
