@@ -26,6 +26,20 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH  = os.path.join(BASE_DIR, "tracker.db")
 VENDOR_PORTAL_URL = "https://robotics-container-tracker-7uf88f7ez9tga3k44phfjm.streamlit.app/vendor_upload"
 
+# Friendly display labels for carrier codes
+CARRIER_DISPLAY = {
+    "HDDR": "HDDR (Maersk/HUDD)",
+}
+
+def _apply_carrier_display(df: "pd.DataFrame") -> "pd.DataFrame":
+    """Map raw carrier codes to display names in-place (copy)."""
+    if "carrier_name" in df.columns:
+        df = df.copy()
+        df["carrier_name"] = df["carrier_name"].map(
+            lambda x: CARRIER_DISPLAY.get(x, x)
+        )
+    return df
+
 # ── AWS secrets (graceful fallback if not configured) ─────────────────────────
 def _aws_cfg():
     try:
@@ -956,6 +970,7 @@ with tab2:
         _sl_conn
     )
     _sl_conn.close()
+    _log_df = _apply_carrier_display(_log_df)
 
     if _log_df.empty:
         st.info("No submissions yet.")
@@ -1094,6 +1109,7 @@ with tab4:
         conn
     )
     conn.close()
+    all_df = _apply_carrier_display(all_df)
 
     if all_df.empty:
         st.info("No carrier submissions yet.")
