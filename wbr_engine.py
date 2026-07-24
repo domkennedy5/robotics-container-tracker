@@ -214,6 +214,70 @@ def compute_metrics(gvt, oblt, inbound, week_start, week_end, report_date) -> di
     }
 
 
+
+def compute_carrier_scorecard(gvt, oblt, week_start, week_end, report_date) -> list:
+    """
+    Per-carrier AV->OA and OA->Del breakdown for the Enhanced WBR carrier scorecard.
+    Returns list of dicts sorted by volume descending.
+    """
+    pop = gvt[
+        gvt['ready_date'].notna() &
+        (gvt['ready_date'] >= week_start) &
+        (gvt['ready_date'] <= week_end)
+    ].copy()
+
+    if pop.empty:
+        return []
+
+    av_ev     = _latest(oblt, 'AV')
+    oa_ev     = _latest(oblt, 'OA')
+    rd_ev     = _latest(oblt, 'RD')
+    rpt       = pd.Timestamp(report_date)
+    wk_end_ts = pd.Timestamp(week_end)
+
+    scorecard = []
+    for carrier, grp in pop.groupby('scac'):
+        carrier_label = str(carrier).strip() if carrier else 'Unknown'
+
+        # AV→OA
+        ao_days = []; ao_met = 0; ao_den = 0
+        for c in grp['container']:
+            hav = c in av_ev.index; hoa = c in oa_ev.index
+            if hoa and hav:
+                d = (oa_ev[c] - av_ev[c]).total_seconds() / 86400
+                ao_days.append(d); ao_den += 1
+                if d <= AV_OA_SLA_DAYS: ao_met += 1
+            elif hoa and not hav:
+                ao_den += 1; ao_met += 1
+            elif hav and not hoa:
+                if (wk_end_ts - av_ev[c]).total_seconds() / 86400 > AV_OA_SLA_DAYS:
+                    ao_den += 1  # expired miss
+
+        # OA→Del (BOS only, excl A320-RBTCS)
+        bos_grp = grp[grp['facility'] != EXCL_FACILITY]
+        od_days = []; od_met = 0; od_den = 0
+        for c in bos_grp['container']:
+            if c not in oa_ev.index: continue
+            oa = oa_ev[c]
+            d = (rd_ev[c] - oa).total_seconds()/86400 if c in rd_ev.index else (rpt - oa).total_seconds()/86400
+            od_days.append(d); od_den += 1
+            if d <= OA_DEL_SLA_DAYS: od_met += 1
+
+        scorecard.append({
+            'carrier':        carrier_label,
+            'volume':         len(grp),
+            'av_oa_sla_pct':  round(ao_met/ao_den*100) if ao_den else None,
+            'av_oa_misses':   (ao_den - ao_met) if ao_den else 0,
+            'av_oa_avg':      round(float(np.mean(ao_days)), 1) if ao_days else None,
+            'av_oa_p90':      round(float(np.percentile(ao_days, 90))) if ao_days else None,
+            'oa_del_sla_pct': round(od_met/od_den*100) if od_den else None,
+            'oa_del_misses':  (od_den - od_met) if od_den else 0,
+            'oa_del_avg':     round(float(np.mean(od_days)), 1) if od_days else None,
+            'oa_del_p90':     round(float(np.percentile(od_days, 90))) if od_days else None,
+        })
+
+    return sorted(scorecard, key=lambda x: -x['volume'])
+
 def _empty_metrics() -> dict:
     return {k: None for k in [
         'containers','av_oa_avg','av_oa_sla_pct','av_oa_p90',

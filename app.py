@@ -3423,27 +3423,58 @@ with tab7:
 # ══════════════════════════════════════════════════════════════════════════════
 with tab8:
     st.subheader("WBR Slide Generator")
-    st.caption("Upload this week's GVT, OBLT, and Inbound Loads files. Prior weeks are carried forward from the database.")
 
     from wbr_engine import (
         load_gvt, load_oblt, load_inbound_loads,
-        compute_metrics, compute_totals,
+        compute_metrics, compute_totals, compute_carrier_scorecard,
         week_bounds, guess_week,
         save_week_to_db, load_weeks_from_db,
     )
     from wbr_pdf import generate_standard_wbr
 
-    # ── File uploaders ────────────────────────────────────────────────────────
+    # Version selector tabs
+    wbr_v1, wbr_v2 = st.tabs([
+        "📊 Standard WBR — Monday (Mitch's Org)",
+        "📦 Enhanced WBR — Wednesday (Robotics Meeting)",
+    ])
+
+    # File uploaders with pull instructions
+    st.markdown("#### Source Files")
+    st.caption("Pull all three files Monday morning before the 2:00 PM CT submission deadline.")
+
     wu1, wu2, wu3 = st.columns(3)
     with wu1:
-        wbr_gvt_file  = st.file_uploader("GVT Data (.xlsx)", type=["xlsx"], key="wbr_gvt")
-    with wu2:
-        wbr_oblt_file = st.file_uploader("OBLT Data (.xlsx)", type=["xlsx"], key="wbr_oblt")
-    with wu3:
-        wbr_il_file   = st.file_uploader("Inbound Loads (.xlsx)", type=["xlsx"], key="wbr_il")
+        with st.expander("ℹ️ How to pull GVT"):
+            st.markdown("""**Global Visibility Tool (GVT)**
+- Export all Robotics containers for the reporting week (Sun–Sat)
+- Filter: Robotics BU, all BOS / ORF / SAV / LAX markets
+- **Verify:** `Ready Date/Time` and `Container` columns populated
+- Sheet: `Sheet1` · Filename pattern: `GVT Data WK##.xlsx`
+- ⚠️ If `Ready Date/Time` is mostly blank, the weekly cut hasn't processed yet — re-pull""")
+        wbr_gvt_file = st.file_uploader("GVT Data (.xlsx)", type=["xlsx"], key="wbr_gvt")
 
-    # ── Report date ───────────────────────────────────────────────────────────
-    wd1, wd2 = st.columns([1,3])
+    with wu2:
+        with st.expander("ℹ️ How to pull OBLT"):
+            st.markdown("""**OBLT (Ocean Bridge Logistics Tracking)**
+- Export milestone events for all Robotics containers
+- Required sheet: `ObltData`
+- Key columns: `tracking_id`, `status` (AV/OA/VD/RD), `status_date`
+- Status key: AV=Available · OA=Outgate/Pickup · VD=Vessel Departed · RD=Received
+- Filename pattern: `OBLT WK##.xlsx`""")
+        wbr_oblt_file = st.file_uploader("OBLT Data (.xlsx)", type=["xlsx"], key="wbr_oblt")
+
+    with wu3:
+        with st.expander("ℹ️ How to pull Inbound Loads"):
+            st.markdown("""**Amazon Robotics Inbound Loads Report**
+- Run as of Monday morning (before generating the slide)
+- Required sheet: `Inbound Loads`
+- Key columns: `Container Id`, `PO Promised Date`, `Actual Arrival At Final Destination`
+- Filename pattern: `Amazon Robotics Inbound Loads Report[date].xlsx`
+- ⚠️ Actual Arrival blank for undelivered containers — expected. OTP scored on delivered only.
+- **Supplemental:** DBR Tracker (SharePoint > AGLRobotics) tracks GF/BF deliveries""")
+        wbr_il_file = st.file_uploader("Inbound Loads (.xlsx)", type=["xlsx"], key="wbr_il")
+
+    wd1, wd2 = st.columns([1, 3])
     with wd1:
         wbr_report_date = st.date_input(
             "Report date (Monday submission)",
@@ -3451,164 +3482,139 @@ with tab8:
             key="wbr_report_date",
         )
 
-    # ── Compute on upload ─────────────────────────────────────────────────────
     if wbr_gvt_file and wbr_oblt_file and wbr_il_file:
         gvt_bytes  = wbr_gvt_file.read()
         oblt_bytes = wbr_oblt_file.read()
         il_bytes   = wbr_il_file.read()
 
-        with st.spinner("Parsing files and computing metrics…"):
+        with st.spinner("Parsing files and computing metrics..."):
             try:
-                gvt_df    = load_gvt(gvt_bytes)
-                oblt_df   = load_oblt(oblt_bytes)
+                gvt_df     = load_gvt(gvt_bytes)
+                oblt_df    = load_oblt(oblt_bytes)
                 inbound_df = load_inbound_loads(il_bytes)
 
-                # Detect week from GVT ready dates
                 week_num, year = guess_week(gvt_df["ready_date"])
                 wk_start, wk_end = week_bounds(week_num, year)
 
-                st.info(f"Detected: **W{week_num}** ({wk_start} – {wk_end})")
+                st.info(f"Detected: **W{week_num}** ({wk_start} to {wk_end})")
 
-                # Compute current week metrics
                 curr_metrics = compute_metrics(
                     gvt_df, oblt_df, inbound_df,
                     wk_start, wk_end, wbr_report_date,
                 )
 
-                # Load prior 5 weeks from DB
+                carrier_sc = compute_carrier_scorecard(
+                    gvt_df, oblt_df, wk_start, wk_end, wbr_report_date
+                )
+
                 prior_nums = list(range(week_num - 5, week_num))
                 wbr_conn   = get_db()
                 prior_data = load_weeks_from_db(wbr_conn, year, prior_nums)
                 wbr_conn.close()
 
-                # Build display order: 6 weeks ending on current
                 display_nums   = prior_nums + [week_num]
                 display_labels = [f"W{n}" for n in display_nums]
                 display_data   = [prior_data.get(n) for n in prior_nums] + [curr_metrics]
-
                 totals = compute_totals([d for d in display_data if d])
 
-                # ── Metrics preview ───────────────────────────────────────────
                 st.markdown("#### Current Week Metrics (W{})".format(week_num))
                 mc1, mc2, mc3, mc4, mc5 = st.columns(5)
-                mc1.metric("Containers",     curr_metrics.get("containers", "–"))
-                mc2.metric("AV→OA SLA%",     f"{curr_metrics.get('av_oa_sla_pct','–')}%")
-                mc3.metric("OA→Del SLA%",    f"{curr_metrics.get('oa_del_sla_pct','–')}%")
-                mc4.metric("E2E Avg",         curr_metrics.get("e2e_avg", "–"))
-                mc5.metric("OTP%",            f"{curr_metrics.get('otp_pct','–')}%")
+                mc1.metric("Containers",  curr_metrics.get("containers", "x"))
+                mc2.metric("AV to OA SLA%", "{}%".format(curr_metrics.get("av_oa_sla_pct", "x")))
+                mc3.metric("OA to Del SLA%", "{}%".format(curr_metrics.get("oa_del_sla_pct", "x")))
+                mc4.metric("E2E Avg",      curr_metrics.get("e2e_avg", "x"))
+                mc5.metric("OTP%",         "{}%".format(curr_metrics.get("otp_pct", "x")))
 
-                # ── Data Quality & Validation panel ──────────────────────────
-                with st.expander("🔍 Data Quality & Validation — check this before generating the slide", expanded=False):
-                    st.caption("These checks flag potential data gaps or anomalies. Address any warnings before distributing the WBR.")
-
+                with st.expander("Data Quality and Validation - check before generating", expanded=False):
+                    st.caption("These checks flag potential data gaps. Address warnings before distributing the WBR.")
                     pop_set = set(gvt_df[
-                        gvt_df['ready_date'].notna() &
-                        (gvt_df['ready_date'] >= wk_start) &
-                        (gvt_df['ready_date'] <= wk_end)
-                    ]['container'])
+                        gvt_df["ready_date"].notna() &
+                        (gvt_df["ready_date"] >= wk_start) &
+                        (gvt_df["ready_date"] <= wk_end)
+                    ]["container"])
                     n_pop = len(pop_set)
 
-                    # Check 1: Container count
                     n_ctr = curr_metrics.get("containers", 0) or 0
                     if n_ctr == 0:
-                        st.error("❌ Zero containers in population. Verify GVT file is for the correct week.")
+                        st.error("Zero containers in population. Verify GVT file is for the correct week.")
                     elif n_ctr < 20:
-                        st.warning(f"⚠️ Low container count ({n_ctr}). Typical weeks are 30–100+. Confirm week boundaries are correct.")
+                        st.warning(f"Low container count ({n_ctr}). Typical weeks are 30 to 100+.")
                     elif n_ctr > 150:
-                        st.warning(f"⚠️ High container count ({n_ctr}). Verify week auto-detection picked the right week.")
+                        st.warning(f"High container count ({n_ctr}). Verify week auto-detection.")
                     else:
-                        st.success(f"✅ Container count: {n_ctr} (normal range)")
+                        st.success(f"Container count: {n_ctr} (normal range)")
 
-                    # Check 2: OBLT coverage
-                    oblt_set = set(oblt_df['container'])
+                    oblt_set = set(oblt_df["container"])
                     oblt_cov = len(pop_set & oblt_set) / n_pop * 100 if n_pop else 0
                     if oblt_cov < 60:
-                        st.warning(f"⚠️ OBLT coverage is low ({oblt_cov:.0f}% of GVT containers have OBLT events). AV→OA and OA→Del metrics may be understated. Check that the OBLT file matches the same week and market.")
+                        st.warning(f"OBLT coverage low ({oblt_cov:.0f}%). AV to OA and OA to Del may be understated.")
                     elif oblt_cov < 80:
-                        st.info(f"ℹ️ OBLT coverage: {oblt_cov:.0f}%. Some containers have no OBLT milestone data — in-transit shipments or missing feeds.")
+                        st.info(f"OBLT coverage: {oblt_cov:.0f}%. Some containers have no milestone data.")
                     else:
-                        st.success(f"✅ OBLT coverage: {oblt_cov:.0f}% of containers have OBLT milestone data.")
+                        st.success(f"OBLT coverage: {oblt_cov:.0f}% of containers have OBLT data.")
 
-                    # Check 3: In-transit OA→Del (no RD yet)
-                    oa_set = set(oblt_df[oblt_df['status']=='OA']['container']) & pop_set
-                    rd_set = set(oblt_df[oblt_df['status']=='RD']['container']) & pop_set
+                    oa_set = set(oblt_df[oblt_df["status"] == "OA"]["container"]) & pop_set
+                    rd_set = set(oblt_df[oblt_df["status"] == "RD"]["container"]) & pop_set
                     in_transit = len(oa_set - rd_set)
                     if in_transit > 0:
-                        st.info(f"ℹ️ {in_transit} container(s) have OA but no RD event (in-transit or delivery not yet reported). "
-                                f"Their elapsed time to report date is included in OA→Del avg — this inflates the average if containers are still moving.")
+                        st.info(f"{in_transit} container(s) have OA but no RD (in-transit). Elapsed time included in OA to Del avg.")
 
-                    # Check 4: E2E completeness
                     if curr_metrics.get("e2e_avg") is None:
-                        st.warning("⚠️ E2E avg is null — no complete VD→Enter Facility journeys found. "
-                                   "Confirm OBLT has VD events and GVT 'Enter Facility' column is populated.")
+                        st.warning("E2E avg is null - no complete VD to Enter Facility journeys found.")
                     else:
                         e2e_v = curr_metrics["e2e_avg"]
-                        if e2e_v > 100:
-                            st.warning(f"⚠️ E2E avg ({e2e_v}d) seems high. Check for VD date outliers or containers with data entry errors.")
+                        if e2e_v and e2e_v > 100:
+                            st.warning(f"E2E avg ({e2e_v}d) seems high. Check for VD date outliers.")
                         else:
-                            st.success(f"✅ E2E avg: {e2e_v} days (completed journeys only)")
+                            st.success(f"E2E avg: {e2e_v} days (completed journeys only)")
 
-                    # Check 5: OTP match rate
-                    il_matched = inbound_df[inbound_df['container'].isin(pop_set)].dropna(subset=['po_promised','actual_arrival'])
+                    il_matched = inbound_df[inbound_df["container"].isin(pop_set)].dropna(subset=["po_promised", "actual_arrival"])
                     otp_match = len(il_matched) / n_pop * 100 if n_pop else 0
                     if otp_match < 40:
-                        st.warning(f"⚠️ OTP match rate: only {otp_match:.0f}% of containers found in Inbound Loads with both PO Promised Date and Actual Arrival. "
-                                   f"OTP% ({curr_metrics.get('otp_pct','–')}%) may not be representative. "
-                                   "Verify the Inbound Loads file covers the same containers as GVT.")
+                        st.warning(f"OTP match rate: only {otp_match:.0f}% of containers found in Inbound Loads with both date fields.")
                     elif otp_match < 70:
-                        st.info(f"ℹ️ OTP match rate: {otp_match:.0f}%. Some containers unmatched — OTP denominator is {len(il_matched)}/{n_pop} containers.")
+                        st.info(f"OTP match rate: {otp_match:.0f}%. Denominator is {len(il_matched)}/{n_pop}.")
                     else:
-                        st.success(f"✅ OTP match rate: {otp_match:.0f}% ({len(il_matched)}/{n_pop} containers matched with PO dates)")
+                        st.success(f"OTP match rate: {otp_match:.0f}% ({len(il_matched)}/{n_pop} matched)")
 
-                    # Check 6: Empty→Term completeness
-                    et_pct = curr_metrics.get("empty_term_pct")
-                    gvt_with_empty = gvt_df[gvt_df['container'].isin(pop_set)]['container_empty'].notna().sum()
-                    gvt_with_rtp   = gvt_df[gvt_df['container'].isin(pop_set)]['return_to_port'].notna().sum()
+                    gvt_pop = gvt_df[gvt_df["container"].isin(pop_set)]
+                    gvt_with_empty = gvt_pop["container_empty"].notna().sum()
+                    gvt_with_rtp   = gvt_pop["return_to_port"].notna().sum()
                     if gvt_with_empty == 0:
-                        st.warning("⚠️ No 'Container Empty' timestamps found in GVT. Empty→Term metric cannot be computed. "
-                                   "This is expected early in the week — containers may not have returned yet.")
+                        st.warning("No Container Empty timestamps in GVT. Empty to Term cannot be computed (expected early in week).")
                     else:
-                        st.success(f"✅ Empty→Term: {gvt_with_empty} containers with Empty timestamp, {gvt_with_rtp} with Return to Port.")
+                        st.success(f"Empty to Term: {gvt_with_empty} with Empty timestamp, {gvt_with_rtp} with Return to Port.")
 
                     st.markdown("---")
-                    # Week detection confidence
-                    st.markdown(f"**Auto-detected week:** W{week_num} | {wk_start} (Sun) → {wk_end} (Sat)")
-                    st.caption("If this is wrong, double-check the GVT file or manually override using the date picker above.")
-
-                    # Excluded facility reminder
-                    st.info("**Scope:** OA→Del excludes **A320-RBTCS** (ORF facility, non-operational). "
-                            "All other BOS-market containers are included.")
-
-                    # Operational callouts
-                    st.markdown("**Operational callouts** — add business context to your bridge/email notes:")
+                    st.markdown(f"**Auto-detected week:** W{week_num} | {wk_start} (Sun) to {wk_end} (Sat)")
+                    st.info("Scope note: OA to Del excludes A320-RBTCS (ORF, non-operational). BOS-market containers included.")
                     st.text_area(
-                        "Site shutdowns, container reroutes, carrier disruptions, or other anomalies:",
-                        placeholder="e.g. BOS closed Mon–Tue holiday, 8 containers rerouted ORF→BOS mid-week, DRAYCO on-time reliability issue",
+                        "Operational callouts - add business context to your bridge/email notes:",
+                        placeholder="e.g. BOS closed Mon-Tue, 8 containers rerouted ORF to BOS, DRAYCO reliability issue",
                         key="wbr_op_notes",
                         height=72,
                     )
 
-                # ── Prior weeks status ────────────────────────────────────────
                 missing = [f"W{n}" for n in prior_nums if n not in prior_data]
                 if missing:
-                    with st.expander(f"⚠️ {len(missing)} prior week(s) not in DB — enter manually"):
-                        st.caption("These weeks have no saved data. Enter values or leave blank (will show — in slide).")
+                    with st.expander(f"{len(missing)} prior week(s) not in DB - enter manually"):
+                        st.caption("These weeks have no saved data. Enter values or leave blank.")
                         manual_inputs = {}
                         for mn in missing:
                             wn = int(mn[1:])
                             st.markdown(f"**{mn}**")
                             mi1, mi2, mi3, mi4, mi5, mi6, mi7, mi8, mi9, mi10 = st.columns(10)
                             manual_inputs[wn] = {
-                                "containers":     mi1.number_input("Vol",  key=f"m_{mn}_vol", min_value=0, value=0),
+                                "containers":     mi1.number_input("Vol",    key=f"m_{mn}_vol",   min_value=0, value=0),
                                 "av_oa_avg":      mi2.number_input("AO avg", key=f"m_{mn}_aoavg", min_value=0.0, step=0.1),
-                                "av_oa_sla_pct":  mi3.number_input("AO%",  key=f"m_{mn}_aopct", min_value=0, max_value=100),
+                                "av_oa_sla_pct":  mi3.number_input("AO%",    key=f"m_{mn}_aopct", min_value=0, max_value=100),
                                 "av_oa_p90":      mi4.number_input("AO p90", key=f"m_{mn}_aop90", min_value=0),
                                 "oa_del_avg":     mi5.number_input("OD avg", key=f"m_{mn}_odavg", min_value=0.0, step=0.1),
-                                "oa_del_sla_pct": mi6.number_input("OD%",  key=f"m_{mn}_odpct", min_value=0, max_value=100),
+                                "oa_del_sla_pct": mi6.number_input("OD%",    key=f"m_{mn}_odpct", min_value=0, max_value=100),
                                 "oa_del_p90":     mi7.number_input("OD p90", key=f"m_{mn}_odp90", min_value=0),
-                                "empty_term_pct": mi8.number_input("ET%",  key=f"m_{mn}_etpct", min_value=0, max_value=100),
-                                "e2e_avg":        mi9.number_input("E2E",  key=f"m_{mn}_e2e",  min_value=0),
-                                "otp_pct":        mi10.number_input("OTP%", key=f"m_{mn}_otp",  min_value=0, max_value=100),
+                                "empty_term_pct": mi8.number_input("ET%",    key=f"m_{mn}_etpct", min_value=0, max_value=100),
+                                "e2e_avg":        mi9.number_input("E2E",    key=f"m_{mn}_e2e",   min_value=0),
+                                "otp_pct":        mi10.number_input("OTP%",  key=f"m_{mn}_otp",   min_value=0, max_value=100),
                                 "week_start": None, "week_end": None,
                             }
                         if st.button("Apply manual values", key="wbr_apply_manual"):
@@ -3616,58 +3622,215 @@ with tab8:
                                 display_data[prior_nums.index(wn)] = mv if mv["containers"] > 0 else None
                             st.rerun()
 
-                # ── Generate PDF ──────────────────────────────────────────────
                 st.markdown("---")
-                wg1, wg2 = st.columns([2, 1])
-                with wg2:
-                    wbr_time_str = st.text_input(
-                        "Footer time string",
-                        value="10:00am (CST) | 9:00am (MT) | 8:00am (PT)",
-                        key="wbr_time_str",
-                    )
 
-                with wg1:
-                    if st.button("Generate WBR Slide PDF", type="primary", key="wbr_generate"):
-                        with st.spinner("Building PDF…"):
-                            pdf_bytes = generate_standard_wbr(
-                                week_labels   = display_labels,
-                                weeks_data    = display_data,
-                                totals        = totals,
-                                report_date   = wbr_report_date,
-                                report_time   = wbr_time_str,
-                            )
-                            # Save current week to DB
-                            wbr_conn2 = get_db()
-                            save_week_to_db(
-                                wbr_conn2, year, week_num,
-                                curr_metrics,
-                                datetime.now(_EASTERN).isoformat(),
-                            )
-                            wbr_conn2.commit()
-                            wbr_conn2.close()
-                            if S3_ENABLED:
-                                data_sync.push_db_to_s3(AWS_KEY, AWS_SECRET, AWS_REGION, S3_BUCKET)
+                # STANDARD WBR TAB
+                with wbr_v1:
+                    st.markdown("**1-page slide PDF.** Submit to: `doc+destops-36@fusion.amazon.dev` | Subject: `NA Destination Ops WBR_Robotics` | **Deadline: 2:00 PM CT Monday**")
 
-                        # File name: GLS_Robotics_YYYY-M-DD.pdf (report date)
-                        rd = wbr_report_date
-                        fname = f"GLS_Robotics_{rd.year}-{rd.month}-{rd.day}.pdf"
-                        st.download_button(
-                            label=f"⬇️ Download {fname}",
-                            data=pdf_bytes,
-                            file_name=fname,
-                            mime="application/pdf",
-                            key="wbr_dl",
+                    wg1, wg2 = st.columns([2, 1])
+                    with wg2:
+                        wbr_time_str = st.text_input(
+                            "Footer time string",
+                            value="10:00am (CT) | 9:00am (MT) | 8:00am (PT)",
+                            key="wbr_time_str",
                         )
-                        st.success(f"W{week_num} metrics saved to DB for future carry-forward.")
+                    with wg1:
+                        if st.button("Generate WBR Slide PDF", type="primary", key="wbr_generate"):
+                            with st.spinner("Building PDF..."):
+                                pdf_bytes = generate_standard_wbr(
+                                    week_labels   = display_labels,
+                                    weeks_data    = display_data,
+                                    totals        = totals,
+                                    report_date   = wbr_report_date,
+                                    report_time   = wbr_time_str,
+                                )
+                                wbr_conn2 = get_db()
+                                save_week_to_db(
+                                    wbr_conn2, year, week_num,
+                                    curr_metrics,
+                                    datetime.now(_EASTERN).isoformat(),
+                                )
+                                wbr_conn2.commit()
+                                wbr_conn2.close()
+                                if S3_ENABLED:
+                                    data_sync.push_db_to_s3(AWS_KEY, AWS_SECRET, AWS_REGION, S3_BUCKET)
+
+                            rd = wbr_report_date
+                            fname = f"GLS_Robotics_{rd.year}-{rd.month}-{rd.day}.pdf"
+                            st.download_button(
+                                label=f"Download {fname}",
+                                data=pdf_bytes,
+                                file_name=fname,
+                                mime="application/pdf",
+                                key="wbr_dl",
+                            )
+                            st.success(f"W{week_num} metrics saved to DB for future carry-forward.")
+
+                    st.markdown("**Bridge narrative (copy to email)**")
+                    _av_sla = curr_metrics.get("av_oa_sla_pct")
+                    _od_sla = curr_metrics.get("oa_del_sla_pct")
+                    _otp    = curr_metrics.get("otp_pct")
+                    _e2e    = curr_metrics.get("e2e_avg")
+                    _vol    = curr_metrics.get("containers")
+                    _av_avg = curr_metrics.get("av_oa_avg")
+                    _od_avg = curr_metrics.get("oa_del_avg")
+                    _av_p90 = curr_metrics.get("av_oa_p90")
+                    _od_p90 = curr_metrics.get("oa_del_p90")
+                    _et     = curr_metrics.get("empty_term_pct")
+
+                    def _s(v, sfx=""): return f"{v}{sfx}" if v is not None else "–"
+
+                    _bridge = f"""WK{week_num} Robotics Destination Dray — WBR Bridge ({wk_start} to {wk_end})
+
+Volume: {_s(_vol)} containers
+
+AV to OA: {_s(_av_sla, "%")} SLA | {_s(_av_avg)} avg days | P90: {_s(_av_p90)} days
+OA to Delivery: {_s(_od_sla, "%")} SLA | {_s(_od_avg)} avg days | P90: {_s(_od_p90)} days
+Empty to Terminal: {_s(_et, "%")} SLA
+E2E Transit: {_s(_e2e)} days avg
+On-Time to Promise: {_s(_otp, "%")}
+
+[Add operational callouts, root cause, and path-to-green here]
+"""
+                    st.text_area("Bridge (editable)", value=_bridge, height=200, key="wbr_bridge_std")
+
+                # ENHANCED WBR TAB
+                with wbr_v2:
+                    st.markdown("**3-page package for Wednesday Robotics meeting.** Carrier accountability + root cause + forward look.")
+
+                    st.markdown("### Page 2 — Carrier Scorecard")
+
+                    if carrier_sc:
+                        st.markdown("**AV to OA Performance** (SLA: 3 days | all containers)")
+                        av_rows = []
+                        for cs in carrier_sc:
+                            sla = "{}%".format(cs["av_oa_sla_pct"]) if cs["av_oa_sla_pct"] is not None else "x"
+                            miss_flag = " !" if cs["av_oa_sla_pct"] is not None and cs["av_oa_sla_pct"] < 95 else ""
+                            av_rows.append({
+                                "Carrier":  cs["carrier"],
+                                "Volume":   cs["volume"],
+                                "SLA%":     sla + miss_flag,
+                                "Misses":   cs["av_oa_misses"],
+                                "Avg Days": cs["av_oa_avg"] if cs["av_oa_avg"] is not None else "x",
+                                "P90":      cs["av_oa_p90"] if cs["av_oa_p90"] is not None else "x",
+                            })
+                        _av_df = pd.DataFrame(av_rows)
+                        st.dataframe(_av_df, hide_index=True, use_container_width=True)
+
+                        st.markdown("**OA to Delivery Performance** (SLA: 3 days | BOS market | A320-RBTCS excluded)")
+                        od_rows = []
+                        for cs in carrier_sc:
+                            if cs["oa_del_sla_pct"] is None and cs["oa_del_avg"] is None:
+                                continue
+                            sla = "{}%".format(cs["oa_del_sla_pct"]) if cs["oa_del_sla_pct"] is not None else "x"
+                            od_rows.append({
+                                "Carrier":  cs["carrier"],
+                                "Volume":   cs["volume"],
+                                "SLA%":     sla,
+                                "Misses":   cs["oa_del_misses"],
+                                "Avg Days": cs["oa_del_avg"] if cs["oa_del_avg"] is not None else "x",
+                                "P90":      cs["oa_del_p90"] if cs["oa_del_p90"] is not None else "x",
+                            })
+                        if od_rows:
+                            st.dataframe(pd.DataFrame(od_rows), hide_index=True, use_container_width=True)
+
+                        st.markdown("**Root Cause Notes per Carrier**")
+                        rc_n = min(len(carrier_sc), 4)
+                        rc_cols = st.columns(rc_n)
+                        for i, cs in enumerate(carrier_sc):
+                            with rc_cols[i % rc_n]:
+                                st.text_input(
+                                    "{} ({} containers)".format(cs["carrier"], cs["volume"]),
+                                    placeholder="e.g. flip delay, fee clearance",
+                                    key="wbr_rc_{}".format(cs["carrier"]),
+                                )
+                    else:
+                        st.info("No carrier data found. Verify GVT has a Dray SCAC(FL) column.")
+
+                    st.markdown("### Page 3 — Root Cause Classification + Forward Look")
+
+                    rc1, rc2 = st.columns(2)
+                    with rc1:
+                        st.markdown("**AV to OA Miss Classification**")
+                        rc_a = st.number_input("(a) Carrier Execution",  min_value=0, key="wbr_rc_a",
+                                               help="Carrier failed to pick up within SLA window")
+                        rc_b = st.number_input("(b) Process Gap",        min_value=0, key="wbr_rc_b",
+                                               help="Flip delay, fee clearance lag, VRID creation, admin hold")
+                        rc_c = st.number_input("(c) Site Constraint",    min_value=0, key="wbr_rc_c",
+                                               help="Receiver not accepting; site shutdown or capacity issue")
+                        rc_d = st.number_input("(d) Upstream Ocean",     min_value=0, key="wbr_rc_d",
+                                               help="Container late to port; PO promise already past before dray")
+                        rc_e = st.number_input("(e) Data / Timing",      min_value=0, key="wbr_rc_e",
+                                               help="In-transit at report cut; will resolve next week")
+                    with rc2:
+                        total_rc = rc_a + rc_b + rc_c + rc_d + rc_e
+                        if total_rc > 0:
+                            st.markdown("**Distribution**")
+                            for label, cnt in [("(a) Carrier Exec", rc_a), ("(b) Process Gap", rc_b),
+                                               ("(c) Site", rc_c), ("(d) Ocean", rc_d), ("(e) Timing", rc_e)]:
+                                if cnt > 0:
+                                    pct = round(cnt / total_rc * 100)
+                                    st.markdown(f"`{label}` {cnt} misses ({pct}%)")
+                        st.text_area(
+                            "Key insight (1-2 sentences for the bridge)",
+                            placeholder="e.g. 52% of AV to OA misses stem from process gaps, not carrier execution failures.",
+                            key="wbr_rc_insight",
+                            height=90,
+                        )
+
+                    st.markdown("**2-Week Volume Projection vs. Carrier Capacity**")
+                    fwd_data = pd.DataFrame([
+                        {"Port": "ORF",     "W+1 Proj": 0, "W+2 Proj": 0, "Carrier(s)": "", "Wk Capacity": 0, "Gap / Action": ""},
+                        {"Port": "BOS",     "W+1 Proj": 0, "W+2 Proj": 0, "Carrier(s)": "", "Wk Capacity": 0, "Gap / Action": ""},
+                        {"Port": "SAV",     "W+1 Proj": 0, "W+2 Proj": 0, "Carrier(s)": "", "Wk Capacity": 0, "Gap / Action": ""},
+                        {"Port": "LAX/LGB", "W+1 Proj": 0, "W+2 Proj": 0, "Carrier(s)": "", "Wk Capacity": 0, "Gap / Action": ""},
+                        {"Port": "OAK",     "W+1 Proj": 0, "W+2 Proj": 0, "Carrier(s)": "", "Wk Capacity": 0, "Gap / Action": ""},
+                    ])
+                    st.data_editor(fwd_data, key="wbr_fwd_look", use_container_width=True, hide_index=True)
+
+                    st.markdown("**Enhanced bridge narrative**")
+                    op_notes_val = st.session_state.get("wbr_op_notes", "")
+                    rc_insight_val = st.session_state.get("wbr_rc_insight", "")
+                    _enh_bridge = f"""WK{week_num} Robotics Destination Dray — Enhanced WBR Bridge ({wk_start} to {wk_end})
+
+OVERALL PERFORMANCE
+Volume: {_s(_vol)} containers
+
+METRIC SUMMARY
+AV to OA: {_s(_av_sla, "%")} SLA ({_s(_av_avg)} avg days | P90: {_s(_av_p90)})
+OA to Delivery: {_s(_od_sla, "%")} SLA ({_s(_od_avg)} avg days | P90: {_s(_od_p90)}) — BOS market only
+Empty to Terminal: {_s(_et, "%")} SLA
+E2E Transit: {_s(_e2e)} days avg
+On-Time to Promise: {_s(_otp, "%")}
+
+CARRIER SCORECARD SUMMARY
+{chr(10).join(f"  {cs['carrier']}: Vol={cs['volume']}, AV-OA SLA={cs['av_oa_sla_pct'] or 'x'}%" for cs in carrier_sc) if carrier_sc else "  No carrier breakdown available"}
+
+ROOT CAUSE SUMMARY
+{f"  Total misses classified: {total_rc}" if total_rc > 0 else "  Enter miss counts in Page 3 above"}
+{rc_insight_val if rc_insight_val else "  Add key insight above"}
+
+OPERATIONAL CALLOUTS
+{op_notes_val if op_notes_val else "  Add callouts in the Validation panel above"}
+
+PATH TO GREEN
+[Add action items, owners, and target dates]
+"""
+                    st.text_area("Enhanced Bridge (editable)", value=_enh_bridge, height=280, key="wbr_bridge_enh")
+
+                    st.info("Enhanced WBR PDF (3-page package) is the next release milestone. The carrier scorecard and root cause data will auto-populate Pages 2-3 of the PDF.")
 
             except Exception as e:
                 st.error(f"Error: {e}")
                 import traceback
                 st.code(traceback.format_exc())
     else:
-        st.info("Upload all three files above to generate the WBR slide.")
+        with wbr_v1:
+            st.info("Upload all three files above to generate the WBR slide.")
+        with wbr_v2:
+            st.info("Upload all three files above to view the Enhanced WBR carrier scorecard.")
 
-        # Show what\'s already saved in DB
         wbr_conn3 = get_db()
         saved = wbr_conn3.execute(
             "SELECT year, week_num, containers, av_oa_sla_pct, oa_del_sla_pct, otp_pct, generated_at FROM wbr_results ORDER BY year DESC, week_num DESC LIMIT 12"
@@ -3680,40 +3843,25 @@ with tab8:
                 hide_index=True, use_container_width=True,
             )
 
-        # ── Seed W24–W28 historical data ──────────────────────────────────────
         st.markdown("---")
-        with st.expander("🗂️ Seed W24–W28 carry-forward values (from WK29 slide)", expanded=False):
-            st.caption(
-                "Pre-loads W24–W28 from the submitted GLS_Robotics_2026-7-20 slide. "
-                "Run once to populate the DB — the slide will then auto-fill prior weeks."
-            )
-            already_seeded = wbr_conn3 = None
+        with st.expander("Seed W24-W28 carry-forward values (from WK29 slide)", expanded=False):
+            st.caption("Pre-loads W24-W28 from the submitted GLS_Robotics_2026-7-20 slide. Run once.")
             _sc = get_db()
             _seeded_rows = _sc.execute(
                 "SELECT COUNT(*) FROM wbr_results WHERE year=2026 AND week_num IN (24,25,26,27,28)"
             ).fetchone()[0]
             _sc.close()
             if _seeded_rows == 5:
-                st.success("✅ W24–W28 already in DB.")
+                st.success("W24-W28 already in DB.")
             else:
                 st.info(f"{_seeded_rows}/5 historical weeks currently in DB.")
-                if st.button("Seed W24–W28 to DB", key="wbr_seed_hist", type="primary"):
+                if st.button("Seed W24-W28 to DB", key="wbr_seed_hist", type="primary"):
                     _seed = {
-                        24: dict(containers=89,  av_oa_avg=2.0, av_oa_sla_pct=68,  av_oa_p90=3,
-                                 oa_del_avg=0.5, oa_del_sla_pct=100, oa_del_p90=1,
-                                 empty_term_pct=100, e2e_avg=44, otp_pct=97,  week_start="2026-06-07", week_end="2026-06-13"),
-                        25: dict(containers=101, av_oa_avg=1.1, av_oa_sla_pct=100, av_oa_p90=1,
-                                 oa_del_avg=2.9, oa_del_sla_pct=71,  oa_del_p90=10,
-                                 empty_term_pct=100, e2e_avg=45, otp_pct=45,  week_start="2026-06-14", week_end="2026-06-20"),
-                        26: dict(containers=83,  av_oa_avg=2.9, av_oa_sla_pct=70,  av_oa_p90=4,
-                                 oa_del_avg=7.0, oa_del_sla_pct=31,  oa_del_p90=14,
-                                 empty_term_pct=100, e2e_avg=41, otp_pct=66,  week_start="2026-06-21", week_end="2026-06-27"),
-                        27: dict(containers=60,  av_oa_avg=1.7, av_oa_sla_pct=100, av_oa_p90=3,
-                                 oa_del_avg=4.8, oa_del_sla_pct=28,  oa_del_p90=9,
-                                 empty_term_pct=100, e2e_avg=36, otp_pct=48,  week_start="2026-06-28", week_end="2026-07-04"),
-                        28: dict(containers=32,  av_oa_avg=0.8, av_oa_sla_pct=100, av_oa_p90=2,
-                                 oa_del_avg=3.1, oa_del_sla_pct=38,  oa_del_p90=5,
-                                 empty_term_pct=100, e2e_avg=55, otp_pct=46,  week_start="2026-07-05", week_end="2026-07-11"),
+                        24: dict(containers=89,  av_oa_avg=2.0, av_oa_sla_pct=68,  av_oa_p90=3, oa_del_avg=0.5, oa_del_sla_pct=100, oa_del_p90=1,  empty_term_pct=100, e2e_avg=44, otp_pct=97,  week_start="2026-06-07", week_end="2026-06-13"),
+                        25: dict(containers=101, av_oa_avg=1.1, av_oa_sla_pct=100, av_oa_p90=1, oa_del_avg=2.9, oa_del_sla_pct=71,  oa_del_p90=10, empty_term_pct=100, e2e_avg=45, otp_pct=45,  week_start="2026-06-14", week_end="2026-06-20"),
+                        26: dict(containers=83,  av_oa_avg=2.9, av_oa_sla_pct=70,  av_oa_p90=4, oa_del_avg=7.0, oa_del_sla_pct=31,  oa_del_p90=14, empty_term_pct=100, e2e_avg=41, otp_pct=66,  week_start="2026-06-21", week_end="2026-06-27"),
+                        27: dict(containers=60,  av_oa_avg=1.7, av_oa_sla_pct=100, av_oa_p90=3, oa_del_avg=4.8, oa_del_sla_pct=28,  oa_del_p90=9,  empty_term_pct=100, e2e_avg=36, otp_pct=48,  week_start="2026-06-28", week_end="2026-07-04"),
+                        28: dict(containers=32,  av_oa_avg=0.8, av_oa_sla_pct=100, av_oa_p90=2, oa_del_avg=3.1, oa_del_sla_pct=38,  oa_del_p90=5,  empty_term_pct=100, e2e_avg=55, otp_pct=46,  week_start="2026-07-05", week_end="2026-07-11"),
                     }
                     from wbr_engine import save_week_to_db as _swdb
                     _sconn = get_db()
@@ -3723,5 +3871,6 @@ with tab8:
                     _sconn.close()
                     if S3_ENABLED:
                         data_sync.push_db_to_s3(AWS_KEY, AWS_SECRET, AWS_REGION, S3_BUCKET)
-                    st.success("✅ W24–W28 seeded. Upload files above to generate the W29 slide with full carry-forward.")
+                    st.success("W24-W28 seeded. Upload files above to generate the W29 slide with full carry-forward.")
                     st.rerun()
+
