@@ -4316,8 +4316,14 @@ with tab8:
                 # ── Prior weeks missing ────────────────────────────────────────
                 missing = [f"W{n}" for n in prior_nums if n not in prior_data]
                 if missing:
-                    with st.expander(f"⚠️ {len(missing)} prior week(s) not in DB — enter manually"):
-                        st.caption("Enter values or leave blank (shows — on slide).")
+                    st.warning(
+                        f"**{len(missing)} prior week(s) not found** — enter values below to populate the slide. "
+                        "These should match the columns on last week's published WBR slide. "
+                        "Leave a week blank to show — on the slide. "
+                        "Once you generate WBR, each week's data is saved automatically for future runs."
+                    )
+                    with st.expander(f"📋 Enter prior week data ({', '.join(missing)})", expanded=True):
+                        st.caption("Copy values from your last published WBR slide. Only Containers is required — leave others at 0 to show — on the slide.")
                         manual_inputs = {}
                         for mn in missing:
                             wn = int(mn[1:])

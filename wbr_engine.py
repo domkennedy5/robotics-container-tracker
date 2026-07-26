@@ -389,9 +389,11 @@ def save_week_to_db(conn, year, week_num, m, generated_at):
 
 def load_weeks_from_db(conn, year, week_nums):
     placeholders = ','.join('?' * len(week_nums))
+    # Exclude seed/placeholder rows — only load data from real WBR runs
     rows = conn.execute(
-        f'SELECT * FROM wbr_results WHERE year=? AND week_num IN ({placeholders})',
-        [year] + list(week_nums)
+        f'SELECT * FROM wbr_results WHERE year=? AND week_num IN ({placeholders})'
+        f' AND (generated_at IS NULL OR generated_at != ?)',
+        [year] + list(week_nums) + ['seed']
     ).fetchall()
     result = {}
     for row in rows:
