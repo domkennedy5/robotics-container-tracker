@@ -3888,7 +3888,7 @@ with tab8:
         load_gvt, load_oblt, load_inbound_loads,
         compute_metrics, compute_totals, compute_carrier_scorecard,
         week_bounds, guess_week,
-        save_week_to_db, load_weeks_from_db,
+        save_week_to_db, load_weeks_from_db, parse_wbr_pdf,
         _latest,
     )
     from wbr_pdf import generate_standard_wbr
@@ -4079,6 +4079,20 @@ with tab8:
         wbr_iss_file = st.file_uploader("Import Shipment Status (.xlsx)", type=["xlsx"], key="wbr_iss",
                                          help="Optional — enriches Enhanced WBR forward look with vessel/ETA data")
 
+    st.markdown("---")
+    with st.expander("📎 Upload prior WBR slide to auto-populate prior weeks", expanded=True):
+        st.caption(
+            "Upload last week's generated WBR PDF. The app will read W(n-5)–W(n-1) values "
+            "directly from the slide — no manual entry needed. Values are saved to the database "
+            "so future weeks auto-populate without re-uploading."
+        )
+        wbr_prior_pdf = st.file_uploader(
+            "Prior WBR Slide (.pdf)",
+            type=["pdf"],
+            key="wbr_prior_pdf",
+            help="Upload the PDF generated last week. All prior week columns will be parsed automatically.",
+        )
+
     # ── Report date ───────────────────────────────────────────────────────────
     # Auto-default to most recent Monday — WBR always submitted Monday morning
     _wbr_today = datetime.now(_EASTERN).date()
@@ -4202,6 +4216,20 @@ with tab8:
                 prior_nums = list(range(week_num - 5, week_num))
                 wbr_conn   = get_db()
                 prior_data = load_weeks_from_db(wbr_conn, year, prior_nums)
+
+                # If prior WBR PDF uploaded, parse it and merge (PDF wins over DB for each week)
+                if wbr_prior_pdf is not None:
+                    try:
+                        _pdf_labels, _pdf_weeks = parse_wbr_pdf(wbr_prior_pdf.read())
+                        for _wn, _wd in _pdf_weeks.items():
+                            if _wn in prior_nums:
+                                prior_data[_wn] = _wd
+                            # Save parsed weeks to DB so future runs don't need the PDF
+                            save_week_to_db(wbr_conn, year, _wn, _wd, "pdf_import")
+                        wbr_conn.commit()
+                        st.success(f"✅ Parsed prior WBR PDF — loaded {', '.join(str(k) for k in sorted(_pdf_weeks.keys()) if k in prior_nums)} from slide")
+                    except Exception as _e:
+                        st.warning(f"⚠️ Could not parse prior WBR PDF: {_e}. Enter values manually below.")
                 wbr_conn.close()
 
                 display_nums   = prior_nums + [week_num]
@@ -4317,13 +4345,11 @@ with tab8:
                 missing = [f"W{n}" for n in prior_nums if n not in prior_data]
                 if missing:
                     st.warning(
-                        f"**{len(missing)} prior week(s) not found** — enter values below to populate the slide. "
-                        "These should match the columns on last week's published WBR slide. "
-                        "Leave a week blank to show — on the slide. "
-                        "Once you generate WBR, each week's data is saved automatically for future runs."
+                        f"**{len(missing)} prior week(s) still missing** ({', '.join(missing)}). "
+                        "Upload the prior WBR slide above, or enter values manually below."
                     )
-                    with st.expander(f"📋 Enter prior week data ({', '.join(missing)})", expanded=True):
-                        st.caption("Copy values from your last published WBR slide. Only Containers is required — leave others at 0 to show — on the slide.")
+                    with st.expander(f"✏️ Manual entry — {', '.join(missing)}", expanded=False):
+                        st.caption("Fallback: copy values from your last published WBR slide.")
                         manual_inputs = {}
                         for mn in missing:
                             wn = int(mn[1:])

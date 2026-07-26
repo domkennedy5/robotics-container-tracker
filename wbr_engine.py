@@ -413,3 +413,93 @@ def load_weeks_from_db(conn, year, week_nums):
             'week_end':       d.get('week_end'),
         }
     return result
+
+
+def parse_wbr_pdf(pdf_bytes: bytes):
+    """Parse a previously generated WBR PDF and extract the weekly table data.
+
+    Returns:
+        week_labels : list[str]  – e.g. ["W25","W26","W27","W28","W29","W30"]
+        week_data   : dict[int, dict]  – keyed by week_num int, values are metrics dicts
+
+    Uses tight baseline-centred clips (not full cell height) to avoid bleed between rows.
+    Geometry constants must match wbr_pdf.py exactly.
+    """
+    import fitz  # PyMuPDF
+
+    PAGE_H       = 612.0
+    TBL_LABEL_X  = 51.0
+    TBL_LABEL_W  = 130.0
+    TBL_WEEK_W   = 80.0
+    TBL_ROW_H    = 16.0
+    HDR_BOT_RL   = 244.0   # = TBL_COL_HDR_TOP - TBL_ROW_H
+
+    ROW_KEYS = [
+        "containers",  "av_oa_avg",  "av_oa_sla_pct",  "av_oa_p90",
+        "oa_del_avg",  "oa_del_sla_pct",  "oa_del_p90",
+        "empty_term_pct", "e2e_avg", "otp_pct",
+    ]
+    INT_KEYS = {"containers", "av_oa_sla_pct", "av_oa_p90",
+                "oa_del_sla_pct", "oa_del_p90",
+                "empty_term_pct", "e2e_avg", "otp_pct"}
+
+    doc  = fitz.open(stream=pdf_bytes, filetype="pdf")
+    page = doc[0]
+
+    def _baseline_fitz(ri):
+        """Fitz-coord baseline for data row ri (0=Containers) or None for header."""
+        # RL text baseline: HDR_BOT_RL - ri*ROW_H - 1.4 = 242.6 - ri*16
+        rl_baseline = 242.6 - ri * TBL_ROW_H
+        return PAGE_H - rl_baseline  # = 369.4 + ri*16
+
+    # Header baseline
+    # RL: col_hdr_bot (244) + ROW_H - 1.4 = 258.6  → fitz 353.4
+    HDR_BASELINE_FITZ = PAGE_H - 258.6  # = 353.4
+
+    def _get_text(x0, x1, baseline_fitz):
+        """Extract words within ±10pt / +4pt window around the text baseline."""
+        rect  = fitz.Rect(x0, baseline_fitz - 10, x1, baseline_fitz + 4)
+        words = page.get_text("words", clip=rect)
+        return " ".join(w[4] for w in sorted(words, key=lambda w: w[0]))
+
+    N = 6   # always 6 week columns
+    x0s = [TBL_LABEL_X + TBL_LABEL_W + i * TBL_WEEK_W for i in range(N)]
+    x1s = [x + TBL_WEEK_W for x in x0s]
+
+    # ── Parse column headers → week numbers ──────────────────────────────
+    week_labels = []
+    week_nums   = []
+    for i in range(N):
+        raw = _get_text(x0s[i], x1s[i], HDR_BASELINE_FITZ)
+        # "2026 W 25" → extract the 1-2 digit week number
+        wn = None
+        for part in raw.replace("W", " ").split():
+            try:
+                n = int(part)
+                if 1 <= n <= 53:
+                    wn = n
+            except ValueError:
+                pass
+        week_labels.append(f"W{wn}" if wn else raw)
+        week_nums.append(wn)
+
+    # ── Parse data rows ───────────────────────────────────────────────────
+    week_data = {}
+    for ri, key in enumerate(ROW_KEYS):
+        bl = _baseline_fitz(ri)
+        for i in range(N):
+            raw = _get_text(x0s[i], x1s[i], bl)
+            # Strip %, em-dash, whitespace; handle "83%" → "83"
+            raw = raw.replace("%", "").replace("\u2013", "").replace("–", "").strip()
+            wn  = week_nums[i]
+            if raw and wn is not None:
+                try:
+                    val = float(raw)
+                    if wn not in week_data:
+                        week_data[wn] = {}
+                    week_data[wn][key] = int(round(val)) if key in INT_KEYS else round(val, 1)
+                except ValueError:
+                    pass
+
+    doc.close()
+    return week_labels, week_data
