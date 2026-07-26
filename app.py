@@ -4444,7 +4444,7 @@ with tab8:
                         _vol_wow  = _wow(_vol,    _pw.get("containers"),    True)
                         _av_wow   = _wow(_av_sla, _pw.get("av_oa_sla_pct"), True)
                         _od_wow   = _wow(_od_sla, _pw.get("oa_del_sla_pct"),True)
-                        _e2e_wow  = _wow(_e2e,    _pw.get("e2e_avg"),       False)  # lower E2E is better
+                        _e2e_wow  = _wow(_e2e,    _pw.get("e2e_avg"),       False)
                         _otp_wow  = _wow(_otp,    _pw.get("otp_pct"),       True)
 
                         # Primary carrier for AV→OA (highest miss volume)
@@ -4478,6 +4478,10 @@ with tab8:
                         def _dir(a, b):
                             if a is None or b is None: return "moved"
                             return "increased" if a > b else ("decreased" if a < b else "remained flat")
+                        def _dir_tc(a, b):
+                            # Title-case verbs matching Perjen headline style
+                            if a is None or b is None: return "Moves to"
+                            return "Improves to" if a > b else ("Declines to" if a < b else "Holds at")
                         def _flatcheck(a, b, thresh=2):
                             return a is not None and b is not None and abs(a - b) <= thresh
 
@@ -4486,48 +4490,99 @@ with tab8:
                         except Exception:
                             _wk_range = f"WK{week_num}"
 
-                        # Headline: top metric moves
+                        # Headline: Title Case, carrier callout, matching Perjen style
+                        # e.g. "AV→OA Declines to 70% on ATMI Misses; OA→Del Drops to 31%; Empty→Term Holds at 100%"
                         _headline_parts = []
-                        if _av_sla is not None and _pw.get("av_oa_sla_pct") is not None:
-                            _headline_parts.append(
-                                f"AV→OA SLA {_dir(_av_sla, _pw['av_oa_sla_pct'])} to {_av_sla}%"
-                                + (f" — {_dom_carrier} primary driver" if _dom_carrier != "–" else "")
-                            )
-                        if _od_sla is not None and _pw.get("oa_del_sla_pct") is not None:
-                            _headline_parts.append(f"OA→Del SLA {_dir(_od_sla, _pw['oa_del_sla_pct'])} to {_od_sla}%")
-                        if _otp is not None and _pw.get("otp_pct") is not None:
-                            _headline_parts.append(f"OTP {_dir(_otp, _pw['otp_pct'])} to {_otp}%")
-                        _headline = "; ".join(_headline_parts) if _headline_parts else "Week in review"
+                        if _av_sla is not None:
+                            _av_hl = f"AV→OA {_dir_tc(_av_sla, _pw.get('av_oa_sla_pct'))} {_av_sla}%"
+                            if _dom_carrier != "–":
+                                _av_hl += f" on {_dom_carrier} Misses"
+                            _headline_parts.append(_av_hl)
+                        if _od_sla is not None:
+                            _headline_parts.append(f"OA→Del {_dir_tc(_od_sla, _pw.get('oa_del_sla_pct'))} {_od_sla}%")
+                        if _et is not None:
+                            _et_hl_verb = "Holds at" if _et == _pw.get("empty_term_pct") else _dir_tc(_et, _pw.get("empty_term_pct"))
+                            _headline_parts.append(f"Empty→Term {_et_hl_verb} {_et}%")
+                        if _otp is not None:
+                            _headline_parts.append(f"OTP {_dir_tc(_otp, _pw.get('otp_pct'))} {_otp}%")
+                        _headline = "; ".join(_headline_parts) if _headline_parts else "Week in Review"
+
+                        # Port mix from GVT (appended to Volume narrative)
+                        _port_mix_str = ""
+                        try:
+                            _pop_gvt = gvt_df[
+                                gvt_df['ready_date'].notna() &
+                                (gvt_df['ready_date'] >= wk_start.date()) &
+                                (gvt_df['ready_date'] <= wk_end.date())
+                            ]
+                            _ports = _pop_gvt['port'].dropna().astype(str).str.strip().str.upper()
+                            _port_counts = _ports.value_counts()
+                            if len(_port_counts) > 1:
+                                _pmix = ", ".join(f"{p} ({n})" for p, n in _port_counts.items())
+                                _port_mix_str = f" Port mix: {_pmix}."
+                            elif len(_port_counts) == 1:
+                                _port_mix_str = f" All containers at {_port_counts.index[0]}."
+                        except Exception:
+                            pass
 
                         # Volume narrative
                         _p_vol_v = _pw.get("containers")
                         if _vol is not None and _p_vol_v and _p_vol_v > 0:
                             _vol_chg = round((_vol - _p_vol_v) / _p_vol_v * 100)
                             _vol_narrative = (f"Container volume {_dir(_vol, _p_vol_v)} {abs(_vol_chg)}% to {_s(_vol)}"
-                                              f" (WK{week_num-1}: {_s(_p_vol_v)}; WK{week_num}: {_s(_vol)}).")
+                                              f" (WK{week_num-1}: {_s(_p_vol_v)}; WK{week_num}: {_s(_vol)}).{_port_mix_str}")
                         else:
-                            _vol_narrative = f"Container volume: {_s(_vol)} for WK{week_num}."
+                            _vol_narrative = f"Container volume: {_s(_vol)} for WK{week_num}.{_port_mix_str}"
 
-                        # AV→OA narrative
+                        # Multi-week AV→OA trend (up to 5 prior + current), shown in parens after P90
+                        _trend_str = ""
+                        try:
+                            _tw = sorted([w for w in prior_data.keys() if w < week_num], reverse=True)[:5]
+                            _tv = [prior_data[w].get("av_oa_sla_pct") for w in reversed(_tw)]
+                            if len(_tv) >= 2 and all(v is not None for v in _tv):
+                                _chain = "→".join(f"{v}%" for v in _tv)
+                                if _av_sla is not None:
+                                    _chain += f"→{_av_sla}%"
+                                _trend_str = f" ({len(_tv) + (1 if _av_sla is not None else 0)}-week trend: {_chain})"
+                        except Exception:
+                            pass
+
+                        # AV→OA narrative — inline carrier detail matching Perjen:
+                        # "Decline driven by ATMI (11/28 = 39%) — HDDR (9/9), ARVY (7/7) all executed at 100%."
                         _av_body = (
                             f"AV→OA SLA {_dir(_av_sla, _pw.get('av_oa_sla_pct'))} to {_s(_av_sla, '%')}"
                             f" (WK{week_num-1}: {_p_av}; WK{week_num}: {_s(_av_sla, '%')})."
                             f" Avg transit {_dir(_av_avg, _pw.get('av_oa_avg'))} to {_s(_av_avg)}d;"
-                            f" P90 {_dir(_av_p90, _pw.get('av_oa_p90'))} to {_s(_av_p90)}d."
+                            f" P90 {_dir(_av_p90, _pw.get('av_oa_p90'))} to {_s(_av_p90)}d.{_trend_str}"
                         )
-                        _av_carrier_lines = []
+                        _av_carrier_inline = ""
                         _miss_carriers = []
                         if carrier_sc:
                             _sorted_sc = sorted(carrier_sc, key=lambda x: x.get("av_oa_misses") or 0, reverse=True)
                             _miss_carriers = [c for c in _sorted_sc if (c.get("av_oa_misses") or 0) > 0]
                             _clean_carriers = [c for c in _sorted_sc if (c.get("av_oa_misses") or 0) == 0]
-                            for _mc in _miss_carriers[:2]:
-                                _mc_sla = f"{_mc['av_oa_sla_pct']}%" if _mc.get("av_oa_sla_pct") is not None else "–"
-                                _av_carrier_lines.append(f"{_mc['carrier']} ({_mc.get('av_oa_misses',0)}/{_mc.get('volume',0)} = {_mc_sla})")
-                            if _clean_carriers:
-                                _av_carrier_lines.append(", ".join(c["carrier"] for c in _clean_carriers) + " all executed at 100%.")
-                        _av_miss_note = (f"\n{_miss_carriers[0]['carrier']} misses: {_ctx_notes.splitlines()[0]}"
-                                         if _ctx_notes and _miss_carriers else "")
+                            _miss_parts = [
+                                f"{c['carrier']} ({c.get('av_oa_misses', 0)}/{c.get('volume', 0)} = {c['av_oa_sla_pct']}%)"
+                                if c.get("av_oa_sla_pct") is not None else
+                                f"{c['carrier']} ({c.get('av_oa_misses', 0)}/{c.get('volume', 0)})"
+                                for c in _miss_carriers
+                            ]
+                            _clean_parts = [
+                                f"{c['carrier']} ({c.get('volume', 0)}/{c.get('volume', 0)})"
+                                for c in _clean_carriers
+                            ]
+                            if _miss_parts and _clean_parts:
+                                _av_carrier_inline = (
+                                    f"Decline driven by {', '.join(_miss_parts)} — "
+                                    f"{', '.join(_clean_parts)} all executed at 100%."
+                                )
+                            elif _miss_parts:
+                                _av_carrier_inline = f"Misses: {', '.join(_miss_parts)}."
+                            elif _clean_parts:
+                                _av_carrier_inline = "All carriers executed at 100%."
+                        _ctx_lines = [l for l in _ctx_notes.splitlines() if l.strip()] if _ctx_notes else []
+                        _av_miss_note = (f"\n{_miss_carriers[0]['carrier']} misses: {_ctx_lines[0]}"
+                                         if _ctx_lines and _miss_carriers else "")
 
                         # OA→Del narrative
                         _od_body = (
@@ -4535,7 +4590,6 @@ with tab8:
                             f" (WK{week_num-1}: {_p_od}; WK{week_num}: {_s(_od_sla, '%')})."
                             f" P90 {_dir(_od_p90, _pw.get('oa_del_p90'))} to {_s(_od_p90)}d [BOS; A320-RBTCS excl.]."
                         )
-                        _ctx_lines = [l for l in _ctx_notes.splitlines() if l.strip()] if _ctx_notes else []
                         _od_root = (f"\n{_ctx_lines[1]}" if len(_ctx_lines) > 1 else "")
 
                         # Empty→Term narrative
@@ -4563,24 +4617,29 @@ with tab8:
                                           if (_e2e or 0) > 40 else
                                           " Dray execution contributing to miss — carrier follow-up required.")
 
-                        # Path to Green (auto-generated from misses, fully editable)
-                        _ptg_lines = ["Path to Green:"]
+                        # Path to Green — 3-column table matching Perjen format
+                        _ptg_rows = []
                         if _dom_carrier != "–" and _av_sla is not None and _av_sla < 95:
-                            _ptg_lines.append(f"  Carrier performance review with {_dom_carrier} | Reduce AV→OA SLA misses | This week")
+                            _ptg_rows.append((f"Carrier performance review with {_dom_carrier}", "Reduce AV→OA SLA misses", "This week"))
                         if _od_sla is not None and _od_sla < 95:
-                            _ptg_lines.append(f"  Investigate OA→Del delays (BOS market) | Restore SLA to ≥95% | Next 2 weeks")
+                            _ptg_rows.append(("Investigate OA→Del delays (BOS market)", "Restore SLA to ≥95%", "Next 2 weeks"))
                         if _et is not None and _et < 95:
-                            _ptg_lines.append(f"  Empty return follow-up with all carriers | Clear backlog | This week")
-                        _ptg_lines.append("  [Additional action] | [Expected impact] | [Timeline]")
-                        _ptg = "\n".join(_ptg_lines)
+                            _ptg_rows.append(("Empty return follow-up with all carriers", "Clear backlog", "This week"))
+                        _ptg_rows.append(("[Additional action]", "[Expected impact]", "[Timeline]"))
+                        _ptg = (
+                            "Path to Green:\n\n"
+                            "  Action | Expected Impact | Timeline\n"
+                            "  " + "-" * 70 + "\n"
+                            + "\n".join(f"  {a} | {b} | {c}" for a, b, c in _ptg_rows)
+                        )
 
                         _bridge_std = (
                             f"WK{week_num} ({_wk_range})\n"
                             f"Headline: {_headline}\n\n"
                             f"[Volume] {_vol_narrative}\n\n"
-                            f"[AV→OA] {_av_body}\n"
-                            + ("\n".join(_av_carrier_lines) + "\n" if _av_carrier_lines else "")
-                            + (_av_miss_note + "\n" if _av_miss_note else "")
+                            f"[AV→OA] {_av_body}"
+                            + (f"\n{_av_carrier_inline}" if _av_carrier_inline else "")
+                            + (_av_miss_note + "\n" if _av_miss_note else "\n")
                             + f"\n[OA→Del] {_od_body}"
                             + (_od_root + "\n" if _od_root else "\n")
                             + f"\n[Empty→Term] {_et_body}\n"
@@ -4590,7 +4649,7 @@ with tab8:
 
                         st.text_area(
                             "Bridge — Perjen format (editable before sending)",
-                            value=_bridge_std, height=320, key="wbr_bridge_std",
+                            value=_bridge_std, height=400, key="wbr_bridge_std",
                         )
 
                         # ── SOP Callout box ───────────────────────────────────
