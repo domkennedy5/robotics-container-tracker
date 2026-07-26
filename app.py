@@ -4335,11 +4335,32 @@ with tab8:
                     else:
                         st.success("OBLT timestamps: no AV/OA inversions detected")
 
-                    st.text_area(
-                        "Operational callouts (add to bridge):",
-                        placeholder="e.g. RIC6 shutdown Fri 7/17, 9 containers rerouted to NCKR, ATMI delivered last DBM6 containers",
-                        key="wbr_op_notes", height=68,
-                    )
+                    st.markdown("**Operational context — added directly to bridge**")
+                    _nc1, _nc2 = st.columns(2)
+                    with _nc1:
+                        st.text_area(
+                            "AV→OA context",
+                            placeholder="e.g. ATMI ORF: 7 containers picked up day 4 — capacity stretched\nATMI SAV: 10 containers delayed — Tighe receiver constraint\nSite constraint, not carrier execution failure.",
+                            key="wbr_op_avoa", height=100,
+                        )
+                        st.text_area(
+                            "OA→Del context",
+                            placeholder="e.g. RIC6 not receiving 7/17–7/18 — 9 containers held at ODY\nILM1 resumed receiving 7/19",
+                            key="wbr_op_oadel", height=68,
+                        )
+                    with _nc2:
+                        st.text_area(
+                            "Path to Green rows (one per line: Action | Impact | Timeline)",
+                            placeholder="e.g. ATMI ORF coaching — 1-day miss, capacity adj needed | ORF misses eliminated | WK{wk_next}\nMonitor Tighe capacity with ATMI | SAV pickups resume | TBD",
+                            key="wbr_op_ptg", height=100,
+                        )
+                        st.text_area(
+                            "E2E / OTP context",
+                            placeholder="e.g. OTP miss driven by ocean delay — not dray-controllable",
+                            key="wbr_op_e2e", height=68,
+                        )
+                    # Legacy key kept for backward compat (not shown; used only if new keys are empty)
+                    st.session_state.setdefault("wbr_op_notes", "")
 
                 # ── Prior weeks missing ────────────────────────────────────────
                 missing = [f"W{n}" for n in prior_nums if n not in prior_data]
@@ -4454,19 +4475,27 @@ with tab8:
                             if _worst and _worst[0].get("av_oa_misses", 0) > 0:
                                 _dom_carrier = _worst[0]["carrier"]
 
-                        # Context notes for this week (from DB)
+                        # Context notes — dedicated per-section inputs
                         _cn_conn = get_db()
                         _cn_row  = _cn_conn.execute(
                             "SELECT notes FROM wbr_context_notes WHERE year=? AND week_num=?",
                             (year, week_num)
                         ).fetchone()
                         _cn_conn.close()
-                        _op_notes = st.session_state.get("wbr_op_notes") or ""
-                        _ctx_notes = ""
-                        if _cn_row and _cn_row["notes"]:
-                            _ctx_notes = _cn_row["notes"]
-                        if _op_notes:
-                            _ctx_notes = (_ctx_notes + "\n" + _op_notes).strip() if _ctx_notes else _op_notes
+                        # New per-section fields (preferred); legacy wbr_op_notes as fallback for AV→OA
+                        _op_avoa  = (st.session_state.get("wbr_op_avoa")  or "").strip()
+                        _op_oadel = (st.session_state.get("wbr_op_oadel") or "").strip()
+                        _op_ptg   = (st.session_state.get("wbr_op_ptg")   or "").strip()
+                        _op_e2e   = (st.session_state.get("wbr_op_e2e")   or "").strip()
+                        _legacy   = (st.session_state.get("wbr_op_notes")  or "").strip()
+                        # DB notes go to AV→OA (historical behavior)
+                        _db_notes = (_cn_row["notes"] or "").strip() if _cn_row and _cn_row["notes"] else ""
+                        _ctx_avoa  = "\n".join(filter(None, [_db_notes, _op_avoa, _legacy if not _op_avoa else ""]))
+                        _ctx_oadel = _op_oadel
+                        _ctx_ptg   = _op_ptg
+                        _ctx_e2e   = _op_e2e
+                        # Legacy: keep _ctx_notes pointing to avoa for any remaining old references
+                        _ctx_notes = _ctx_avoa
 
                         # Prior week values for reference lines
                         _p_av  = _s(_pw.get("av_oa_sla_pct"), "%")
@@ -4580,9 +4609,9 @@ with tab8:
                                 _av_carrier_inline = f"Misses: {', '.join(_miss_parts)}."
                             elif _clean_parts:
                                 _av_carrier_inline = "All carriers executed at 100%."
-                        _ctx_lines = [l for l in _ctx_notes.splitlines() if l.strip()] if _ctx_notes else []
-                        _av_miss_note = (f"\n{_miss_carriers[0]['carrier']} misses: {_ctx_lines[0]}"
-                                         if _ctx_lines and _miss_carriers else "")
+                        # AV→OA context: all lines from the dedicated input field
+                        _avoa_ctx_lines = [l for l in _ctx_avoa.splitlines() if l.strip()] if _ctx_avoa else []
+                        _av_context_block = "\n".join(_avoa_ctx_lines) if _avoa_ctx_lines else ""
 
                         # OA→Del narrative
                         _od_body = (
@@ -4590,7 +4619,7 @@ with tab8:
                             f" (WK{week_num-1}: {_p_od}; WK{week_num}: {_s(_od_sla, '%')})."
                             f" P90 {_dir(_od_p90, _pw.get('oa_del_p90'))} to {_s(_od_p90)}d [BOS; A320-RBTCS excl.]."
                         )
-                        _od_root = (f"\n{_ctx_lines[1]}" if len(_ctx_lines) > 1 else "")
+                        _od_root = (f"\n{_ctx_oadel}" if _ctx_oadel else "")
 
                         # Empty→Term narrative
                         _et_pw = _pw.get("empty_term_pct")
@@ -4612,20 +4641,40 @@ with tab8:
                             f" (WK{week_num-1}: {_s(_otp_pw, '%')}; WK{week_num}: {_s(_otp, '%')})."
                             f" E2E Transit Avg {_dir(_e2e, _e2e_pw)} to {_s(_e2e)}d (WK{week_num-1}: {_s(_e2e_pw)}d)."
                         )
-                        if _otp is not None and _otp_pw is not None and _otp < _otp_pw:
+                        # Append E2E context (dedicated field, or auto-inference as fallback)
+                        if _ctx_e2e:
+                            _e2e_body += f" {_ctx_e2e}"
+                        elif _otp is not None and _otp_pw is not None and _otp < _otp_pw:
                             _e2e_body += (" Miss driven by ocean transit delay — outside dray control."
                                           if (_e2e or 0) > 40 else
                                           " Dray execution contributing to miss — carrier follow-up required.")
 
-                        # Path to Green — 3-column table matching Perjen format
+                        # Path to Green — typed PTG rows first, then auto-inferred, then placeholder
                         _ptg_rows = []
-                        if _dom_carrier != "–" and _av_sla is not None and _av_sla < 95:
-                            _ptg_rows.append((f"Carrier performance review with {_dom_carrier}", "Reduce AV→OA SLA misses", "This week"))
-                        if _od_sla is not None and _od_sla < 95:
-                            _ptg_rows.append(("Investigate OA→Del delays (BOS market)", "Restore SLA to ≥95%", "Next 2 weeks"))
-                        if _et is not None and _et < 95:
-                            _ptg_rows.append(("Empty return follow-up with all carriers", "Clear backlog", "This week"))
-                        _ptg_rows.append(("[Additional action]", "[Expected impact]", "[Timeline]"))
+                        if _ctx_ptg:
+                            # User-entered rows: "Action | Impact | Timeline"
+                            for _ptg_line in _ctx_ptg.splitlines():
+                                _ptg_line = _ptg_line.strip()
+                                if not _ptg_line: continue
+                                _ptg_parts = [p.strip() for p in _ptg_line.split("|")]
+                                if len(_ptg_parts) >= 3:
+                                    _ptg_rows.append((_ptg_parts[0], _ptg_parts[1], _ptg_parts[2]))
+                                elif len(_ptg_parts) == 2:
+                                    _ptg_rows.append((_ptg_parts[0], _ptg_parts[1], "TBD"))
+                                else:
+                                    _ptg_rows.append((_ptg_line, "–", "TBD"))
+                        # Auto-inferred rows for any unaddressed misses
+                        if not any("AV" in r[0] or "AV→OA" in r[0] or (_dom_carrier != "–" and _dom_carrier in r[0]) for r in _ptg_rows):
+                            if _dom_carrier != "–" and _av_sla is not None and _av_sla < 95:
+                                _ptg_rows.append((f"Carrier performance review with {_dom_carrier}", "Reduce AV→OA SLA misses", "This week"))
+                        if not any("OA→Del" in r[0] or "OA-Del" in r[0] for r in _ptg_rows):
+                            if _od_sla is not None and _od_sla < 95:
+                                _ptg_rows.append(("Investigate OA→Del delays (BOS market)", "Restore SLA to ≥95%", "Next 2 weeks"))
+                        if not any("Empty" in r[0] for r in _ptg_rows):
+                            if _et is not None and _et < 95:
+                                _ptg_rows.append(("Empty return follow-up with all carriers", "Clear backlog", "This week"))
+                        if not _ptg_rows:
+                            _ptg_rows.append(("[Additional action]", "[Expected impact]", "[Timeline]"))
                         _ptg = (
                             "Path to Green:\n\n"
                             "  Action | Expected Impact | Timeline\n"
@@ -4639,7 +4688,8 @@ with tab8:
                             f"[Volume] {_vol_narrative}\n\n"
                             f"[AV→OA] {_av_body}"
                             + (f"\n{_av_carrier_inline}" if _av_carrier_inline else "")
-                            + (_av_miss_note + "\n" if _av_miss_note else "\n")
+                            + (f"\n{_av_context_block}" if _av_context_block else "")
+                            + "\n"
                             + f"\n[OA→Del] {_od_body}"
                             + (_od_root + "\n" if _od_root else "\n")
                             + f"\n[Empty→Term] {_et_body}\n"
