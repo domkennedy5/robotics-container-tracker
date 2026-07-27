@@ -438,25 +438,8 @@ def parse_wbr_pdf(pdf_bytes: bytes):
                 "oa_del_sla_pct", "oa_del_p90",
                 "empty_term_pct", "e2e_avg", "otp_pct"}
 
-    # Row label patterns — matched against full left-side line text.
-    # The PDF uses labels like "AV→OA Avg (Days)", "OA→Del SLA %", etc.
-    # Use simple substrings / OR patterns that are unique to each row.
-    ROW_LABEL_PATTERNS = [
-        r"Container",           # Containers
-        r"AV.*Avg",             # AV→OA Avg (Days)
-        r"AV.*SLA",             # AV→OA SLA %
-        r"AV.*P90",             # AV→OA P90 (Days)
-        r"OA.*Del.*Avg|Del.*Avg",  # OA→Del Avg (Days)
-        r"OA.*Del.*SLA|Del.*SLA",  # OA→Del SLA %
-        r"OA.*Del.*P90|Del.*P90",  # OA→Del P90 (Days)
-        r"Empty",               # Empty→Term SLA %
-        r"E2E|Transit",         # E2E Transit Avg (Days)
-        r"On.Time|OTP",         # On-Time to Promise %
-    ]
-
     doc  = fitz.open(stream=pdf_bytes, filetype="pdf")
     page = doc[0]
-    PAGE_W = page.rect.width
     PAGE_H = page.rect.height
 
     # Extract ALL words with bounding boxes: (x0,y0,x1,y1,text,block,line,word)
@@ -466,19 +449,14 @@ def parse_wbr_pdf(pdf_bytes: bytes):
     if not all_words:
         return [], {}
 
-    # ── Step 1: Find week-column headers ─────────────────────────────────
-    # Collect words that look like week numbers ("25","26"... or "W25","W 25", "2026")
-    # Strategy: find occurrences of 2-digit numbers 1..53 that appear in the header band.
-    # The header band is the row containing "W XX" patterns — find it by y-coord of
-    # any word immediately preceded or followed by "W".
+    words_list = [(w[0], w[1], w[2], w[3], w[4]) for w in all_words]  # x0,y0,x1,y1,text
 
-    # Build a word-by-word pass: look for pattern "W" + integer, or "2026" + "W" + integer
+    # ── Step 1: Find week-column headers by scanning for "W XX" / "WXX" tokens ──
     col_headers = {}   # week_num → x_center
     i = 0
-    words_list = [(w[0], w[1], w[2], w[3], w[4]) for w in all_words]  # x0,y0,x1,y1,text
     while i < len(words_list):
         x0, y0, x1, y1, txt = words_list[i]
-        # Match "W25" in a single token
+        # Match "W25" as single token
         m = re.fullmatch(r"W(\d{1,2})", txt.strip(), re.IGNORECASE)
         if m:
             wn = int(m.group(1))
@@ -486,14 +464,14 @@ def parse_wbr_pdf(pdf_bytes: bytes):
                 col_headers[wn] = (x0 + x1) / 2
             i += 1
             continue
-        # Match "W" followed by a digit token on the same y-band
+        # Match "W" followed by a digit token on the same y-band (e.g. "2026 W 25")
         if txt.strip().upper() == "W" and i + 1 < len(words_list):
             nx0, ny0, nx1, ny1, ntxt = words_list[i + 1]
-            if abs(ny0 - y0) < 8:  # same line
+            if abs(ny0 - y0) < 8:
                 try:
                     wn = int(ntxt.strip())
                     if 1 <= wn <= 53:
-                        col_headers[wn] = ((x0 + nx1) / 2)
+                        col_headers[wn] = (x0 + nx1) / 2
                     i += 2
                     continue
                 except ValueError:
@@ -503,7 +481,10 @@ def parse_wbr_pdf(pdf_bytes: bytes):
     if not col_headers:
         return [], {}
 
-    # Header y-band: median y of all header words
+    # ── Step 2: Determine header row y, then derive all row y-positions ──
+    # Row y-positions are strictly coordinate-based: no label matching.
+    # Both my app and Quick AI use 16pt row height, rows start immediately
+    # below the column header row.
     hdr_y_vals = []
     for x0, y0, x1, y1, txt in words_list:
         m = re.fullmatch(r"W(\d{1,2})", txt.strip(), re.IGNORECASE)
@@ -511,36 +492,10 @@ def parse_wbr_pdf(pdf_bytes: bytes):
             hdr_y_vals.append((y0 + y1) / 2)
     hdr_y = float(np.median(hdr_y_vals)) if hdr_y_vals else PAGE_H * 0.57
 
-    # ── Step 2: Find row y-positions from row labels on the LEFT side ────
-    # Row labels are to the left of the table (x < 200 typically)
-    left_words = [(x0, y0, x1, y1, txt) for x0, y0, x1, y1, txt in words_list if x1 < 220]
-
-    # ── Step 2: Locate row y-positions ──────────────────────────────────
-    # Build full-line text by grouping left-side words on same y-band (within 4pt)
-    # so multi-word labels like "AV→OA Avg (Days)" can be matched as one string.
-    ROW_H_EST = 16.0
-    from collections import defaultdict as _ddict
-    _line_words = _ddict(list)
-    for x0, y0, x1, y1, txt in left_words:
-        y_key = round((y0 + y1) / 2 / 2) * 2   # bucket to nearest 2pt
-        _line_words[y_key].append((x0, txt))
-    full_lines = {yk: " ".join(t for _, t in sorted(items)) for yk, items in _line_words.items()}
-
-    def _find_row_y(pattern):
-        """Return y-center of the left-side label line matching the regex."""
-        rx = re.compile(pattern, re.IGNORECASE)
-        for y_key, line_txt in full_lines.items():
-            if rx.search(line_txt):
-                return float(y_key)
-        return None
-
-    # Try to locate each row label; evenly-spaced fallback from header y
-    row_ys = []
-    for pi, pat in enumerate(ROW_LABEL_PATTERNS):
-        y = _find_row_y(pat)
-        if y is None:
-            y = hdr_y + ROW_H_EST * (pi + 1)
-        row_ys.append(y)
+    ROW_H = 16.0  # fixed row height in both app and Quick AI slides
+    # row_ys[ri] = y-center of data row ri (ri=0 → Containers, ri=9 → OTP)
+    # In fitz coords (y increases downward), rows are below the header
+    row_ys = [hdr_y + ROW_H * (ri + 1) for ri in range(len(ROW_KEYS))]
 
     # ── Step 3: Extract cell values by proximity ──────────────────────────
     # Sort col_headers by x position
