@@ -418,21 +418,16 @@ def load_weeks_from_db(conn, year, week_nums):
 def parse_wbr_pdf(pdf_bytes: bytes):
     """Parse a previously generated WBR PDF and extract the weekly table data.
 
+    Coordinate-independent: scans all text on the page, locates week-column headers
+    by pattern matching (e.g. "W25", "W 25", "2026 W 25"), then reads cell values
+    by proximity. Works regardless of which app version generated the PDF.
+
     Returns:
-        week_labels : list[str]  – e.g. ["W25","W26","W27","W28","W29","W30"]
+        week_labels : list[str]  – e.g. ["W25","W26","W27","W28","W29"]
         week_data   : dict[int, dict]  – keyed by week_num int, values are metrics dicts
-
-    Uses tight baseline-centred clips (not full cell height) to avoid bleed between rows.
-    Geometry constants must match wbr_pdf.py exactly.
     """
-    import fitz  # PyMuPDF
-
-    PAGE_H       = 612.0
-    TBL_LABEL_X  = 51.0
-    TBL_LABEL_W  = 130.0
-    TBL_WEEK_W   = 80.0
-    TBL_ROW_H    = 16.0
-    HDR_BOT_RL   = 244.0   # = TBL_COL_HDR_TOP - TBL_ROW_H
+    import fitz
+    import re
 
     ROW_KEYS = [
         "containers",  "av_oa_avg",  "av_oa_sla_pct",  "av_oa_p90",
@@ -443,63 +438,158 @@ def parse_wbr_pdf(pdf_bytes: bytes):
                 "oa_del_sla_pct", "oa_del_p90",
                 "empty_term_pct", "e2e_avg", "otp_pct"}
 
+    # Row label patterns — matched against full left-side line text.
+    # The PDF uses labels like "AV→OA Avg (Days)", "OA→Del SLA %", etc.
+    # Use simple substrings / OR patterns that are unique to each row.
+    ROW_LABEL_PATTERNS = [
+        r"Container",           # Containers
+        r"AV.*Avg",             # AV→OA Avg (Days)
+        r"AV.*SLA",             # AV→OA SLA %
+        r"AV.*P90",             # AV→OA P90 (Days)
+        r"OA.*Del.*Avg|Del.*Avg",  # OA→Del Avg (Days)
+        r"OA.*Del.*SLA|Del.*SLA",  # OA→Del SLA %
+        r"OA.*Del.*P90|Del.*P90",  # OA→Del P90 (Days)
+        r"Empty",               # Empty→Term SLA %
+        r"E2E|Transit",         # E2E Transit Avg (Days)
+        r"On.Time|OTP",         # On-Time to Promise %
+    ]
+
     doc  = fitz.open(stream=pdf_bytes, filetype="pdf")
     page = doc[0]
+    PAGE_W = page.rect.width
+    PAGE_H = page.rect.height
 
-    def _baseline_fitz(ri):
-        """Fitz-coord baseline for data row ri (0=Containers) or None for header."""
-        # RL text baseline: HDR_BOT_RL - ri*ROW_H - 1.4 = 242.6 - ri*16
-        rl_baseline = 242.6 - ri * TBL_ROW_H
-        return PAGE_H - rl_baseline  # = 369.4 + ri*16
+    # Extract ALL words with bounding boxes: (x0,y0,x1,y1,text,block,line,word)
+    all_words = page.get_text("words")
+    doc.close()
 
-    # Header baseline
-    # RL: col_hdr_bot (244) + ROW_H - 1.4 = 258.6  → fitz 353.4
-    HDR_BASELINE_FITZ = PAGE_H - 258.6  # = 353.4
+    if not all_words:
+        return [], {}
 
-    def _get_text(x0, x1, baseline_fitz):
-        """Extract words within ±10pt / +4pt window around the text baseline."""
-        rect  = fitz.Rect(x0, baseline_fitz - 10, x1, baseline_fitz + 4)
-        words = page.get_text("words", clip=rect)
-        return " ".join(w[4] for w in sorted(words, key=lambda w: w[0]))
+    # ── Step 1: Find week-column headers ─────────────────────────────────
+    # Collect words that look like week numbers ("25","26"... or "W25","W 25", "2026")
+    # Strategy: find occurrences of 2-digit numbers 1..53 that appear in the header band.
+    # The header band is the row containing "W XX" patterns — find it by y-coord of
+    # any word immediately preceded or followed by "W".
 
-    N = 6   # always 6 week columns
-    x0s = [TBL_LABEL_X + TBL_LABEL_W + i * TBL_WEEK_W for i in range(N)]
-    x1s = [x + TBL_WEEK_W for x in x0s]
-
-    # ── Parse column headers → week numbers ──────────────────────────────
-    week_labels = []
-    week_nums   = []
-    for i in range(N):
-        raw = _get_text(x0s[i], x1s[i], HDR_BASELINE_FITZ)
-        # "2026 W 25" → extract the 1-2 digit week number
-        wn = None
-        for part in raw.replace("W", " ").split():
-            try:
-                n = int(part)
-                if 1 <= n <= 53:
-                    wn = n
-            except ValueError:
-                pass
-        week_labels.append(f"W{wn}" if wn else raw)
-        week_nums.append(wn)
-
-    # ── Parse data rows ───────────────────────────────────────────────────
-    week_data = {}
-    for ri, key in enumerate(ROW_KEYS):
-        bl = _baseline_fitz(ri)
-        for i in range(N):
-            raw = _get_text(x0s[i], x1s[i], bl)
-            # Strip %, em-dash, whitespace; handle "83%" → "83"
-            raw = raw.replace("%", "").replace("\u2013", "").replace("–", "").strip()
-            wn  = week_nums[i]
-            if raw and wn is not None:
+    # Build a word-by-word pass: look for pattern "W" + integer, or "2026" + "W" + integer
+    col_headers = {}   # week_num → x_center
+    i = 0
+    words_list = [(w[0], w[1], w[2], w[3], w[4]) for w in all_words]  # x0,y0,x1,y1,text
+    while i < len(words_list):
+        x0, y0, x1, y1, txt = words_list[i]
+        # Match "W25" in a single token
+        m = re.fullmatch(r"W(\d{1,2})", txt.strip(), re.IGNORECASE)
+        if m:
+            wn = int(m.group(1))
+            if 1 <= wn <= 53:
+                col_headers[wn] = (x0 + x1) / 2
+            i += 1
+            continue
+        # Match "W" followed by a digit token on the same y-band
+        if txt.strip().upper() == "W" and i + 1 < len(words_list):
+            nx0, ny0, nx1, ny1, ntxt = words_list[i + 1]
+            if abs(ny0 - y0) < 8:  # same line
                 try:
-                    val = float(raw)
-                    if wn not in week_data:
-                        week_data[wn] = {}
-                    week_data[wn][key] = int(round(val)) if key in INT_KEYS else round(val, 1)
+                    wn = int(ntxt.strip())
+                    if 1 <= wn <= 53:
+                        col_headers[wn] = ((x0 + nx1) / 2)
+                    i += 2
+                    continue
                 except ValueError:
                     pass
+        i += 1
 
-    doc.close()
+    if not col_headers:
+        return [], {}
+
+    # Header y-band: median y of all header words
+    hdr_y_vals = []
+    for x0, y0, x1, y1, txt in words_list:
+        m = re.fullmatch(r"W(\d{1,2})", txt.strip(), re.IGNORECASE)
+        if m and 1 <= int(m.group(1)) <= 53:
+            hdr_y_vals.append((y0 + y1) / 2)
+    hdr_y = float(np.median(hdr_y_vals)) if hdr_y_vals else PAGE_H * 0.57
+
+    # ── Step 2: Find row y-positions from row labels on the LEFT side ────
+    # Row labels are to the left of the table (x < 200 typically)
+    left_words = [(x0, y0, x1, y1, txt) for x0, y0, x1, y1, txt in words_list if x1 < 220]
+
+    # ── Step 2: Locate row y-positions ──────────────────────────────────
+    # Build full-line text by grouping left-side words on same y-band (within 4pt)
+    # so multi-word labels like "AV→OA Avg (Days)" can be matched as one string.
+    ROW_H_EST = 16.0
+    from collections import defaultdict as _ddict
+    _line_words = _ddict(list)
+    for x0, y0, x1, y1, txt in left_words:
+        y_key = round((y0 + y1) / 2 / 2) * 2   # bucket to nearest 2pt
+        _line_words[y_key].append((x0, txt))
+    full_lines = {yk: " ".join(t for _, t in sorted(items)) for yk, items in _line_words.items()}
+
+    def _find_row_y(pattern):
+        """Return y-center of the left-side label line matching the regex."""
+        rx = re.compile(pattern, re.IGNORECASE)
+        for y_key, line_txt in full_lines.items():
+            if rx.search(line_txt):
+                return float(y_key)
+        return None
+
+    # Try to locate each row label; evenly-spaced fallback from header y
+    row_ys = []
+    for pi, pat in enumerate(ROW_LABEL_PATTERNS):
+        y = _find_row_y(pat)
+        if y is None:
+            y = hdr_y + ROW_H_EST * (pi + 1)
+        row_ys.append(y)
+
+    # ── Step 3: Extract cell values by proximity ──────────────────────────
+    # Sort col_headers by x position
+    sorted_cols = sorted(col_headers.items(), key=lambda kv: kv[1])  # (wn, x_center)
+    week_nums_sorted = [kv[0] for kv in sorted_cols]
+    col_xs = [kv[1] for kv in sorted_cols]
+
+    # Column width estimate
+    if len(col_xs) > 1:
+        col_w = min(abs(col_xs[j+1] - col_xs[j]) for j in range(len(col_xs)-1))
+    else:
+        col_w = 80.0
+
+    # Row height estimate
+    if len(row_ys) > 1:
+        row_h = np.median([abs(row_ys[j+1] - row_ys[j]) for j in range(len(row_ys)-1)])
+    else:
+        row_h = ROW_H_EST
+
+    # Skip "Total" column (typically the rightmost; x > last data col + col_w*0.6)
+    # It's already excluded since we only captured "W XX" headers (not "Total")
+
+    week_data = {}
+    for ri, key in enumerate(ROW_KEYS):
+        ry = row_ys[ri]
+        for ci, wn in enumerate(week_nums_sorted):
+            cx = col_xs[ci]
+            # Clip rect centered on (cx, ry) with ±col_w/2 x, ±row_h/2 y
+            half_w = col_w * 0.48
+            half_h = row_h * 0.55
+            cell_words = [
+                (x0, y0, x1, y1, txt)
+                for x0, y0, x1, y1, txt in words_list
+                if abs((x0+x1)/2 - cx) < half_w and abs((y0+y1)/2 - ry) < half_h
+            ]
+            if not cell_words:
+                continue
+            # Join all text in cell, strip %, dashes
+            raw = " ".join(w[4] for w in sorted(cell_words, key=lambda w: w[0]))
+            raw = raw.replace("%", "").replace("\u2013", "").replace("\u2014", "").replace("–", "").replace("—", "").strip()
+            if not raw:
+                continue
+            try:
+                val = float(raw)
+                if wn not in week_data:
+                    week_data[wn] = {}
+                week_data[wn][key] = int(round(val)) if key in INT_KEYS else round(val, 1)
+            except ValueError:
+                pass
+
+    week_labels = [f"W{wn}" for wn in week_nums_sorted]
     return week_labels, week_data

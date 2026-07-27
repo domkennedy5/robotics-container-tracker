@@ -4227,7 +4227,10 @@ with tab8:
                             # Save parsed weeks to DB so future runs don't need the PDF
                             save_week_to_db(wbr_conn, year, _wn, _wd, "pdf_import")
                         wbr_conn.commit()
-                        st.success(f"✅ Parsed prior WBR PDF — loaded {', '.join(str(k) for k in sorted(_pdf_weeks.keys()) if k in prior_nums)} from slide")
+                        _in_range = [k for k in sorted(_pdf_weeks.keys()) if k in prior_nums]
+                        _all_parsed = sorted(_pdf_weeks.keys())
+                        st.success(f"✅ Parsed prior WBR PDF — loaded W{', W'.join(str(k) for k in _in_range)} from slide"
+                                   + (f" (also found: {_all_parsed})" if _all_parsed and not _in_range else ""))
                     except Exception as _e:
                         st.warning(f"⚠️ Could not parse prior WBR PDF: {_e}. Enter values manually below.")
                 wbr_conn.close()
