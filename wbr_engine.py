@@ -453,6 +453,7 @@ def parse_wbr_pdf(pdf_bytes: bytes):
 
     # ── Step 1: Find week-column headers by scanning for "W XX" / "WXX" tokens ──
     col_headers = {}   # week_num → x_center
+    col_header_ys = {}  # week_num → y0 of the "W" token — tracked in same scan as col_headers
     i = 0
     while i < len(words_list):
         x0, y0, x1, y1, txt = words_list[i]
@@ -462,6 +463,7 @@ def parse_wbr_pdf(pdf_bytes: bytes):
             wn = int(m.group(1))
             if 1 <= wn <= 53:
                 col_headers[wn] = (x0 + x1) / 2
+                col_header_ys[wn] = y0
             i += 1
             continue
         # Match "W" followed by a digit token on the same y-band (e.g. "2026 W 25")
@@ -472,6 +474,7 @@ def parse_wbr_pdf(pdf_bytes: bytes):
                     wn = int(ntxt.strip())
                     if 1 <= wn <= 53:
                         col_headers[wn] = (x0 + nx1) / 2
+                        col_header_ys[wn] = y0
                     i += 2
                     continue
                 except ValueError:
@@ -482,15 +485,10 @@ def parse_wbr_pdf(pdf_bytes: bytes):
         return [], {}
 
     # ── Step 2: Determine header row y, then derive all row y-positions ──
-    # Row y-positions are strictly coordinate-based: no label matching.
-    # Both my app and Quick AI use 16pt row height, rows start immediately
-    # below the column header row.
-    hdr_y_vals = []
-    for x0, y0, x1, y1, txt in words_list:
-        m = re.fullmatch(r"W(\d{1,2})", txt.strip(), re.IGNORECASE)
-        if m and 1 <= int(m.group(1)) <= 53:
-            hdr_y_vals.append((y0 + y1) / 2)
-    hdr_y = float(np.median(hdr_y_vals)) if hdr_y_vals else PAGE_H * 0.57
+    # Use y0 from the SAME scan that built col_headers (last assignment = main table).
+    # This avoids the fallback PAGE_H*0.57 which was 4.6pt off, causing every row
+    # window to capture the row above instead of the correct one.
+    hdr_y = float(np.median(list(col_header_ys.values()))) if col_header_ys else PAGE_H * 0.57
 
     ROW_H = 16.0  # fixed row height in both app and Quick AI slides
     # row_ys[ri] = y-center of data row ri (ri=0 → Containers, ri=9 → OTP)
