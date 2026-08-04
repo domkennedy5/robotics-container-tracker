@@ -154,3 +154,56 @@ def push_db_to_s3(aws_key: str, aws_secret: str, region: str, bucket: str) -> bo
     except Exception as e:
         logger.warning(f"DB push failed: {e}")
         return False
+
+
+# ── WBR PDF ───────────────────────────────────────────────────────────────────
+
+WBR_PDF_KEY  = "wbr/latest.pdf"
+WBR_META_KEY = "wbr/latest_meta.json"
+
+
+def push_wbr_pdf_to_s3(pdf_bytes: bytes, week_num: int, report_date_iso: str,
+                        aws_key: str, aws_secret: str, region: str, bucket: str) -> bool:
+    """Upload the generated WBR PDF + metadata to S3 so dashboards persist across sessions."""
+    try:
+        s3 = _client(aws_key, aws_secret, region)
+        s3.put_object(Bucket=bucket, Key=WBR_PDF_KEY, Body=pdf_bytes,
+                      ContentType="application/pdf")
+        meta = {
+            "week": week_num,
+            "date": report_date_iso,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        s3.put_object(Bucket=bucket, Key=WBR_META_KEY,
+                      Body=json.dumps(meta).encode(),
+                      ContentType="application/json")
+        logger.info(f"WBR PDF pushed to S3 (W{week_num})")
+        return True
+    except Exception as e:
+        logger.warning(f"WBR PDF S3 push failed: {e}")
+        return False
+
+
+def pull_wbr_pdf_from_s3(aws_key: str, aws_secret: str,
+                          region: str, bucket: str) -> tuple:
+    """Download the latest WBR PDF + metadata from S3.
+    Returns (pdf_bytes, meta_dict) or (None, {}) on failure."""
+    try:
+        s3 = _client(aws_key, aws_secret, region)
+        pdf_obj  = s3.get_object(Bucket=bucket, Key=WBR_PDF_KEY)
+        pdf_bytes = pdf_obj["Body"].read()
+        try:
+            meta_obj = s3.get_object(Bucket=bucket, Key=WBR_META_KEY)
+            meta = json.loads(meta_obj["Body"].read())
+        except Exception:
+            meta = {}
+        logger.info("WBR PDF pulled from S3")
+        return pdf_bytes, meta
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "NoSuchKey":
+            logger.info("No WBR PDF in S3 yet")
+        else:
+            logger.warning(f"WBR PDF S3 pull failed: {e}")
+    except Exception as e:
+        logger.warning(f"WBR PDF S3 pull failed: {e}")
+    return None, {}

@@ -85,6 +85,13 @@ if not _check_password():
 # ── S3 startup sync ────────────────────────────────────────────────────────────
 if S3_ENABLED and not st.session_state.get("s3_startup_done"):
     data_sync.pull_db_from_s3(AWS_KEY, AWS_SECRET, AWS_REGION, S3_BUCKET)
+    # Load last generated WBR PDF from S3 so dashboard is always visible on fresh load
+    if not st.session_state.get("wbr_last_pdf"):
+        _pdf_s3, _meta_s3 = data_sync.pull_wbr_pdf_from_s3(AWS_KEY, AWS_SECRET, AWS_REGION, S3_BUCKET)
+        if _pdf_s3:
+            st.session_state["wbr_last_pdf"]  = _pdf_s3
+            st.session_state["wbr_last_week"] = _meta_s3.get("week")
+            st.session_state["wbr_last_rd"]   = _meta_s3.get("date", "")
     st.session_state.s3_startup_done = True
 
 # ── database ───────────────────────────────────────────────────────────────────
@@ -4876,6 +4883,12 @@ with tab8:
                         st.session_state["wbr_last_pdf"]  = pdf_bytes
                         st.session_state["wbr_last_week"] = week_num
                         st.session_state["wbr_last_rd"]   = wbr_report_date.isoformat()
+                        # Push to S3 so dashboard persists across sessions / new tabs
+                        if S3_ENABLED:
+                            data_sync.push_wbr_pdf_to_s3(
+                                pdf_bytes, week_num, wbr_report_date.isoformat(),
+                                AWS_KEY, AWS_SECRET, AWS_REGION, S3_BUCKET
+                            )
 
                     rd = wbr_report_date
                     fname = f"GLS_Robotics_{rd.year}-{rd.month}-{rd.day}.pdf"
