@@ -4406,12 +4406,22 @@ with tab9:
             placeholder="All carriers", key="d_carr"
         ) if _carr_opts else []
 
-    # ── Date range + week multiselect ──────────────────────────────────────────
-    _dr_col, _wk_col = st.columns([2, 3])
+    # ── Row 2: Ending week anchor + Date range + Week multiselect ─────────────
+    _anc_col, _dr_col, _wk_col = st.columns([1, 2, 3])
+
+    with _anc_col:
+        # Ending week — trend window counts backward from here.
+        # Defaults to most recent available; change to anchor any earlier week.
+        _anchor_wk = st.selectbox(
+            "Ending week",
+            options=list(reversed(_avail_wks)),
+            index=0,
+            format_func=lambda w: f"W{w}",
+            key="d_anchor",
+        )
+
     with _dr_col:
-        # derive min/max from available data
-        _all_starts = []
-        _all_ends   = []
+        _all_starts, _all_ends = [], []
         for _, _r in _yr_wbr.iterrows():
             _ws, _we = _wk_dates(_r)
             if _ws: _all_starts.append(_ws)
@@ -4426,9 +4436,11 @@ with tab9:
             key="d_dates",
         )
 
-    # Resolve trend window → default weeks
+    # Resolve trend window backward from anchor week
     _trend_n = {"4WK": 4, "6WK": 6, "12WK": 12, "All": len(_avail_wks)}[_trend]
-    _trend_wks = _avail_wks[-_trend_n:] if _trend_n <= len(_avail_wks) else _avail_wks
+    _anchor_idx  = _avail_wks.index(_anchor_wk)
+    _start_idx   = max(0, _anchor_idx - _trend_n + 1)
+    _trend_wks   = _avail_wks[_start_idx : _anchor_idx + 1]
 
     # Resolve date range → matching weeks
     _date_wks = list(_avail_wks)
@@ -4447,11 +4459,11 @@ with tab9:
                 _date_wks.append(int(_r["week_num"]))
 
     # Combine: intersection of trend window + date range
-    _auto_wks = sorted(set(_trend_wks) & set(_date_wks)) or _date_wks
+    _auto_wks = sorted(set(_trend_wks) & set(_date_wks)) or _trend_wks
 
     with _wk_col:
         _sel_wks = st.multiselect(
-            "Weeks",
+            "Weeks (override above selection)",
             options=_avail_wks,
             default=_auto_wks,
             format_func=lambda w: f"W{w}",
