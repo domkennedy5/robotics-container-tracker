@@ -95,6 +95,9 @@ def load_gvt(file_bytes: bytes) -> pd.DataFrame:
             'container_empty':_to_ts(row[h.get('Container Empty', -1)]),
             'return_to_port': _to_ts(row[h.get('Return to Port', -1)]),
             'status':         row[h.get('Container Status', -1)],
+            'terminal_avail': _to_ts(row[h.get('Terminal Avail', -1)]),
+            'current_dray_sla': _to_ts(row[h.get('Current Dray SLA', -1)]),
+            'category':       row[h.get('Category', -1)],
         })
     wb.close()
     return pd.DataFrame(rows)
@@ -148,6 +151,11 @@ def compute_metrics(gvt, oblt, inbound, week_start, week_end, report_date) -> di
         (gvt['ready_date'] >= week_start) &
         (gvt['ready_date'] <= week_end)
     ].copy()
+    # Filter to Robotics containers only when Category column is present
+    if 'category' in pop.columns and pop['category'].notna().any():
+        robo = pop[pop['category'].astype(str).str.upper().str.contains('ROBOTICS', na=False)]
+        if not robo.empty:
+            pop = robo
 
     n = len(pop)
     if n == 0: return _empty_metrics()
@@ -157,6 +165,13 @@ def compute_metrics(gvt, oblt, inbound, week_start, week_end, report_date) -> di
     rd_ev = _latest(oblt, 'RD')
     vd_ev = _latest(oblt, 'VD')
     rpt   = pd.Timestamp(report_date)
+
+    # Supplement OBLT AV events with GVT Terminal Avail for containers missing an AV record
+    if 'terminal_avail' in pop.columns:
+        ta = pop.set_index('container')['terminal_avail'].dropna()
+        missing_av = ta[~ta.index.isin(av_ev.index)]
+        if not missing_av.empty:
+            av_ev = pd.concat([av_ev, missing_av])
 
     # AV->OA
     # Denominator: containers with OA (regardless of AV) + containers with AV expired (>3d, no OA)
@@ -204,23 +219,31 @@ def compute_metrics(gvt, oblt, inbound, week_start, week_end, report_date) -> di
     # In-transit containers that have voyaged 40-75 days (same voyage window
     # as completed ones) use report_date as proxy.  Containers with recent
     # VD dates (still at sea) are excluded — their voyage isn't measurable yet.
+    # E2E: VD → Enter Facility, completed containers only (no in-transit proxy)
     e2e = []
     for _, r in pop.iterrows():
         c, ef = r['container'], r['enter_facility']
         if c not in vd_ev.index: continue
+        if pd.isna(ef): continue
         vd = vd_ev[c]
-        days_since_vd = (rpt - vd).total_seconds() / 86400
-        if not pd.isna(ef):
-            d = (ef - vd).total_seconds() / 86400
-            if d > 0: e2e.append(d)
-        elif 40 <= days_since_vd <= 90:
-            # In-transit but voyaged long enough to be measurable
-            e2e.append(days_since_vd)
+        d = (ef - vd).total_seconds() / 86400
+        if d > 0:
+            e2e.append(d)
 
-    # OTP
-    il = inbound[inbound['container'].isin(set(pop['container']))].dropna(subset=['po_promised','actual_arrival'])
-    otp_met = (il['actual_arrival'] <= il['po_promised']).sum()
-    otp_den = len(il)
+    # OTP: GVT Current Dray SLA + Enter Facility (primary); Inbound Loads (fallback)
+    otp_met = 0; otp_den = 0
+    if 'current_dray_sla' in pop.columns and pop['current_dray_sla'].notna().any():
+        scored = pop[pop['enter_facility'].notna() & pop['current_dray_sla'].notna()].copy()
+        if not scored.empty:
+            scored['del_date'] = scored['enter_facility'].dt.normalize()
+            scored['sla_date'] = scored['current_dray_sla'].dt.normalize()
+            otp_met = int((scored['del_date'] <= scored['sla_date']).sum())
+            otp_den = len(scored)
+    if otp_den == 0 and inbound is not None and not inbound.empty:
+        # Fall back to Inbound Loads file
+        il = inbound[inbound['container'].isin(set(pop['container']))].dropna(subset=['po_promised','actual_arrival'])
+        otp_met = int((il['actual_arrival'] <= il['po_promised']).sum())
+        otp_den = len(il)
 
     def _pct(m, d): return round(m/d*100) if d else None
     def _avg(lst):  return round(float(np.mean(lst)), 1) if lst else None
