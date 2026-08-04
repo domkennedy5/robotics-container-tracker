@@ -796,7 +796,7 @@ with st.sidebar:
 
 # ── tabs ───────────────────────────────────────────────────────────────────────
 st.title("Robotics Container Tracker")
-tab8, tab7, tab6, tab1, tab2, tab4, tab3, tab5 = st.tabs(["WBR Generator", "Planning", "Insights", "Container Lookup", "Carrier Submission", "Carrier Data", "Empty Returns", "Lane Costs"])
+tab9, tab8, tab7, tab6, tab1, tab2, tab4, tab3, tab5 = st.tabs(["WBR Dashboard", "WBR Generator", "Planning", "Insights", "Container Lookup", "Carrier Submission", "Carrier Data", "Empty Returns", "Lane Costs"])
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -4331,6 +4331,283 @@ Replan as needed throughout the delivery week when any of these occur:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# TAB 9 — WBR Dashboard
+# ══════════════════════════════════════════════════════════════════════════════
+# Always-visible, no file upload required. Reads from wbr_results +
+# wbr_carrier_results in DB. Filters: week range, carrier. Export to slide.
+with tab9:
+    import plotly.graph_objects as go
+
+    st.markdown("## WBR Dashboard")
+    st.caption("Live metrics from the database — no file upload needed. Data updates automatically after each WBR Generator run.")
+
+    # ── load data from DB ──────────────────────────────────────────────────────
+    _d_conn = get_db()
+    try:
+        _all_wbr = pd.read_sql_query(
+            "SELECT * FROM wbr_results "
+            "WHERE generated_at IS NULL OR generated_at != 'seed' "
+            "ORDER BY year, week_num",
+            _d_conn
+        )
+        # also include seeded rows so historical data is visible
+        _seed_wbr = pd.read_sql_query(
+            "SELECT * FROM wbr_results ORDER BY year, week_num",
+            _d_conn
+        )
+        try:
+            _car_wbr = pd.read_sql_query(
+                "SELECT * FROM wbr_carrier_results ORDER BY year, week_num, volume DESC",
+                _d_conn
+            )
+        except Exception:
+            _car_wbr = pd.DataFrame()
+    finally:
+        _d_conn.close()
+
+    # use all data (seeded + generated)
+    _all_wbr = _seed_wbr.copy()
+
+    if _all_wbr.empty:
+        st.info("No WBR data yet. Run the **WBR Generator** tab to populate — this dashboard updates automatically.")
+    else:
+        # ── Filters ────────────────────────────────────────────────────────────
+        _avail_years = sorted(_all_wbr['year'].dropna().unique().tolist(), reverse=True)
+        _df_a, _df_b, _df_c = st.columns([1, 3, 2])
+        with _df_a:
+            _sel_yr = int(st.selectbox("Year", options=_avail_years, index=0, key="dash_yr"))
+        _yr_wbr = _all_wbr[_all_wbr['year'] == _sel_yr].copy()
+        _avail_wks = sorted(_yr_wbr['week_num'].dropna().unique().astype(int).tolist())
+        with _df_b:
+            _def_wks = _avail_wks[-8:] if len(_avail_wks) > 8 else _avail_wks
+            _sel_wks = st.multiselect(
+                "Weeks", options=_avail_wks,
+                default=_def_wks,
+                format_func=lambda w: f"W{w}",
+                key="dash_wks"
+            )
+        with _df_c:
+            _carr_opts = (sorted(_car_wbr['carrier'].dropna().unique().tolist())
+                          if not _car_wbr.empty else [])
+            _sel_carr = st.multiselect(
+                "Carrier", options=_carr_opts,
+                default=[],
+                placeholder="All carriers",
+                key="dash_carr"
+            ) if _carr_opts else []
+
+        if not _sel_wks:
+            st.warning("Select at least one week.")
+            st.stop()
+
+        _wdf = _yr_wbr[_yr_wbr['week_num'].isin(_sel_wks)].copy().sort_values('week_num')
+        _wdf['week_label'] = 'W' + _wdf['week_num'].astype(int).astype(str)
+
+        if _wdf.empty:
+            st.warning("No data for selected filters.")
+            st.stop()
+
+        # ── KPI Cards — latest selected week ───────────────────────────────────
+        _lw = _wdf.iloc[-1]
+        _ws_str = str(_lw.get('week_start') or '')[:10]
+        _we_str = str(_lw.get('week_end')   or '')[:10]
+        st.markdown(f"#### W{int(_lw['week_num'])}  ·  {_ws_str} → {_we_str}")
+
+        def _vv(row, col):
+            v = row[col]
+            return None if (v is None or (isinstance(v, float) and pd.isna(v))) else v
+
+        _kc = st.columns(5)
+        _kc[0].metric("Containers",     str(int(_vv(_lw,'containers')))   if _vv(_lw,'containers')    is not None else "—")
+        _kc[1].metric("AV→OA SLA%",     f"{int(_vv(_lw,'av_oa_sla_pct'))}%"  if _vv(_lw,'av_oa_sla_pct')  is not None else "—")
+        _kc[2].metric("OA→Del SLA%",    f"{int(_vv(_lw,'oa_del_sla_pct'))}%" if _vv(_lw,'oa_del_sla_pct') is not None else "—")
+        _kc[3].metric("E2E Avg (days)", str(int(_vv(_lw,'e2e_avg')))      if _vv(_lw,'e2e_avg')       is not None else "—")
+        _kc[4].metric("OTP%",           f"{int(_vv(_lw,'otp_pct'))}%"         if _vv(_lw,'otp_pct')        is not None else "—")
+
+        st.markdown("---")
+
+        # ── Shared chart style ─────────────────────────────────────────────────
+        _CS = dict(
+            plot_bgcolor='rgba(0,0,0,0)',
+            paper_bgcolor='rgba(0,0,0,0)',
+            font=dict(color='#dddddd', size=12),
+            margin=dict(t=40, b=10, l=10, r=10),
+            legend=dict(orientation='h', y=-0.2),
+            xaxis=dict(gridcolor='#2a2a2a', linecolor='#444'),
+            yaxis=dict(gridcolor='#2a2a2a', linecolor='#444'),
+        )
+
+        # ── Chart 1: SLA % trend ───────────────────────────────────────────────
+        _fig_sla = go.Figure()
+        _fig_sla.add_trace(go.Scatter(
+            x=_wdf['week_label'], y=_wdf['av_oa_sla_pct'],
+            name='AV→OA SLA%', mode='lines+markers',
+            line=dict(color='#FF6B35', width=3), marker=dict(size=9),
+            hovertemplate='%{x}: <b>%{y}%</b><extra>AV→OA SLA</extra>'
+        ))
+        _fig_sla.add_trace(go.Scatter(
+            x=_wdf['week_label'], y=_wdf['oa_del_sla_pct'],
+            name='OA→Del SLA%', mode='lines+markers',
+            line=dict(color='#4BACC6', width=3), marker=dict(size=9),
+            hovertemplate='%{x}: <b>%{y}%</b><extra>OA→Del SLA</extra>'
+        ))
+        _fig_sla.add_hline(y=85, line_dash='dash', line_color='#666',
+                           annotation_text='85% target', annotation_position='bottom right')
+        _fig_sla.update_layout(
+            title='SLA Performance — Week over Week',
+            yaxis=dict(range=[0,110], ticksuffix='%', gridcolor='#2a2a2a'),
+            **{k:v for k,v in _CS.items() if k != 'yaxis'}
+        )
+        st.plotly_chart(_fig_sla, use_container_width=True)
+
+        # ── Chart 2 + 3: Volume | E2E & OTP ───────────────────────────────────
+        _cc1, _cc2 = st.columns(2)
+        with _cc1:
+            _fig_vol = go.Figure(go.Bar(
+                x=_wdf['week_label'], y=_wdf['containers'],
+                marker_color='#FF6B35',
+                hovertemplate='%{x}: <b>%{y}</b> containers<extra></extra>'
+            ))
+            _fig_vol.update_layout(title='Container Volume', **_CS)
+            st.plotly_chart(_fig_vol, use_container_width=True)
+
+        with _cc2:
+            _fig_e2e = go.Figure()
+            _fig_e2e.add_trace(go.Scatter(
+                x=_wdf['week_label'], y=_wdf['e2e_avg'],
+                name='E2E Avg (days)', mode='lines+markers',
+                line=dict(color='#9B59B6', width=3), marker=dict(size=9)
+            ))
+            _fig_e2e.add_trace(go.Scatter(
+                x=_wdf['week_label'], y=_wdf['otp_pct'],
+                name='OTP%', mode='lines+markers',
+                line=dict(color='#2ECC71', width=3), marker=dict(size=9),
+                yaxis='y2'
+            ))
+            _fig_e2e.update_layout(
+                title='E2E Avg (days) & OTP%',
+                yaxis=dict(title='Days', gridcolor='#2a2a2a'),
+                yaxis2=dict(title='OTP%', overlaying='y', side='right',
+                            ticksuffix='%', range=[0,110], gridcolor='rgba(0,0,0,0)'),
+                **{k:v for k,v in _CS.items() if k not in ('yaxis',)}
+            )
+            st.plotly_chart(_fig_e2e, use_container_width=True)
+
+        # ── Carrier Performance (visible once carrier data exists) ─────────────
+        _cdf_all = pd.DataFrame()
+        if not _car_wbr.empty:
+            _cdf_all = _car_wbr[
+                (_car_wbr['year'] == _sel_yr) &
+                (_car_wbr['week_num'].isin(_sel_wks))
+            ].copy()
+            if _sel_carr:
+                _cdf_all = _cdf_all[_cdf_all['carrier'].isin(_sel_carr)]
+
+        if not _cdf_all.empty:
+            st.markdown("---")
+            st.markdown("#### Carrier Performance")
+            _cagg = (_cdf_all.groupby('carrier', as_index=False)
+                     .agg(Containers=('volume','sum'),
+                          **{'AV→OA SLA%':    ('av_oa_sla_pct','mean'),
+                             'OA→Del SLA%':   ('oa_del_sla_pct','mean'),
+                             'AV→OA Avg (d)': ('av_oa_avg','mean'),
+                             'OA→Del Avg (d)':('oa_del_avg','mean')})
+                     .round(1)
+                     .sort_values('Containers', ascending=False))
+
+            _fig_car = go.Figure()
+            _fig_car.add_trace(go.Bar(
+                x=_cagg['carrier'], y=_cagg['AV→OA SLA%'],
+                name='AV→OA SLA%', marker_color='#FF6B35'
+            ))
+            _fig_car.add_trace(go.Bar(
+                x=_cagg['carrier'], y=_cagg['OA→Del SLA%'],
+                name='OA→Del SLA%', marker_color='#4BACC6'
+            ))
+            _fig_car.add_hline(y=85, line_dash='dash', line_color='#666')
+            _fig_car.update_layout(
+                barmode='group', title='Carrier SLA Performance',
+                yaxis=dict(range=[0,110], ticksuffix='%', gridcolor='#2a2a2a'),
+                **{k:v for k,v in _CS.items() if k != 'yaxis'}
+            )
+            st.plotly_chart(_fig_car, use_container_width=True)
+            st.dataframe(
+                _cagg.rename(columns={'carrier':'Carrier'}),
+                use_container_width=True, hide_index=True
+            )
+        elif _carr_opts:
+            st.info("Carrier breakdown populates after your next WBR Generator run.")
+
+        # ── Export to Slide ─────────────────────────────────────────────────────
+        st.markdown("---")
+        st.markdown("#### Export to Slide")
+        st.caption("Generates the standard WBR slide from DB data — no file re-upload needed.")
+
+        _ex1, _ex2 = st.columns([2, 1])
+        with _ex1:
+            _exp_wk = st.selectbox(
+                "Week to export",
+                options=sorted(_sel_wks, reverse=True),
+                format_func=lambda w: f"W{w}",
+                key="dash_exp_wk"
+            )
+        with _ex2:
+            from datetime import date as _dt_cls
+            _exp_rd = st.date_input("Report date", value=_dt_cls.today(), key="dash_exp_rd")
+
+        if st.button("Generate Slide", type="primary", key="dash_gen_slide"):
+            with st.spinner("Generating slide from database..."):
+                try:
+                    from wbr_pdf  import generate_standard_wbr as _gwbr
+                    from wbr_pptx import pdf_to_pptx as _g2pptx
+                    from wbr_engine import load_weeks_from_db as _lwdb, compute_totals as _ctot
+
+                    _ec = get_db()
+                    _wns = list(range(max(1, _exp_wk - 5), _exp_wk + 1))
+                    _ew_data = _lwdb(_ec, _sel_yr, _wns)
+                    _ec.close()
+
+                    _elabels = [f"W{w}" for w in _wns]
+                    _etotals = _ctot(_ew_data)
+                    _epdf    = _gwbr(
+                        week_labels=_elabels, weeks_data=_ew_data,
+                        totals=_etotals, report_date=_exp_rd,
+                        current_week_label=f"W{_exp_wk}",
+                    )
+                    _efname = f"GLS_Robotics_{_exp_rd.year}-{_exp_rd.month}-{_exp_rd.day}.pdf"
+
+                    # Slide preview
+                    import fitz as _ftz
+                    _edoc = _ftz.open(stream=_epdf, filetype="pdf")
+                    _epix = _edoc[0].get_pixmap(matrix=_ftz.Matrix(2.0,2.0), alpha=False)
+                    _epng = _epix.tobytes("png")
+                    _edoc.close()
+                    st.image(_epng, use_container_width=True, caption=f"W{_exp_wk} · {_exp_rd}")
+
+                    # Download buttons
+                    _dl1, _dl2 = st.columns(2)
+                    with _dl1:
+                        st.download_button(
+                            label=f"⬇️ PDF — {_efname}",
+                            data=_epdf, file_name=_efname,
+                            mime="application/pdf", key="dash_dl_pdf"
+                        )
+                    with _dl2:
+                        try:
+                            _epptx = _g2pptx(_epdf, dpi=200)
+                            st.download_button(
+                                label=f"⬇️ PPTX — {_efname.replace('.pdf','.pptx')}",
+                                data=_epptx,
+                                file_name=_efname.replace('.pdf','.pptx'),
+                                mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                                key="dash_dl_pptx"
+                            )
+                        except Exception as _pe:
+                            st.warning(f"PPTX error: {_pe}")
+                except Exception as _ee:
+                    st.error(f"Export failed: {_ee}")
+                    import traceback; st.code(traceback.format_exc())
+
 # TAB 8 — WBR Generator
 # ══════════════════════════════════════════════════════════════════════════════
 with tab8:
@@ -4876,6 +5153,28 @@ with tab8:
                         )
                         wbr_conn2 = get_db()
                         save_week_to_db(wbr_conn2, year, week_num, curr_metrics, datetime.now(_EASTERN).isoformat())
+                        # Save per-carrier scorecard so WBR Dashboard can filter by carrier
+                        _ts_gen = datetime.now(_EASTERN).isoformat()
+                        for _sc_row in (carrier_sc or []):
+                            try:
+                                wbr_conn2.execute(
+                                    "INSERT OR REPLACE INTO wbr_carrier_results "
+                                    "(year,week_num,carrier,volume,av_oa_sla_pct,av_oa_avg,"
+                                    "av_oa_misses,oa_del_sla_pct,oa_del_avg,oa_del_misses,generated_at) "
+                                    "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                                    (year, week_num,
+                                     _sc_row.get("carrier"),
+                                     _sc_row.get("volume"),
+                                     _sc_row.get("av_oa_sla_pct"),
+                                     _sc_row.get("av_oa_avg"),
+                                     _sc_row.get("av_oa_misses"),
+                                     _sc_row.get("oa_del_sla_pct"),
+                                     _sc_row.get("oa_del_avg"),
+                                     _sc_row.get("oa_del_misses"),
+                                     _ts_gen)
+                                )
+                            except Exception:
+                                pass  # non-fatal
                         wbr_conn2.commit(); wbr_conn2.close()
                         if S3_ENABLED:
                             data_sync.push_db_to_s3(AWS_KEY, AWS_SECRET, AWS_REGION, S3_BUCKET)
