@@ -4872,6 +4872,10 @@ with tab8:
                         wbr_conn2.commit(); wbr_conn2.close()
                         if S3_ENABLED:
                             data_sync.push_db_to_s3(AWS_KEY, AWS_SECRET, AWS_REGION, S3_BUCKET)
+                        # Persist generated PDF in session state so dashboard survives reruns
+                        st.session_state["wbr_last_pdf"]  = pdf_bytes
+                        st.session_state["wbr_last_week"] = week_num
+                        st.session_state["wbr_last_rd"]   = wbr_report_date.isoformat()
 
                     rd = wbr_report_date
                     fname = f"GLS_Robotics_{rd.year}-{rd.month}-{rd.day}.pdf"
@@ -5451,6 +5455,62 @@ PATH TO GREEN
                         st.text_area("Bridge — Enhanced (editable)", value=_bridge_enh, height=320, key="wbr_bridge_enh")
 
                     st.success(f"W{week_num} metrics saved to DB for future carry-forward.")
+
+                # ── PERSISTENT SLIDE DASHBOARD ─────────────────────────────────
+                # Shows on every render after Generate is clicked (uses session state).
+                # Provides the slide preview + downloads without re-uploading files.
+                _wbr_pdf_sess = st.session_state.get("wbr_last_pdf")
+                _wbr_wk_sess  = st.session_state.get("wbr_last_week")
+                if _wbr_pdf_sess and not wbr_gen_btn:
+                    _wbr_rd_str = st.session_state.get("wbr_last_rd", wbr_report_date.isoformat())
+                    try:
+                        from datetime import date as _date_cls
+                        _wbr_rd_disp = datetime.fromisoformat(_wbr_rd_str).strftime("%B %d, %Y")
+                    except Exception:
+                        _wbr_rd_disp = _wbr_rd_str[:10]
+
+                    st.markdown("---")
+                    st.markdown(f"#### 📄 W{_wbr_wk_sess} Slide — Dashboard")
+
+                    # Slide image — exact render of generated PDF
+                    try:
+                        import fitz as _fz_pers
+                        _fz_doc = _fz_pers.open(stream=_wbr_pdf_sess, filetype="pdf")
+                        _fz_pix = _fz_doc[0].get_pixmap(
+                            matrix=_fz_pers.Matrix(2.0, 2.0), alpha=False
+                        )
+                        _fz_png = _fz_pix.tobytes("png")
+                        _fz_doc.close()
+                        st.image(_fz_png, use_container_width=True,
+                                 caption=f"W{_wbr_wk_sess} · {_wbr_rd_disp}")
+                    except Exception as _fze:
+                        st.warning(f"Slide preview error: {_fze}")
+
+                    # Download buttons
+                    _p_rd   = wbr_report_date
+                    _p_pdf_fname  = f"GLS_Robotics_{_p_rd.year}-{_p_rd.month}-{_p_rd.day}.pdf"
+                    _p_pptx_fname = _p_pdf_fname.replace(".pdf", ".pptx")
+                    _dl_p1, _dl_p2 = st.columns(2)
+                    with _dl_p1:
+                        st.download_button(
+                            label=f"⬇️ PDF — {_p_pdf_fname}",
+                            data=_wbr_pdf_sess,
+                            file_name=_p_pdf_fname,
+                            mime="application/pdf",
+                            key="wbr_dl_pers_pdf",
+                        )
+                    with _dl_p2:
+                        try:
+                            _p_pptx = pdf_to_pptx(_wbr_pdf_sess, dpi=200)
+                            st.download_button(
+                                label=f"⬇️ PPTX — {_p_pptx_fname}",
+                                data=_p_pptx,
+                                file_name=_p_pptx_fname,
+                                mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                                key="wbr_dl_pers_pptx",
+                            )
+                        except Exception as _pe:
+                            st.warning(f"PPTX error: {_pe}")
 
             except Exception as e:
                 st.error(f"Error: {e}")
