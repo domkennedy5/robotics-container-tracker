@@ -9,6 +9,14 @@ from datetime import datetime, date, timedelta
 from zoneinfo import ZoneInfo
 
 _EASTERN = ZoneInfo("America/New_York")
+_PHX     = ZoneInfo("America/Phoenix")   # MST year-round (no DST)
+_CENTRAL = ZoneInfo("America/Chicago")
+
+
+def _ct_to_mst(hour: int, minute: int = 0) -> str:
+    """Return formatted MST equivalent of a CT clock time (uses today's offset)."""
+    _t = datetime.now(_CENTRAL).replace(hour=hour, minute=minute, second=0, microsecond=0)
+    return _t.astimezone(_PHX).strftime('%I:%M %p').lstrip('0')
 
 from streamlit_js_eval import streamlit_js_eval
 from utils import (
@@ -4799,7 +4807,7 @@ with tab8:
 
     # Due date banner — anchored to last Monday (submission day)
     if _dsm2 == 0:
-        st.error(f"🔴 **WBR W{_wbr_wnum} is DUE TODAY** by 2:00 PM CT — submit to `doc+destops-36@fusion.amazon.dev`")
+        st.error(f"🔴 **WBR W{_wbr_wnum} is DUE TODAY** by 2:00 PM CT ({_ct_to_mst(14)} MST) — submit to `doc+destops-36@fusion.amazon.dev`")
     elif _dsm2 <= 2:
         st.warning(f"🟡 **WBR W{_wbr_wnum}** was due **{_last_mon2.strftime('%b %d')}** — submit ASAP if not yet sent · Next WBR W{_wbr_wnum+1} due {_next_mon2.strftime('%b %d')}")
     else:
@@ -4966,32 +4974,14 @@ with tab8:
                                          help="Optional — enriches Enhanced WBR forward look with vessel/ETA data")
 
     st.markdown("---")
-    with st.expander("📎 Upload prior WBR slide to auto-populate prior weeks", expanded=True):
-        st.caption(
-            "Upload last week's generated WBR PDF. The app will read W(n-5)–W(n-1) values "
-            "directly from the slide — no manual entry needed. Values are saved to the database "
-            "so future weeks auto-populate without re-uploading."
-        )
-        wbr_prior_pdf = st.file_uploader(
-            "Prior WBR Slide (.pdf)",
-            type=["pdf"],
-            key="wbr_prior_pdf",
-            help="Upload the PDF generated last week. All prior week columns will be parsed automatically.",
-        )
+    wbr_prior_pdf = None  # Prior weeks auto-loaded from DB
+
 
     # ── Report date ───────────────────────────────────────────────────────────
     # Auto-default to most recent Monday — WBR always submitted Monday morning
     _wbr_today = datetime.now(_EASTERN).date()
     _last_monday = _wbr_today - timedelta(days=_wbr_today.weekday())  # weekday(): Mon=0
-    wd1, wd2 = st.columns([1, 3])
-    with wd1:
-        wbr_report_date = st.date_input(
-            "Report date",
-            value=_last_monday,
-            max_value=_wbr_today,
-            key="wbr_report_date",
-            help="Defaults to most recent Monday. Adjust only if re-running a prior week.",
-        )
+    wbr_report_date = _last_monday
 
     # ── Slide preview (live, pre-generate) ────────────────────────────────────
     _pconn = get_db()
@@ -5103,22 +5093,6 @@ with tab8:
                 wbr_conn   = get_db()
                 prior_data = load_weeks_from_db(wbr_conn, year, prior_nums)
 
-                # If prior WBR PDF uploaded, parse it and merge (PDF wins over DB for each week)
-                if wbr_prior_pdf is not None:
-                    try:
-                        _pdf_labels, _pdf_weeks = parse_wbr_pdf(wbr_prior_pdf.read())
-                        for _wn, _wd in _pdf_weeks.items():
-                            if _wn in prior_nums:
-                                prior_data[_wn] = _wd
-                            # Save parsed weeks to DB so future runs don't need the PDF
-                            save_week_to_db(wbr_conn, year, _wn, _wd, "pdf_import")
-                        wbr_conn.commit()
-                        _in_range = [k for k in sorted(_pdf_weeks.keys()) if k in prior_nums]
-                        _all_parsed = sorted(_pdf_weeks.keys())
-                        st.success(f"✅ Parsed prior WBR PDF — loaded W{', W'.join(str(k) for k in _in_range)} from slide"
-                                   + (f" (also found: {_all_parsed})" if _all_parsed and not _in_range else ""))
-                    except Exception as _e:
-                        st.warning(f"⚠️ Could not parse prior WBR PDF: {_e}. Enter values manually below.")
                 wbr_conn.close()
 
                 display_nums   = prior_nums + [week_num]
@@ -5251,12 +5225,20 @@ with tab8:
                     # Legacy key kept for backward compat (not shown; used only if new keys are empty)
                     st.session_state.setdefault("wbr_op_notes", "")
 
+                    st.markdown("---")
+                    st.text_area(
+                        "🌐 External context / market intel",
+                        placeholder="Port congestion, rate spikes, weather events, carrier advisories, vessel delays, ILA activity. Injected into bridge under [External Context]. e.g.:\nPort of LA congestion — avg 3-day vessel delay as of 8/1\nBNSF dwell elevated at Chicago ramp — expect +1-2 days inland transit",
+                        key="wbr_ext_ctx", height=90,
+                        help="Freeform external/market context injected into the bridge.",
+                    )
+
                 # ── Prior weeks missing ────────────────────────────────────────
                 missing = [f"W{n}" for n in prior_nums if n not in prior_data]
                 if missing:
                     st.warning(
                         f"**{len(missing)} prior week(s) still missing** ({', '.join(missing)}). "
-                        "Upload the prior WBR slide above, or enter values manually below."
+                        "Enter values manually below — or they will be shown as `–` on the slide."
                     )
                     with st.expander(f"✏️ Manual entry — {', '.join(missing)}", expanded=False):
                         st.caption("Fallback: copy values from your last published WBR slide.")
@@ -5285,19 +5267,18 @@ with tab8:
 
                 st.markdown("---")
 
-                # ── Footer time + generate ─────────────────────────────────────
-                wg1, wg2 = st.columns([2, 1])
-                with wg2:
-                    wbr_time_str = st.text_input(
-                        "Footer time",
-                        value="10:00am (CT) | 9:00am (MT) | 8:00am (PT)",
-                        key="wbr_time_str",
-                    )
-                with wg1:
-                    wbr_gen_btn = st.button("Generate Both WBR Outputs", type="primary", key="wbr_generate")
+                # ── Generate ──────────────────────────────────────────────────
+                wbr_gen_btn = st.button("⚙️ Generate Both WBR Outputs", type="primary", key="wbr_generate")
 
                 if wbr_gen_btn:
                     with st.spinner("Building WBR outputs..."):
+                        # Auto-compute footer time at generation moment
+                        _now_phx = datetime.now(_PHX)
+                        wbr_time_str = (
+                            _now_phx.astimezone(_CENTRAL).strftime("%I:%M %p").lstrip("0") + " CT"
+                            "  |  " + _now_phx.strftime("%I:%M %p").lstrip("0") + " MST"
+                            "  |  " + _now_phx.astimezone(ZoneInfo("America/Los_Angeles")).strftime("%I:%M %p").lstrip("0") + " PT"
+                        )
                         pdf_bytes = generate_standard_wbr(
                             week_labels = display_labels,
                             weeks_data  = display_data,
@@ -5403,7 +5384,7 @@ with tab8:
                     # ── LEFT: Standard WBR (Mitch) ────────────────────────────
                     with out1:
                         st.markdown("### 📊 Standard WBR — Monday")
-                        st.caption("Submit to: `doc+destops-36@fusion.amazon.dev` · Subject: `NA Destination Ops WBR_Robotics` · Deadline: 2:00 PM CT")
+                        st.caption(f"Submit to: `doc+destops-36@fusion.amazon.dev` · Subject: `NA Destination Ops WBR_Robotics` · Deadline: **2:00 PM CT ({_ct_to_mst(14)} MST)**")
                         _dl_c1, _dl_c2 = st.columns(2)
                         with _dl_c1:
                             st.download_button(
@@ -5670,11 +5651,14 @@ with tab8:
                         # Market context — load from DB (populated daily by port-intel Lambda)
                         _mkt_ctx = load_market_context(get_db())
                         _mkt_block = format_market_context_block(_mkt_ctx)
+                        # Manual external context from UI input
+                        _ext_ctx = (st.session_state.get("wbr_ext_ctx") or "").strip()
 
                         _bridge_std = (
                             f"WK{week_num} ({_wk_range})\n"
                             f"Headline: {_headline}\n\n"
                             + (f"{_mkt_block}\n\n" if _mkt_block else "")
+                            + (f"[External Context]\n{_ext_ctx}\n\n" if _ext_ctx else "")
                             + f"[Volume] {_vol_narrative}\n\n"
                             f"[AV→OA] {_av_body}"
                             + (f"\n{_av_carrier_inline}" if _av_carrier_inline else "")
@@ -5698,7 +5682,7 @@ with tab8:
                             "**📧 WBR Submission SOP**\n\n"
                             f"**To:** `doc+destops-36@fusion.amazon.dev`  ·  "
                             f"**Subject:** `NA Destination Ops WBR_Robotics`  ·  "
-                            f"**Deadline:** Monday by 2:00 PM CT  ·  "
+                            f"**Deadline:** Monday by 2:00 PM CT ({_ct_to_mst(14)} MST)  ·  "
                             f"**Attachment:** `{fname}`"
                         )
 
@@ -5742,7 +5726,7 @@ with tab8:
 
                         # ── Manual fallback — step-by-step ───────────────────
                         with st.expander("📋 Manual submission instructions (if mailto doesn't work)", expanded=False):
-                            st.markdown("""**Step-by-step:**
+                            st.markdown(f"""**Step-by-step:**
 
 1. **Download the PDF** — click the ⬇️ Download button above  
 2. **Open a new email** (Outlook / webmail)  
@@ -5750,7 +5734,7 @@ with tab8:
 4. **Subject:** `NA Destination Ops WBR_Robotics`  
 5. **Attach** the PDF you just downloaded  
 6. **Paste the email body below** into the message body  
-7. **Send before 2:00 PM CT on Monday**
+7. **Send before 2:00 PM CT ({_ct_to_mst(14)} MST) on Monday**
 """)
                             st.caption("Email body (copy all of this):")
                             st.code(_email_body_txt, language="")
