@@ -4620,9 +4620,29 @@ with tab9:
         _col_h = f"W{int(_wr['week_num'])}" + (f"\n{_ws_short}" if _ws_short else "")
         _tbl[_col_h] = [_fmt(_vv(_wr, col)) for _, col, _fmt in _METRICS]
 
+    # ── Totals column — volume sum; all other metrics weighted avg by containers
+    def _wtot(col):
+        """Weighted average of col across _wdf, weighted by containers."""
+        _rows = _wdf[["containers", col]].dropna()
+        if _rows.empty: return None
+        _wts = _rows["containers"].astype(float)
+        if _wts.sum() == 0: return None
+        return (_rows[col].astype(float) * _wts).sum() / _wts.sum()
+
+    _tot_vals = []
+    for _, col, _fmt in _METRICS:
+        if col == "containers":
+            _v = _wdf["containers"].dropna().sum()
+            _tot_vals.append(str(int(_v)) if _v else "—")
+        else:
+            _v = _wtot(col)
+            _tot_vals.append(_fmt(round(_v, 1) if _v is not None else None))
+    _tbl["Totals"] = _tot_vals
+
     _tbl_df = pd.DataFrame(_tbl)
     st.dataframe(_tbl_df, use_container_width=True, hide_index=True,
-                 column_config={"Metric": st.column_config.TextColumn(width="medium")})
+                 column_config={"Metric": st.column_config.TextColumn(width="medium"),
+                                "Totals": st.column_config.TextColumn(width="small")})
 
     # ── Carrier Performance ────────────────────────────────────────────────────
     if not _car_wbr.empty:
