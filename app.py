@@ -4394,7 +4394,7 @@ with tab9:
     with _trend_col:
         _trend = st.radio(
             "Trend window", ["4WK", "6WK", "12WK", "All"],
-            index=3, horizontal=True, key="d_trend",
+            index=1, horizontal=True, key="d_trend",
             label_visibility="collapsed"
         )
 
@@ -4496,6 +4496,21 @@ with tab9:
     _kc[3].metric("E2E Avg (days)",str(int(_vv(_lw,"e2e_avg")))          if _vv(_lw,"e2e_avg")       is not None else "—", delta=round(_d("e2e_avg",invert=True),1) if _d("e2e_avg") is not None else None, delta_color="normal")
     _kc[4].metric("OTP%",         f"{int(_vv(_lw,'otp_pct'))}%"          if _vv(_lw,"otp_pct")       is not None else "—", delta=f"{int(_d('otp_pct'))}pp"         if _d("otp_pct")      is not None else None)
 
+    # ── SLA Goals box ─────────────────────────────────────────────────────────
+    _sg1, _sg2 = st.columns([1, 3])
+    with _sg1:
+        st.markdown(
+            """<div style="border:1px solid #555;border-radius:6px;padding:10px 14px;
+            background:#1a1a1a;font-size:13px;line-height:1.8;">
+            <b style="font-size:14px;">SLA Goals</b><hr style="border-color:#444;margin:4px 0 6px 0;">
+            &bull; AV to OA &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&le; 3 Days<br>
+            &bull; OA to Delivery &le; 3 Days<br>
+            &bull; Empty to Term &nbsp;&le; 3 Days<br>
+            &bull; E2E / OTP &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&ge; 95%
+            </div>""",
+            unsafe_allow_html=True
+        )
+
     st.markdown("---")
 
     # ── Shared Plotly style ────────────────────────────────────────────────────
@@ -4514,57 +4529,60 @@ with tab9:
         fig.add_trace(go.Scatter(
             x=_wdf["wl"], y=_wdf[col], name=name,
             mode="lines+markers",
-            line=dict(color=color, width=3), marker=dict(size=8),
+            line=dict(color=color, width=2.5), marker=dict(size=7, color=color),
             hovertemplate=f"%{{x}}: <b>%{{y}}{suffix}</b><extra></extra>"
         ))
         if sla_line is not None:
-            fig.add_hline(y=sla_line, line_dash="dash", line_color="#555",
-                          annotation_text=f"{sla_line}{suffix} target",
-                          annotation_font_color="#888")
+            fig.add_hline(y=sla_line, line_dash="dash", line_color="#E8A838",
+                          line_width=1.5,
+                          annotation_text=f"Goal: {sla_line}{suffix}",
+                          annotation_font_color="#E8A838",
+                          annotation_font_size=10)
         return fig
 
-    # ── Performance Trends — Row 1: Avg days (mirrors WBR slide) ─────────────
+    # ── Performance Trends — 2 rows × 3 charts, exact slide titles + style ────
+    # Single line color (#4BACC6 teal), orange goal lines (#E8A838) — matches slide
+    _C_LINE = "#4BACC6"   # teal — same as C_DOT on slide
+    _C_GOAL = "#E8A838"   # orange — same as C_ACCENT on slide
+
     st.markdown("#### Performance Trends")
     _r1a, _r1b, _r1c = st.columns(3)
 
     with _r1a:
-        _f = _lc("av_oa_avg", "AV→OA Avg", "#FF6B35", "d", sla_line=3)
-        _f.update_layout(title="AV→OA Avg (days)", yaxis=dict(**_YAXIS), xaxis=_XAXIS, **_CS)
+        _f = _lc("av_oa_avg", "Leg: AV to OA (avg. days)", _C_LINE, "d", sla_line=3)
+        _f.update_layout(title="Leg: AV to OA (avg. days)", yaxis=dict(**_YAXIS), xaxis=_XAXIS, **_CS)
         st.plotly_chart(_f, use_container_width=True)
 
     with _r1b:
-        _f = _lc("oa_del_avg", "OA→Del Avg", "#4BACC6", "d", sla_line=3)
-        _f.update_layout(title="OA→Del Avg (days)", yaxis=dict(**_YAXIS), xaxis=_XAXIS, **_CS)
+        _f = _lc("oa_del_avg", "Leg: OA to Delivery (avg. days)", _C_LINE, "d", sla_line=3)
+        _f.update_layout(title="Leg: OA to Delivery (avg. days)", yaxis=dict(**_YAXIS), xaxis=_XAXIS, **_CS)
         st.plotly_chart(_f, use_container_width=True)
 
     with _r1c:
-        _f = _lc("e2e_avg", "E2E Avg", "#9B59B6", "d")
-        _f.update_layout(title="E2E Avg (days)", yaxis=dict(**_YAXIS), xaxis=_XAXIS, **_CS)
+        _f = _lc("e2e_avg", "Leg: E2E Transit (avg. days)", _C_LINE, "d")
+        _f.update_layout(title="Leg: E2E Transit (avg. days)", yaxis=dict(**_YAXIS), xaxis=_XAXIS, **_CS)
         st.plotly_chart(_f, use_container_width=True)
 
-    # ── Row 2: Empty→Term%, OTP%, Container Volume ────────────────────────────
+    # ── Row 2 ─────────────────────────────────────────────────────────────────
     _r2a, _r2b, _r2c = st.columns(3)
 
     with _r2a:
-        _f = _lc("empty_term_pct", "Empty→Term%", "#E8A838", "%")
-        _f.update_layout(title="Empty→Term%",
+        _f = _lc("empty_term_pct", "Leg: Empty to Termination (%)", _C_LINE, "%")
+        _f.update_layout(title="Leg: Empty to Termination (%)",
                          yaxis=dict(range=[0,110], ticksuffix="%", **_YAXIS),
                          xaxis=_XAXIS, **_CS)
         st.plotly_chart(_f, use_container_width=True)
 
     with _r2b:
-        _f = _lc("otp_pct", "OTP%", "#2ECC71", "%", sla_line=85)
-        _f.update_layout(title="OTP%",
+        _f = _lc("otp_pct", "Leg: On-Time to Promise %", _C_LINE, "%", sla_line=95)
+        _f.update_layout(title="Leg: On-Time to Promise %",
                          yaxis=dict(range=[0,110], ticksuffix="%", **_YAXIS),
                          xaxis=_XAXIS, **_CS)
         st.plotly_chart(_f, use_container_width=True)
 
     with _r2c:
-        _f = go.Figure(go.Bar(
-            x=_wdf["wl"], y=_wdf["containers"], marker_color="#FF6B35",
-            hovertemplate="%{x}: <b>%{y}</b> containers<extra></extra>"
-        ))
-        _f.update_layout(title="Container Volume", yaxis=dict(**_YAXIS), xaxis=_XAXIS, **_CS)
+        _f = _lc("containers", "Volume (containers)", _C_LINE, "")
+        _f.update_layout(title="Volume (containers)", yaxis=dict(**_YAXIS), xaxis=_XAXIS, **_CS)
         st.plotly_chart(_f, use_container_width=True)
 
     # ── Weekly Performance Table ───────────────────────────────────────────────
