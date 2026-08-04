@@ -3010,6 +3010,91 @@ def _srf_compute_notice_flags(latest: dict, prior: dict, current_week: int) -> d
     return result
 
 
+def _srf_auto_forecast(conn, current_week: int, year: int, n_weeks: int = 6, history: int = 8) -> dict:
+    """
+    Auto-generate 6-week SRF volume forecast from historical data.
+
+    Data priority:
+      1. wbr_results.containers  -- weekly totals from WBR Bridge (most reliable)
+      2. delivery_plan COUNT by week_start -- fallback when wbr_results is sparse
+
+    Method: weighted moving average (recent weeks get higher weight) + linear trend
+    detection. Trend applied only if slope > 3%/week; otherwise flat WMA baseline.
+
+    Returns dict:
+      forecast       {forecast_week: projected_volume}
+      method         wbr_results | delivery_plan | default
+      wma_baseline   rounded WMA value
+      trend_pct      % weekly slope (informational)
+      history        [(week_num, volume), ...] chronological
+      vols           [volume, ...] chronological
+    """
+    # 1. Pull historical weekly volume
+    rows = conn.execute(
+        "SELECT week_num, containers FROM wbr_results "
+        "WHERE year=? AND week_num < ? AND containers IS NOT NULL AND containers > 0 "
+        "ORDER BY week_num DESC LIMIT ?",
+        (year, current_week, history)
+    ).fetchall()
+    method = "wbr_results"
+
+    # Fallback: aggregate delivery_plan by ISO week
+    if len(rows) < 3:
+        dp_rows = conn.execute(
+            "SELECT CAST(strftime('%W', week_start) AS INTEGER) as wk, COUNT(*) as cnt "
+            "FROM delivery_plan "
+            "WHERE week_start IS NOT NULL AND week_start != '' "
+            "GROUP BY wk ORDER BY wk DESC LIMIT ?",
+            (history,)
+        ).fetchall()
+        rows = [(int(r[0]), int(r[1])) for r in dp_rows if r[0] is not None]
+        method = "delivery_plan"
+
+    # Default -- not enough history anywhere
+    if len(rows) < 2:
+        baseline = 40
+        fcast = {(current_week + i) % 53 or 53: baseline for i in range(1, n_weeks + 1)}
+        return {"forecast": fcast, "method": "default",
+                "wma_baseline": baseline, "trend_pct": 0.0,
+                "history": [], "vols": []}
+
+    # 2. Chronological order (oldest first)
+    hist = list(reversed(rows))
+    vols = [float(r[1]) for r in hist]
+    n = len(vols)
+
+    # 3. Weighted moving average: weight = rank (newest = highest)
+    weights  = list(range(1, n + 1))
+    wma      = sum(w * v for w, v in zip(weights, vols)) / sum(weights)
+
+    # 4. Linear trend via least-squares slope
+    x_vals    = list(range(n))
+    x_mean    = sum(x_vals) / n
+    v_mean    = sum(vols) / n
+    slope_num = sum((xi - x_mean) * (vi - v_mean) for xi, vi in zip(x_vals, vols))
+    slope_den = sum((xi - x_mean) ** 2 for xi in x_vals)
+    slope     = slope_num / slope_den if slope_den > 0 else 0.0
+    trend_pct = round(slope / v_mean * 100, 1) if v_mean > 0 else 0.0
+
+    # 5. Project 6 weeks: apply trend only if > 3%/wk; else flat WMA
+    apply_trend = abs(trend_pct) > 3.0
+    last_vol    = vols[-1]
+    forecast = {}
+    for i in range(1, n_weeks + 1):
+        fw = (current_week + i) % 53 or 53
+        projected = (last_vol + slope * i) if apply_trend else wma
+        forecast[fw] = max(1, round(projected))
+
+    return {
+        "forecast":     forecast,
+        "method":       method,
+        "wma_baseline": round(wma),
+        "trend_pct":    trend_pct,
+        "history":      hist,
+        "vols":         vols,
+    }
+
+
 with tab7:
     st.subheader("Delivery Plan Scheduler")
     st.caption("🎯 **Purpose:** Build, manage, and distribute the weekly container delivery plan across all sites and carriers.")
@@ -3025,38 +3110,92 @@ with tab7:
         _iso_wk    = int(_today_srf.strftime("%V"))
         _iso_yr    = _today_srf.isocalendar()[0]
 
-        _srf_c1, _srf_c2 = st.columns([2, 1])
-        with _srf_c1:
-            st.markdown("**6-Week SRF — Container Volume Forecast**")
-            st.caption("Enter anticipated container pick-up requests for each of the next 6 weeks. "
-                       "Required carrier capacity (120% of forecast) is computed automatically.")
+        st.markdown("**6-Week SRF — Auto-Generated Volume Forecast**")
+        st.caption(
+            "Projected volumes are calculated from historical weekly data using a weighted "
+            "moving average (WMA). Recent weeks are weighted higher. Trend is applied when "
+            "slope exceeds 3%/week. Override individual weeks below if needed."
+        )
 
-        with _srf_c2:
-            _srf_submit_week = st.number_input(
-                "Submitting for WBR Week", min_value=1, max_value=53,
-                value=_iso_wk, step=1, key="srf_submit_week",
-                help="ISO week number of the WBR cycle this SRF covers."
-            )
+        # ── Auto-forecast ─────────────────────────────────────────────────────
+        _forecast_data = _srf_auto_forecast(_srf_conn, _iso_wk, _iso_yr)
+        _fc            = _forecast_data["forecast"]          # {week: projected_vol}
+        _fc_method     = _forecast_data["method"]
+        _fc_wma        = _forecast_data["wma_baseline"]
+        _fc_trend      = _forecast_data["trend_pct"]
+        _fc_vols       = _forecast_data.get("vols", [])
+        _fc_hist       = _forecast_data.get("history", [])
 
-        # Build the 6-week input grid
-        _srf_weeks = [(_srf_submit_week + i) % 53 or 53 for i in range(1, 7)]
-        _srf_latest  = _srf_get_latest(_srf_conn, _iso_yr)
-        _srf_prior   = _srf_get_prior(_srf_conn, _iso_yr, _srf_submit_week)
+        # Trend label
+        if abs(_fc_trend) < 2:
+            _trend_label = "Stable ➡️"
+        elif _fc_trend > 0:
+            _trend_label = f"Growing 📈 +{_fc_trend}%/wk"
+        else:
+            _trend_label = f"Declining 📉 {_fc_trend}%/wk"
 
-        _vol_inputs = {}
-        _grid_cols = st.columns(6)
-        for _ci, _fw in enumerate(_srf_weeks):
-            with _grid_cols[_ci]:
-                _existing_vol = _srf_latest.get(_fw, {}).get("vol", None)
-                _vol_inputs[_fw] = st.number_input(
-                    f"W{_fw}", min_value=0, max_value=999,
-                    value=int(_existing_vol) if _existing_vol is not None else 0,
-                    step=1, key=f"srf_vol_{_fw}"
-                )
+        _met1, _met2, _met3 = st.columns(3)
+        with _met1:
+            st.metric("WMA Baseline", f"{_fc_wma} containers",
+                      help="Weighted moving average of recent weekly volume — higher weight to newer weeks")
+        with _met2:
+            st.metric("Volume Trend", _trend_label,
+                      help="Linear regression slope over history window")
+        with _met3:
+            _hist_src = f"{len(_fc_vols)} wks · {_fc_method}"
+            st.metric("Data Source", _hist_src,
+                      help="wbr_results preferred; falls back to delivery_plan aggregates")
+
+        # Forecast table (read-only)
+        _srf_weeks = [(_iso_wk + i) % 53 or 53 for i in range(1, 7)]
+        import pandas as _pd_fc
+        _fc_rows = []
+        for _fw in _srf_weeks:
+            _proj = _fc.get(_fw, _fc_wma)
+            _cap  = _srf_required_capacity(_proj)
+            _fc_rows.append({
+                "Week":                   f"W{_fw}",
+                "Projected Volume":       _proj,
+                "Req. Capacity (×1.20)":  _cap,
+                "Trend":                  _trend_label,
+            })
+        st.dataframe(_pd_fc.DataFrame(_fc_rows), use_container_width=True, hide_index=True)
+
+        # History sparkline (if data available)
+        if _fc_vols:
+            _hist_df = _pd_fc.DataFrame({
+                "Week": [f"W{r[0]}" for r in _fc_hist],
+                "Volume": _fc_vols,
+            })
+            st.caption(f"📊 Historical volume used for forecast ({_fc_method})")
+            st.line_chart(_hist_df.set_index("Week")["Volume"], height=120, use_container_width=True)
+
+        # Override expander — optional manual adjustments
+        with st.expander("✏️ Override forecast (for known demand spikes or planned events)", expanded=False):
+            st.caption("Set a week to any value > 0 to override the auto-projected volume. Leave at 0 to keep auto.")
+            _override_cols = st.columns(6)
+            _overrides = {}
+            for _ci, _fw in enumerate(_srf_weeks):
+                with _override_cols[_ci]:
+                    _overrides[_fw] = st.number_input(
+                        f"W{_fw}", min_value=0, max_value=999,
+                        value=0, step=1, key=f"srf_override_{_fw}"
+                    )
+
+        # Merge: override wins if non-zero; otherwise use auto forecast
+        _final_forecast = {
+            _fw: (_overrides[_fw] if _overrides.get(_fw, 0) > 0 else _fc.get(_fw, _fc_wma))
+            for _fw in _srf_weeks
+        }
 
         if st.button("💾 Save SRF Submission", type="primary", key="srf_save"):
-            _srf_save_submission(_srf_conn, _srf_submit_week, _iso_yr, _vol_inputs)
-            st.success(f"✅ SRF W{_srf_submit_week} saved — {sum(_vol_inputs.values())} total containers across W{_srf_weeks[0]}–W{_srf_weeks[-1]}")
+            _srf_save_submission(_srf_conn, _iso_wk, _iso_yr, _final_forecast)
+            _override_count = sum(1 for fw in _srf_weeks if _overrides.get(fw, 0) > 0)
+            _note = f" ({_override_count} week(s) manually overridden)" if _override_count else ""
+            st.success(
+                f"✅ SRF W{_iso_wk} saved — {sum(_final_forecast.values())} total containers "
+                f"across W{_srf_weeks[0]}–W{_srf_weeks[-1]}{_note}"
+            )
             st.rerun()
 
         # ── Display current SRF with capacity calcs + notice flags ──────────
@@ -3156,7 +3295,7 @@ with tab7:
                                  value="\n".join(_notice_lines), height=220,
                                  key="srf_notice_draft")
         else:
-            st.info("No SRF submitted yet for this year. Enter forecasted volumes above and click Save.")
+            st.info("No SRF saved yet for this cycle. Review the auto-generated forecast above and click **Save SRF Submission** to lock it in.")
 
         _srf_conn.close()
     st.markdown("---")
