@@ -4339,7 +4339,7 @@ with tab8:
         _latest,
     )
     from wbr_pdf import generate_standard_wbr, _fmt
-    from wbr_pptx import generate_wbr_pptx
+    from wbr_pptx import pdf_to_pptx
     import urllib.parse
 
     # ── Week identification + due date ─────────────────────────────────────────
@@ -4879,91 +4879,72 @@ with tab8:
                     # ── OUTPUT SECTION ────────────────────────────────────────
                     st.markdown("## Generated Outputs")
 
-                    # ── SLIDE DASHBOARD ───────────────────────────────────────
-                    with st.container():
-                        # Header bar (mirrors slide aesthetics)
-                        st.markdown(
-                            f"""<div style="background:#333;border-radius:8px 8px 0 0;
-                                padding:10px 18px;display:flex;justify-content:space-between;
-                                align-items:center;margin-bottom:0;">
-                                <span style="color:#fff;font-weight:700;font-size:15px;">
-                                    Robotics Destination Dray Metrics — NA
-                                </span>
-                                <span style="color:#e8a838;font-size:11px;">
-                                    {week_labels[-1] if week_labels else ""} · {wbr_report_date.strftime("%b %d, %Y")}
-                                </span>
-                            </div>
-                            <div style="background:#e8a838;height:3px;margin-bottom:10px;border-radius:0 0 2px 2px;"></div>""",
-                            unsafe_allow_html=True,
+                    # ── SLIDE DASHBOARD — rendered from generated PDF ──────────
+                    # Render the PDF to a high-res image and display it in-app.
+                    # This is pixel-identical to the generated slide — same fonts,
+                    # same chart lines, same table.  Updates each time Generate runs.
+                    st.markdown("#### 📄 W{} Slide — Live Preview".format(week_num))
+                    try:
+                        import fitz as _fitz_dash
+                        _dash_doc = _fitz_dash.open(stream=pdf_bytes, filetype="pdf")
+                        _dash_page = _dash_doc[0]
+                        # 2× scale = crisp at typical monitor resolutions
+                        _dash_pix  = _dash_page.get_pixmap(
+                            matrix=_fitz_dash.Matrix(2.0, 2.0), alpha=False
                         )
+                        _dash_png  = _dash_pix.tobytes("png")
+                        _dash_doc.close()
+                        st.image(_dash_png, use_container_width=True,
+                                 caption=f"W{week_num} — {wbr_report_date.strftime('%B %d, %Y')} · Generated {datetime.now(_EASTERN).strftime('%I:%M %p CT')}")
+                    except Exception as _dash_err:
+                        st.warning(f"Slide preview unavailable: {_dash_err}")
 
-                        # KPI tiles — current week with WoW deltas
+                    # ── Metrics explorer (interactive — WoW deltas, trend) ─────
+                    with st.expander("📊 Metrics Explorer — WoW deltas & trends", expanded=False):
                         _kpi_defs = [
-                            ("Containers",   "containers",     False, None),
+                            ("Containers",    "containers",     False, ""),
                             ("AV→OA SLA",  "av_oa_sla_pct",  True,  "%"),
                             ("AV→OA Avg",  "av_oa_avg",      False, "d"),
                             ("OA→Del SLA", "oa_del_sla_pct", True,  "%"),
-                            ("E2E Avg",       "e2e_avg",        False, "d"),
-                            ("OTP",           "otp_pct",        True,  "%"),
+                            ("E2E Avg",        "e2e_avg",        False, "d"),
+                            ("OTP",            "otp_pct",        True,  "%"),
                         ]
                         _kpi_cols = st.columns(6)
                         _pw_kpi = prior_data.get(week_num - 1, {}) or {}
                         for _kc, (_klbl, _kkey, _is_sla, _ksufx) in zip(_kpi_cols, _kpi_defs):
-                            _kv   = curr_metrics.get(_kkey)
-                            _kpv  = _pw_kpi.get(_kkey)
-                            _kdsp = (f"{int(round(float(_kv)))}{'%' if _ksufx == '%' else ''}"
-                                     f"{'d' if _ksufx == 'd' else ''}" if _kv is not None else "–")
+                            _kv  = curr_metrics.get(_kkey)
+                            _kpv = _pw_kpi.get(_kkey)
+                            _kdsp = (
+                                f"{int(round(float(_kv)))}{_ksufx}"
+                                if _kv is not None else "–"
+                            )
                             _kdelta = None
                             if _kv is not None and _kpv is not None:
                                 _kdiff = round(float(_kv) - float(_kpv), 1)
-                                _kdelta = (f"+{_kdiff}" if _kdiff >= 0 else str(_kdiff)) + (f"{'%' if _ksufx == '%' else ''}")
-                            _kc.metric(_klbl, _kdsp, delta=_kdelta,
-                                        delta_color=("normal" if not _is_sla else
-                                                     ("normal" if (_kv or 0) >= 95 else "inverse")))
+                                _kdelta = (f"+{_kdiff}" if _kdiff >= 0 else str(_kdiff)) + _ksufx
+                            _kc.metric(
+                                _klbl, _kdsp, delta=_kdelta,
+                                delta_color="normal" if (not _is_sla or (_kv or 0) >= 95) else "inverse",
+                            )
 
-                        st.markdown("")
-
-                        # Charts — 2 rows × 3 (line charts per metric over 6 weeks)
                         import pandas as _pd_dash
                         _wk_idx = display_labels
-                        _ch_row1 = st.columns(3)
-                        _ch_row2 = st.columns(3)
-                        _chart_pairs = [
-                            (_ch_row1[0], "AV→OA Avg (d)",  "av_oa_avg",      "d"),
-                            (_ch_row1[1], "AV→OA SLA %",    "av_oa_sla_pct",  "%"),
-                            (_ch_row1[2], "OA→Del SLA %",   "oa_del_sla_pct", "%"),
-                            (_ch_row2[0], "E2E Transit (d)",     "e2e_avg",        "d"),
-                            (_ch_row2[1], "On-Time to Promise",  "otp_pct",        "%"),
-                            (_ch_row2[2], "Volume",              "containers",     ""),
-                        ]
-                        for _col, _ctitle, _ckey, _csufx in _chart_pairs:
+                        _ch_r1, _ch_r2 = st.columns(3), st.columns(3)
+                        for _col, _ct, _ck in [
+                            (_ch_r1[0], "AV→OA Avg (d)",   "av_oa_avg"),
+                            (_ch_r1[1], "AV→OA SLA %",     "av_oa_sla_pct"),
+                            (_ch_r1[2], "OA→Del SLA %",    "oa_del_sla_pct"),
+                            (_ch_r2[0], "E2E Transit (d)",      "e2e_avg"),
+                            (_ch_r2[1], "OTP %",                "otp_pct"),
+                            (_ch_r2[2], "Volume",               "containers"),
+                        ]:
                             with _col:
-                                _cvals = [d.get(_ckey) if d else None for d in display_data]
-                                _cdf = _pd_dash.DataFrame({"Week": _wk_idx, _ctitle: _cvals}).dropna(subset=[_ctitle]).set_index("Week")
-                                st.caption(f"**{_ctitle}**")
-                                st.line_chart(_cdf, height=140, use_container_width=True)
-
-                        # Performance table
-                        st.markdown(f"**Weekly Performance — {display_labels[0]}–{display_labels[-1]} ({sites_str if 'sites_str' in dir() else 'NA'})**")
-                        _from_wbr_pdf = [
-                            "Containers", "AV→OA Avg (Days)", "AV→OA SLA %", "AV→OA P90 (Days)",
-                            "OA→Del Avg (Days)", "OA→Del SLA %", "OA→Del P90 (Days)",
-                            "Empty→Term SLA %", "E2E Transit Avg (Days)", "On-Time to Promise %",
-                        ]
-                        _from_wbr_keys = [
-                            "containers", "av_oa_avg", "av_oa_sla_pct", "av_oa_p90",
-                            "oa_del_avg", "oa_del_sla_pct", "oa_del_p90",
-                            "empty_term_pct", "e2e_avg", "otp_pct",
-                        ]
-                        _perf_tbl = {"Metric": _from_wbr_pdf}
-                        for _wlbl, _wdata in zip(display_labels, display_data):
-                            _perf_tbl[_wlbl] = [
-                                _fmt(_wdata.get(k) if _wdata else None, k)
-                                for k in _from_wbr_keys
-                            ]
-                        if totals:
-                            _perf_tbl["Total"] = [_fmt(totals.get(k), k) for k in _from_wbr_keys]
-                        st.dataframe(_pd_dash.DataFrame(_perf_tbl), use_container_width=True, hide_index=True)
+                                _cdf = _pd_dash.DataFrame({
+                                    "Week": _wk_idx,
+                                    _ct:   [d.get(_ck) if d else None for d in display_data],
+                                }).dropna(subset=[_ct]).set_index("Week")
+                                st.caption(f"**{_ct}**")
+                                st.line_chart(_cdf, height=130, use_container_width=True)
 
                     st.markdown("---")
 
@@ -4985,13 +4966,7 @@ with tab8:
                         with _dl_c2:
                             try:
                                 _pptx_fname = f"GLS_Robotics_{wbr_report_date.year}-{wbr_report_date.month}-{wbr_report_date.day}.pptx"
-                                _pptx_bytes = generate_wbr_pptx(
-                                    week_labels  = display_labels,
-                                    weeks_data   = display_data,
-                                    totals       = totals,
-                                    report_date  = wbr_report_date,
-                                    report_time  = wbr_time_str,
-                                )
+                                _pptx_bytes = pdf_to_pptx(pdf_bytes, dpi=200)
                                 st.download_button(
                                     label=f"⬇️ PPTX — {_pptx_fname}",
                                     data=_pptx_bytes,
