@@ -343,6 +343,30 @@ def migrate_db():
     except sqlite3.OperationalError:
         pass
 
+    # ── SRF forecast tables ──────────────────────────────────────────────────────
+    conn.execute('''CREATE TABLE IF NOT EXISTS srf_submissions (
+        id               INTEGER PRIMARY KEY AUTOINCREMENT,
+        submission_week  INTEGER NOT NULL,
+        submission_year  INTEGER NOT NULL,
+        submitted_at     TEXT,
+        submitted_by     TEXT,
+        UNIQUE(submission_week, submission_year)
+    )''')
+    conn.execute('''CREATE TABLE IF NOT EXISTS srf_forecast (
+        id                INTEGER PRIMARY KEY AUTOINCREMENT,
+        submission_week   INTEGER NOT NULL,
+        submission_year   INTEGER NOT NULL,
+        forecast_week     INTEGER NOT NULL,
+        forecast_year     INTEGER NOT NULL,
+        forecasted_volume INTEGER,
+        required_capacity INTEGER,
+        notice_required   INTEGER DEFAULT 0,
+        notice_sent       INTEGER DEFAULT 0,
+        notice_sent_at    TEXT,
+        UNIQUE(submission_week, submission_year, forecast_week, forecast_year)
+    )''')
+    conn.commit()
+
     # ── port_intel / freight_rates / macro_signals: create if missing ────────────
     for _tbl_sql in [
         """CREATE TABLE IF NOT EXISTS port_intel (
@@ -2872,9 +2896,270 @@ def _week_grid(plan_df: pd.DataFrame, week_days: list):
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 7 BODY
 # ══════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════
+# SRF — Short Range Forecast helpers
+# ═══════════════════════════════════════════════════════════════════════════════
+import math as _math
+
+def _srf_required_capacity(volume: int) -> int:
+    """LSP must maintain capacity for at least 20% more than forecasted volume."""
+    return _math.ceil(volume * 1.20)
+
+def _srf_save_submission(conn, submission_week: int, year: int, forecasts: dict, user: str = "kennewdo"):
+    """
+    Save a new SRF submission.
+    forecasts = {forecast_week: volume, ...}  (6 entries)
+    Returns the submission id.
+    """
+    now = datetime.now(_EASTERN).isoformat()
+    conn.execute(
+        "INSERT OR REPLACE INTO srf_submissions (submission_week, submission_year, submitted_at, submitted_by) "
+        "VALUES (?,?,?,?)", (submission_week, year, now, user)
+    )
+    sub_id = conn.execute(
+        "SELECT id FROM srf_submissions WHERE submission_week=? AND submission_year=?",
+        (submission_week, year)
+    ).fetchone()[0]
+    for fw, vol in forecasts.items():
+        if vol is None: continue
+        cap = _srf_required_capacity(vol)
+        conn.execute(
+            "INSERT OR REPLACE INTO srf_forecast "
+            "(submission_week, submission_year, forecast_week, forecast_year, "
+            " forecasted_volume, required_capacity) VALUES (?,?,?,?,?,?)",
+            (submission_week, year, fw, year, vol, cap)
+        )
+    conn.commit()
+    return sub_id
+
+def _srf_get_latest(conn, year: int) -> dict:
+    """Return the most recent SRF submission rows as {forecast_week: row_dict}."""
+    sub = conn.execute(
+        "SELECT submission_week FROM srf_submissions WHERE submission_year=? "
+        "ORDER BY submission_week DESC LIMIT 1", (year,)
+    ).fetchone()
+    if not sub:
+        return {}
+    sw = sub[0]
+    rows = conn.execute(
+        "SELECT forecast_week, forecasted_volume, required_capacity, "
+        "notice_required, notice_sent, notice_sent_at, submission_week "
+        "FROM srf_forecast WHERE submission_week=? AND submission_year=? "
+        "ORDER BY forecast_week", (sw, year)
+    ).fetchall()
+    return {r[0]: {"vol": r[1], "cap": r[2], "notice_req": r[3],
+                   "notice_sent": r[4], "notice_sent_at": r[5],
+                   "submission_week": r[6]} for r in rows}
+
+def _srf_get_prior(conn, year: int, before_week: int) -> dict:
+    """Return the SRF from the submission immediately before before_week."""
+    sub = conn.execute(
+        "SELECT submission_week FROM srf_submissions "
+        "WHERE submission_year=? AND submission_week < ? "
+        "ORDER BY submission_week DESC LIMIT 1", (year, before_week)
+    ).fetchone()
+    if not sub:
+        return {}
+    sw = sub[0]
+    rows = conn.execute(
+        "SELECT forecast_week, forecasted_volume, required_capacity "
+        "FROM srf_forecast WHERE submission_week=? AND submission_year=?",
+        (sw, year)
+    ).fetchall()
+    return {r[0]: {"vol": r[1], "cap": r[2]} for r in rows}
+
+def _srf_mark_notice_sent(conn, submission_week: int, year: int, forecast_week: int):
+    now = datetime.now(_EASTERN).isoformat()
+    conn.execute(
+        "UPDATE srf_forecast SET notice_sent=1, notice_sent_at=? "
+        "WHERE submission_week=? AND submission_year=? AND forecast_week=?",
+        (now, submission_week, year, forecast_week)
+    )
+    conn.commit()
+
+def _srf_compute_notice_flags(latest: dict, prior: dict, current_week: int) -> dict:
+    """
+    For each week in latest, determine whether a capacity increase notice is needed.
+    Returns enhanced dict with notice fields populated.
+    """
+    result = {}
+    for fw, row in latest.items():
+        r = dict(row)
+        prior_vol = prior.get(fw, {}).get("vol")
+        weeks_out = fw - current_week
+        vol_increase = (prior_vol is not None and row["vol"] > prior_vol)
+        if vol_increase:
+            delta = row["vol"] - prior_vol
+            delta_pct = round(delta / prior_vol * 100) if prior_vol > 0 else None
+            r["prior_vol"] = prior_vol
+            r["delta"] = delta
+            r["delta_pct"] = delta_pct
+            if weeks_out <= 1:
+                r["notice_status"] = "URGENT"   # already within / past window
+            elif weeks_out == 2:
+                r["notice_status"] = "DUE_NOW"  # exactly on the 2-week line
+            else:
+                r["notice_status"] = "SCHEDULED"  # time remains, due by W{fw-2}
+                r["notice_due_week"] = fw - 2
+        else:
+            r["prior_vol"] = prior_vol
+            r["delta"] = 0
+            r["delta_pct"] = 0
+            r["notice_status"] = "OK" if not row["notice_sent"] else "SENT"
+        result[fw] = r
+    return result
+
+
 with tab7:
     st.subheader("Delivery Plan Scheduler")
     st.caption("🎯 **Purpose:** Build, manage, and distribute the weekly container delivery plan across all sites and carriers.")
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # SRF — SHORT RANGE FORECAST & CAPACITY COMPLIANCE
+    # Contract: LSP must maintain capacity for ≥120% of weekly forecasted volume.
+    # Amazon must notify LSP ≥2 weeks in advance of required capacity increases.
+    # ══════════════════════════════════════════════════════════════════════════
+    with st.expander("📦 Short Range Forecast (SRF) — Capacity Requirements", expanded=True):
+        _srf_conn = get_db()
+        _today_srf = date.today()
+        _iso_wk    = int(_today_srf.strftime("%V"))
+        _iso_yr    = _today_srf.isocalendar()[0]
+
+        _srf_c1, _srf_c2 = st.columns([2, 1])
+        with _srf_c1:
+            st.markdown("**6-Week SRF — Container Volume Forecast**")
+            st.caption("Enter anticipated container pick-up requests for each of the next 6 weeks. "
+                       "Required carrier capacity (120% of forecast) is computed automatically.")
+
+        with _srf_c2:
+            _srf_submit_week = st.number_input(
+                "Submitting for WBR Week", min_value=1, max_value=53,
+                value=_iso_wk, step=1, key="srf_submit_week",
+                help="ISO week number of the WBR cycle this SRF covers."
+            )
+
+        # Build the 6-week input grid
+        _srf_weeks = [(_srf_submit_week + i) % 53 or 53 for i in range(1, 7)]
+        _srf_latest  = _srf_get_latest(_srf_conn, _iso_yr)
+        _srf_prior   = _srf_get_prior(_srf_conn, _iso_yr, _srf_submit_week)
+
+        _vol_inputs = {}
+        _grid_cols = st.columns(6)
+        for _ci, _fw in enumerate(_srf_weeks):
+            with _grid_cols[_ci]:
+                _existing_vol = _srf_latest.get(_fw, {}).get("vol", None)
+                _vol_inputs[_fw] = st.number_input(
+                    f"W{_fw}", min_value=0, max_value=999,
+                    value=int(_existing_vol) if _existing_vol is not None else 0,
+                    step=1, key=f"srf_vol_{_fw}"
+                )
+
+        if st.button("💾 Save SRF Submission", type="primary", key="srf_save"):
+            _srf_save_submission(_srf_conn, _srf_submit_week, _iso_yr, _vol_inputs)
+            st.success(f"✅ SRF W{_srf_submit_week} saved — {sum(_vol_inputs.values())} total containers across W{_srf_weeks[0]}–W{_srf_weeks[-1]}")
+            st.rerun()
+
+        # ── Display current SRF with capacity calcs + notice flags ──────────
+        _srf_current = _srf_get_latest(_srf_conn, _iso_yr)
+        if _srf_current:
+            _sub_wk = next(iter(_srf_current.values()))["submission_week"]
+            _srf_prior_data = _srf_get_prior(_srf_conn, _iso_yr, _sub_wk + 1)
+            _flagged = _srf_compute_notice_flags(_srf_current, _srf_prior_data, _iso_wk)
+
+            # Notice alerts — shown above the table
+            _urgent = [(fw, r) for fw, r in _flagged.items()
+                       if r["notice_status"] in ("URGENT", "DUE_NOW") and not r["notice_sent"]]
+            _scheduled = [(fw, r) for fw, r in _flagged.items()
+                          if r["notice_status"] == "SCHEDULED" and not r["notice_sent"]]
+
+            for _fw, _r in _urgent:
+                _window_label = "⚠️ WITHIN NOTICE WINDOW" if _r["notice_status"] == "DUE_NOW" else "🚨 PAST NOTICE DEADLINE"
+                st.error(
+                    f"**W{_fw} Capacity Increase — {_window_label}**  \n"
+                    f"Forecast increased {_r['prior_vol']}→{_r['vol']} containers "
+                    f"(+{_r['delta']}, +{_r['delta_pct']}%). "
+                    f"Required capacity: **{_r['cap']} moves**. "
+                    f"Notify LSP immediately."
+                )
+                if st.button(f"✉️ Mark W{_fw} Notice Sent", key=f"srf_notice_{_fw}"):
+                    _srf_mark_notice_sent(_srf_conn, _sub_wk, _iso_yr, _fw)
+                    st.rerun()
+
+            for _fw, _r in _scheduled:
+                _due_wk = _r.get("notice_due_week", _fw - 2)
+                st.warning(
+                    f"**W{_fw} Capacity Increase Detected** — Notice due by W{_due_wk}.  \n"
+                    f"Forecast: {_r['prior_vol']}→{_r['vol']} (+{_r['delta_pct']}%). "
+                    f"Required capacity: {_r['cap']} moves."
+                )
+                if st.button(f"✉️ Mark W{_fw} Notice Sent", key=f"srf_notice_sched_{_fw}"):
+                    _srf_mark_notice_sent(_srf_conn, _sub_wk, _iso_yr, _fw)
+                    st.rerun()
+
+            # SRF summary table
+            _tbl_rows = []
+            for _fw in sorted(_flagged.keys()):
+                _r = _flagged[_fw]
+                _prior_disp = str(_r["prior_vol"]) if _r["prior_vol"] is not None else "—"
+                _delta_disp = (f"+{_r['delta']} (+{_r['delta_pct']}%)" if _r["delta"] > 0
+                               else ("—" if _r["delta"] == 0 else str(_r["delta"])))
+                _status_map = {
+                    "OK":        "✅ No change",
+                    "SENT":      f"✅ Notice sent {_r.get('notice_sent_at','')[:10]}",
+                    "SCHEDULED": f"📅 Notice due W{_r.get('notice_due_week', _fw-2)}",
+                    "DUE_NOW":   "⚠️ Notice due NOW",
+                    "URGENT":    "🚨 Past deadline",
+                }
+                _tbl_rows.append({
+                    "Week":              f"W{_fw}",
+                    "Forecast (vol)":    _r["vol"],
+                    "Prior Forecast":    _prior_disp,
+                    "WoW Change":        _delta_disp,
+                    "Req. Capacity (+20%)": _r["cap"],
+                    "Notice Status":     _status_map.get(_r["notice_status"], _r["notice_status"]),
+                })
+
+            import pandas as _pd_srf
+            _srf_df = _pd_srf.DataFrame(_tbl_rows)
+            st.dataframe(_srf_df, use_container_width=True, hide_index=True)
+            st.caption(f"SRF submitted for W{_sub_wk}. Req. capacity = ceil(forecast × 1.20). "
+                       "Amazon must notify LSP ≥2 weeks in advance of capacity increases.")
+
+            # Draft notice language
+            _noticeable = [(_fw, _r) for _fw, _r in _flagged.items()
+                           if _r["delta"] > 0 and not _r["notice_sent"]]
+            if _noticeable:
+                with st.expander("📝 Draft LSP Capacity Notice", expanded=False):
+                    _notice_lines = [
+                        f"Subject: Amazon Robotics — Capacity Increase Notice (W{', W'.join(str(fw) for fw,_ in _noticeable)})",
+                        "",
+                        "Team,",
+                        "",
+                        "Per our contracted SRF obligations, Amazon is providing advance notice of "
+                        "anticipated volume increases requiring additional carrier capacity:",
+                        "",
+                    ]
+                    for _fw, _r in _noticeable:
+                        _notice_lines.append(
+                            f"  • Week W{_fw}: Forecasted volume increased to {_r['vol']} containers "
+                            f"(+{_r['delta']} from prior forecast of {_r['prior_vol']}). "
+                            f"Required carrier capacity: {_r['cap']} moves (120% of forecast)."
+                        )
+                    _notice_lines += [
+                        "",
+                        "Please confirm capacity availability and any constraints by end of week.",
+                        "",
+                        "Thank you,",
+                        "Amazon Global Logistics — Robotics Dray",
+                    ]
+                    st.text_area("Draft notice (edit before sending)",
+                                 value="\n".join(_notice_lines), height=220,
+                                 key="srf_notice_draft")
+        else:
+            st.info("No SRF submitted yet for this year. Enter forecasted volumes above and click Save.")
+
+        _srf_conn.close()
+    st.markdown("---")
 
     # ── SOP header callout ────────────────────────────────────────────────────
     with st.expander("📋 Weekly Planning SOP — Quick Reference", expanded=False):
