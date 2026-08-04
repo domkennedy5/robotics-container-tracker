@@ -5349,26 +5349,6 @@ with tab8:
                     # ── OUTPUT SECTION ────────────────────────────────────────
                     st.markdown("## Generated Outputs")
 
-                    # ── SLIDE DASHBOARD — rendered from generated PDF ──────────
-                    # Render the PDF to a high-res image and display it in-app.
-                    # This is pixel-identical to the generated slide — same fonts,
-                    # same chart lines, same table.  Updates each time Generate runs.
-                    st.markdown("#### 📄 W{} Slide — Live Preview".format(week_num))
-                    try:
-                        import fitz as _fitz_dash
-                        _dash_doc = _fitz_dash.open(stream=pdf_bytes, filetype="pdf")
-                        _dash_page = _dash_doc[0]
-                        # 2× scale = crisp at typical monitor resolutions
-                        _dash_pix  = _dash_page.get_pixmap(
-                            matrix=_fitz_dash.Matrix(2.0, 2.0), alpha=False
-                        )
-                        _dash_png  = _dash_pix.tobytes("png")
-                        _dash_doc.close()
-                        st.image(_dash_png, use_container_width=True,
-                                 caption=f"W{week_num} — {wbr_report_date.strftime('%B %d, %Y')} · Generated {datetime.now(_EASTERN).strftime('%I:%M %p CT')}")
-                    except Exception as _dash_err:
-                        st.warning(f"Slide preview unavailable: {_dash_err}")
-
                     # ── Metrics explorer (interactive — WoW deltas, trend) ─────
                     with st.expander("📊 Metrics Explorer — WoW deltas & trends", expanded=False):
                         _kpi_defs = [
@@ -5922,61 +5902,6 @@ PATH TO GREEN
 
                     st.success(f"W{week_num} metrics saved to DB for future carry-forward.")
 
-                # ── PERSISTENT SLIDE DASHBOARD ─────────────────────────────────
-                # Shows on every render after Generate is clicked (uses session state).
-                # Provides the slide preview + downloads without re-uploading files.
-                _wbr_pdf_sess = st.session_state.get("wbr_last_pdf")
-                _wbr_wk_sess  = st.session_state.get("wbr_last_week")
-                if _wbr_pdf_sess and not wbr_gen_btn:
-                    _wbr_rd_str = st.session_state.get("wbr_last_rd", wbr_report_date.isoformat())
-                    try:
-                        from datetime import date as _date_cls
-                        _wbr_rd_disp = datetime.fromisoformat(_wbr_rd_str).strftime("%B %d, %Y")
-                    except Exception:
-                        _wbr_rd_disp = _wbr_rd_str[:10]
-
-                    st.markdown("---")
-                    st.markdown(f"#### 📄 W{_wbr_wk_sess} Slide — Dashboard")
-
-                    # Slide image — exact render of generated PDF
-                    try:
-                        import fitz as _fz_pers
-                        _fz_doc = _fz_pers.open(stream=_wbr_pdf_sess, filetype="pdf")
-                        _fz_pix = _fz_doc[0].get_pixmap(
-                            matrix=_fz_pers.Matrix(2.0, 2.0), alpha=False
-                        )
-                        _fz_png = _fz_pix.tobytes("png")
-                        _fz_doc.close()
-                        st.image(_fz_png, use_container_width=True,
-                                 caption=f"W{_wbr_wk_sess} · {_wbr_rd_disp}")
-                    except Exception as _fze:
-                        st.warning(f"Slide preview error: {_fze}")
-
-                    # Download buttons
-                    _p_rd   = wbr_report_date
-                    _p_pdf_fname  = f"GLS_Robotics_{_p_rd.year}-{_p_rd.month}-{_p_rd.day}.pdf"
-                    _p_pptx_fname = _p_pdf_fname.replace(".pdf", ".pptx")
-                    _dl_p1, _dl_p2 = st.columns(2)
-                    with _dl_p1:
-                        st.download_button(
-                            label=f"⬇️ PDF — {_p_pdf_fname}",
-                            data=_wbr_pdf_sess,
-                            file_name=_p_pdf_fname,
-                            mime="application/pdf",
-                            key="wbr_dl_pers_pdf",
-                        )
-                    with _dl_p2:
-                        try:
-                            _p_pptx = pdf_to_pptx(_wbr_pdf_sess, dpi=200)
-                            st.download_button(
-                                label=f"⬇️ PPTX — {_p_pptx_fname}",
-                                data=_p_pptx,
-                                file_name=_p_pptx_fname,
-                                mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-                                key="wbr_dl_pers_pptx",
-                            )
-                        except Exception as _pe:
-                            st.warning(f"PPTX error: {_pe}")
 
             except Exception as e:
                 st.error(f"Error: {e}")
