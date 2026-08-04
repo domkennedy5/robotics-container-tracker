@@ -4523,65 +4523,48 @@ with tab9:
                           annotation_font_color="#888")
         return fig
 
-    # ── Performance Trends — Row 1: SLA % ─────────────────────────────────────
+    # ── Performance Trends — Row 1: Avg days (mirrors WBR slide) ─────────────
     st.markdown("#### Performance Trends")
     _r1a, _r1b, _r1c = st.columns(3)
 
     with _r1a:
-        _f = _lc("av_oa_sla_pct", "AV→OA SLA%", "#FF6B35", "%", sla_line=85)
-        _f.update_layout(title="AV→OA SLA%",
-                         yaxis=dict(range=[0,110], ticksuffix="%", **_YAXIS),
-                         xaxis=_XAXIS, **_CS)
+        _f = _lc("av_oa_avg", "AV→OA Avg", "#FF6B35", "d", sla_line=3)
+        _f.update_layout(title="AV→OA Avg (days)", yaxis=dict(**_YAXIS), xaxis=_XAXIS, **_CS)
         st.plotly_chart(_f, use_container_width=True)
 
     with _r1b:
-        _f = _lc("oa_del_sla_pct", "OA→Del SLA%", "#4BACC6", "%", sla_line=85)
-        _f.update_layout(title="OA→Del SLA%",
-                         yaxis=dict(range=[0,110], ticksuffix="%", **_YAXIS),
-                         xaxis=_XAXIS, **_CS)
+        _f = _lc("oa_del_avg", "OA→Del Avg", "#4BACC6", "d", sla_line=3)
+        _f.update_layout(title="OA→Del Avg (days)", yaxis=dict(**_YAXIS), xaxis=_XAXIS, **_CS)
         st.plotly_chart(_f, use_container_width=True)
 
     with _r1c:
+        _f = _lc("e2e_avg", "E2E Avg", "#9B59B6", "d")
+        _f.update_layout(title="E2E Avg (days)", yaxis=dict(**_YAXIS), xaxis=_XAXIS, **_CS)
+        st.plotly_chart(_f, use_container_width=True)
+
+    # ── Row 2: Empty→Term%, OTP%, Container Volume ────────────────────────────
+    _r2a, _r2b, _r2c = st.columns(3)
+
+    with _r2a:
         _f = _lc("empty_term_pct", "Empty→Term%", "#E8A838", "%")
         _f.update_layout(title="Empty→Term%",
                          yaxis=dict(range=[0,110], ticksuffix="%", **_YAXIS),
                          xaxis=_XAXIS, **_CS)
         st.plotly_chart(_f, use_container_width=True)
 
-    # ── Row 2: Avg days ────────────────────────────────────────────────────────
-    _r2a, _r2b, _r2c = st.columns(3)
-
-    with _r2a:
-        _f = _lc("av_oa_avg", "AV→OA Avg", "#FF6B35", "d", sla_line=3)
-        _f.update_layout(title="AV→OA Avg (days)", yaxis=dict(**_YAXIS), xaxis=_XAXIS, **_CS)
-        st.plotly_chart(_f, use_container_width=True)
-
     with _r2b:
-        _f = _lc("oa_del_avg", "OA→Del Avg", "#4BACC6", "d", sla_line=3)
-        _f.update_layout(title="OA→Del Avg (days)", yaxis=dict(**_YAXIS), xaxis=_XAXIS, **_CS)
+        _f = _lc("otp_pct", "OTP%", "#2ECC71", "%", sla_line=85)
+        _f.update_layout(title="OTP%",
+                         yaxis=dict(range=[0,110], ticksuffix="%", **_YAXIS),
+                         xaxis=_XAXIS, **_CS)
         st.plotly_chart(_f, use_container_width=True)
 
     with _r2c:
-        _f = _lc("e2e_avg", "E2E Avg", "#9B59B6", "d")
-        _f.update_layout(title="E2E Avg (days)", yaxis=dict(**_YAXIS), xaxis=_XAXIS, **_CS)
-        st.plotly_chart(_f, use_container_width=True)
-
-    # ── Row 3: Volume + OTP ────────────────────────────────────────────────────
-    _r3a, _r3b = st.columns(2)
-
-    with _r3a:
         _f = go.Figure(go.Bar(
             x=_wdf["wl"], y=_wdf["containers"], marker_color="#FF6B35",
             hovertemplate="%{x}: <b>%{y}</b> containers<extra></extra>"
         ))
         _f.update_layout(title="Container Volume", yaxis=dict(**_YAXIS), xaxis=_XAXIS, **_CS)
-        st.plotly_chart(_f, use_container_width=True)
-
-    with _r3b:
-        _f = _lc("otp_pct", "OTP%", "#2ECC71", "%", sla_line=85)
-        _f.update_layout(title="OTP%",
-                         yaxis=dict(range=[0,110], ticksuffix="%", **_YAXIS),
-                         xaxis=_XAXIS, **_CS)
         st.plotly_chart(_f, use_container_width=True)
 
     # ── Weekly Performance Table ───────────────────────────────────────────────
