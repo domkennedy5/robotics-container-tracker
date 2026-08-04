@@ -438,6 +438,123 @@ def load_weeks_from_db(conn, year, week_nums):
     return result
 
 
+
+
+def load_market_context(conn, days_back: int = 14) -> dict:
+    """
+    Load the latest port intel, freight rate, and macro signal data from DB.
+    Returns a dict ready for bridge injection.
+    Called at WBR generate time — data populated daily by port-intel-scraper Lambda.
+
+    Returns:
+        {
+          'freight':  str  — Drewry WCI headline (latest)
+          'macro':    str  — GSCPI reading (latest)
+          'ports': {
+              'USSAV': [headlines...],
+              'USORF': [headlines...],
+              'USLAX': [headlines...],
+              'USBOS': [headlines...],
+              'ALL':   [ocean freight headlines...],
+          },
+          'has_data': bool
+        }
+    """
+    from datetime import datetime, timedelta, timezone
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days_back)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    result = {"freight": None, "macro": None, "ports": {}, "has_data": False}
+
+    try:
+        # Freight rate — latest Drewry WCI
+        row = conn.execute(
+            "SELECT headline, summary FROM port_intel "
+            "WHERE source='Drewry WCI' ORDER BY scraped_at DESC LIMIT 1"
+        ).fetchone()
+        if row:
+            result["freight"] = row[0]
+            result["has_data"] = True
+
+        # Macro signal — latest GSCPI
+        row = conn.execute(
+            "SELECT value, period FROM macro_signals "
+            "WHERE source='NY Fed' AND metric='GSCPI' ORDER BY scraped_at DESC LIMIT 1"
+        ).fetchone()
+        if row:
+            v, period = row
+            if v > 1.0:
+                level = "significantly elevated"
+            elif v > 0.5:
+                level = "elevated"
+            elif v < -1.0:
+                level = "significantly below normal"
+            elif v < -0.5:
+                level = "below normal"
+            else:
+                level = "near normal"
+            result["macro"] = f"GSCPI {v:+.2f}σ ({period}) — supply chain pressure {level}"
+            result["has_data"] = True
+
+        # Port headlines — top 3 per port from past days_back days
+        for port in ("USSAV", "USORF", "USLAX", "USBOS", "ALL"):
+            rows = conn.execute(
+                "SELECT headline, source, published_date FROM port_intel "
+                "WHERE port_code=? AND source != 'Drewry WCI' AND scraped_at >= ? "
+                "ORDER BY scraped_at DESC LIMIT 3",
+                (port, cutoff)
+            ).fetchall()
+            if rows:
+                result["ports"][port] = [
+                    {"headline": r[0], "source": r[1], "date": r[2]} for r in rows
+                ]
+                result["has_data"] = True
+
+    except Exception as e:
+        # Table may not exist yet (Lambda not yet deployed) — fail silently
+        print(f"load_market_context: {e}")
+
+    return result
+
+
+def format_market_context_block(ctx: dict) -> str:
+    """
+    Format market context dict into a plain-text bridge block.
+    Returns empty string if no data available.
+    """
+    if not ctx.get("has_data"):
+        return ""
+
+    lines = ["[Market Context]"]
+
+    if ctx.get("freight"):
+        lines.append(f"Freight Rates: {ctx['freight']}")
+
+    if ctx.get("macro"):
+        lines.append(f"Macro: {ctx['macro']}")
+
+    port_labels = {
+        "USSAV": "Savannah (USSAV)",
+        "USORF": "Norfolk/Virginia (USORF)",
+        "USLAX": "Los Angeles (USLAX)",
+        "USBOS": "Boston (USBOS)",
+        "ALL":   "Ocean / Industry",
+    }
+
+    port_section = []
+    for port, label in port_labels.items():
+        headlines = ctx["ports"].get(port, [])
+        if headlines:
+            # Use the most recent headline only for bridge brevity
+            h = headlines[0]
+            port_section.append(f"  {label}: {h['headline']}")
+
+    if port_section:
+        lines.append("Port Intelligence:")
+        lines.extend(port_section)
+
+    return "\n".join(lines)
+
+
 def parse_wbr_pdf(pdf_bytes: bytes):
     """Parse a previously generated WBR PDF and extract the weekly table data.
 

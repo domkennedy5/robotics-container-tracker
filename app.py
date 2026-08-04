@@ -343,6 +343,28 @@ def migrate_db():
     except sqlite3.OperationalError:
         pass
 
+    # ── port_intel / freight_rates / macro_signals: create if missing ────────────
+    for _tbl_sql in [
+        """CREATE TABLE IF NOT EXISTS port_intel (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            port_code TEXT, source TEXT, headline TEXT, summary TEXT,
+            url TEXT, published_date TEXT, scraped_at TEXT)""",
+        """CREATE TABLE IF NOT EXISTS freight_rates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source TEXT, route TEXT, rate_usd REAL, wow_change_pct REAL,
+            report_date TEXT, scraped_at TEXT,
+            UNIQUE(source, route, report_date))""",
+        """CREATE TABLE IF NOT EXISTS macro_signals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source TEXT, metric TEXT, value REAL, period TEXT, scraped_at TEXT,
+            UNIQUE(source, metric, period))""",
+    ]:
+        try:
+            conn.execute(_tbl_sql)
+        except Exception:
+            pass
+    conn.commit()
+
     # ── wbr_context_notes: create if missing (new in July 2026) ────────────────
     try:
         conn.execute("""
@@ -3889,6 +3911,7 @@ with tab8:
         compute_metrics, compute_totals, compute_carrier_scorecard,
         week_bounds, guess_week,
         save_week_to_db, load_weeks_from_db, parse_wbr_pdf,
+        load_market_context, format_market_context_block,
         _latest,
     )
     from wbr_pdf import generate_standard_wbr
@@ -4685,10 +4708,15 @@ with tab8:
                             + "\n".join(f"  {a} | {b} | {c}" for a, b, c in _ptg_rows)
                         )
 
+                        # Market context — load from DB (populated daily by port-intel Lambda)
+                        _mkt_ctx = load_market_context(get_db())
+                        _mkt_block = format_market_context_block(_mkt_ctx)
+
                         _bridge_std = (
                             f"WK{week_num} ({_wk_range})\n"
                             f"Headline: {_headline}\n\n"
-                            f"[Volume] {_vol_narrative}\n\n"
+                            + (f"{_mkt_block}\n\n" if _mkt_block else "")
+                            + f"[Volume] {_vol_narrative}\n\n"
                             f"[AV→OA] {_av_body}"
                             + (f"\n{_av_carrier_inline}" if _av_carrier_inline else "")
                             + (f"\n{_av_context_block}" if _av_context_block else "")
