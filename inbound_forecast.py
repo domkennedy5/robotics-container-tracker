@@ -884,9 +884,17 @@ def render_inbound_forecast_tab(conn: sqlite3.Connection) -> None:
 
     # ── Robotics Lanes (Site Reference — quarterly) ──────────────────────────
     with st.expander("\U0001f5fa\ufe0f  Robotics Lanes — Site Reference (quarterly upload)", expanded=False):
-        st.caption(
-            "Upload the **Robotics Lanes** Excel file to enable warehouse / A-code / FC enrichment. "
-            "Only needs updating when new sites are added (~every 2\u20134 months)."
+        st.markdown(
+            "Enables **A-code → warehouse / FC / port enrichment** on every daily upload. "
+            "Upload once, then only re-upload when Robotics adds or changes sites (~every 2\u20134 months).\n\n"
+            "**File:** The Robotics-managed Excel file titled *Robotics Lanes* (or similar). "
+            "Maintained by the AR team.\n\n"
+            "**Required columns the app looks for:**\n"
+            "- *Destination Node Code* — A-code (e.g., A320)\n"
+            "- *Destination Final Node Address* — full address including FC code in parentheses "
+            "(e.g., `Tighe Logistics - 483 Wildwood Ave, Woburn, MA 01801, USA (ARW0)`)\n"
+            "- *Node Type* — MC, OS, or FC\n"
+            "- *Destination Ocean Port* — UN/LOCODE (e.g., USORF)"
         )
         df_lanes_status = _load_site_lookup(conn)
         if not df_lanes_status.empty:
@@ -915,17 +923,36 @@ def render_inbound_forecast_tab(conn: sqlite3.Connection) -> None:
     # ── Daily Merge: Inbound Loads + ISS → ar_inbound_unified ────────────────
     with st.expander("\U0001f4c2 Daily Upload — Merge Inbound Loads + ISS", expanded=True):
         st.caption(
-            "Upload your two source reports. The app joins them and loads the result. "
-            "**Inbound Loads Report** refreshes daily (Sun\u2013Sat). "
-            "**Import Shipment Status (ISS)** refreshes Mon\u2013Fri."
+            "Upload both source reports and click **Merge & Load**. "
+            "The app joins them on Container ID + PO number, enriches with the site reference, "
+            "and writes the result to the forecast data store."
         )
         dc1, dc2 = st.columns(2)
-        dc1.markdown("**\U0001f4e6 Inbound Loads Report** *(required)*")
-        loads_file = dc1.file_uploader("Loads", type=["xlsx","csv"],
-                                        key="loads_upload", label_visibility="collapsed")
-        dc2.markdown("**\U0001f6a2 Import Shipment Status (ISS)** *(optional — adds carrier & port data)*")
-        iss_file = dc2.file_uploader("ISS", type=["xlsx","csv"],
-                                      key="iss_upload", label_visibility="collapsed")
+
+        dc1.markdown(
+            "**\U0001f4e6 Inbound Loads Report** *(required)*\n\n"
+            "**Source:** Oracle / AR system\n\n"
+            "**Cadence:** Pull daily, Sun\u2013Sat\n\n"
+            "**What it provides:** PO-level material detail \u2014 part numbers, quantities, "
+            "item descriptions, suppliers, vessel name, container size, weight, "
+            "and date milestones (departure, arrival, PO promise date)\n\n"
+            "**File name:** Typically *Amazon Robotics Inbound Loads Report* or similar (.xlsx)"
+        )
+        loads_file = dc1.file_uploader("Inbound Loads Report (.xlsx / .csv)", type=["xlsx","csv"],
+                                        key="loads_upload")
+
+        dc2.markdown(
+            "**\U0001f6a2 Import Shipment Status (ISS)** *(optional)*\n\n"
+            "**Source:** OBLT / ISS system\n\n"
+            "**Cadence:** Pull Mon\u2013Fri (not available weekends)\n\n"
+            "**What it adds:** Carrier SCAC, discharged port, container status, CBM, "
+            "carton count, and all port-to-facility milestone dates "
+            "(off vessel, ready date, LFD demurrage, enter facility, etc.)\n\n"
+            "**File name:** Typically *Import Shipment Status* (.xlsx). "
+            "Skip on weekends \u2014 Loads-only upload still works."
+        )
+        iss_file = dc2.file_uploader("Import Shipment Status (.xlsx / .csv)", type=["xlsx","csv"],
+                                      key="iss_upload")
         rpt_date_val = st.date_input(
             "Report date", value=datetime.now(_PHX).date(), key="merge_rpt_date",
             help="Date this snapshot represents (defaults to today)"
