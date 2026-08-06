@@ -79,6 +79,17 @@ def init_inbound_forecast_db(conn: sqlite3.Connection) -> None:
             uploaded_at            TEXT
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS ar_site_lookup (
+            a_code                TEXT PRIMARY KEY,
+            fc_identifier         TEXT,
+            warehouse_operator    TEXT,
+            warehouse_address     TEXT,
+            node_type             TEXT,
+            destination_ocean_port TEXT,
+            updated_at            TEXT
+        )
+    """)
     conn.commit()
 
 
@@ -100,38 +111,239 @@ _SPEC_COLS = [
     "units_per_carton","shipped_units","data_source","loads_refresh_date","iss_refresh_date",
 ]
 
-_ALIASES: dict[str, list[str]] = {
-    "container_id":          ["container_no","container no","containerid","container id","container"],
-    "carrier_scac":          ["scac","dray scac","carrier_code","carrier code"],
-    "fc_identifier":         ["fc","fc id","facility","fc code"],
-    "ocean_eta":             ["eta","vessel eta","ocean eta"],
-    "eta_final_destination": ["final eta","final dest eta","eta final destination"],
-    "container_status":      ["status","container status"],
-    "discharged_port":       ["port","discharge port","discharged port"],
-    "shipped_weight_kg":     ["weight kg","weight (kg)","shipped weight kg","weight_kg"],
-    "shipped_volume_cbm":    ["volume cbm","cbm","shipped volume cbm","volume_cbm"],
+# ── Source-specific column alias maps ────────────────────────────────────────
+
+# Loads: Oracle/AR Inbound Loads Report (daily, Sun-Sat)
+_LOADS_ALIASES = {
+    "container_id":         ["container id","container_id","container no","container_no","container"],
+    "po_number":            ["po number","po_number","po #","purchase order number","po"],
+    "po_line_number":       ["po line number","po_line_number","line number","line #"],
+    "po_shipment_number":   ["po shipment number","po_shipment_number","shipment number","shipment #"],
+    "part_number":          ["part number","part_number","part no","part#","item number"],
+    "item_description":     ["po line item description","item description","description",
+                             "line item description","part description"],
+    "supplier":             ["supplier","vendor","vendor name"],
+    "a_code":               ["destination fc","destination_fc","dest fc","ar org number","org number"],
+    "origin_ocean_port":    ["international origin","origin port","origin","intl origin",
+                             "port of origin","origin_port"],
+    "vessel_name":          ["vessel name","vessel_name","vessel"],
+    "container_size":       ["container size","container_size","size","iso size"],
+    "shipped_weight_kg":    ["weight","weight (kg)","weight_kg","shipped weight",
+                             "shipped weight (kg)","container weight"],
+    "departure_date":       ["departure date at orign","departure date at origin",
+                             "departure date","origin departure","depart date"],
+    "actual_arrival_port":  ["actual arrival at discharge port","actual arrival at port",
+                             "actual arrival","arrival date","arrived port"],
+    "po_promised_date":     ["po promised date","promised date","need by date","need-by date"],
+    "eta_final_destination":["eta to final destination","eta final destination",
+                             "final eta","eta final dest","eta_final_destination"],
+    "ordered_units":        ["quantity","qty","ordered units","ordered qty","order qty"],
+}
+
+# ISS: Import Shipment Status / Inbound by PO (Mon-Fri)
+_ISS_ALIASES = {
+    "container_id":      ["container","container_id","container id","container no","container_no"],
+    "_po_iss":           ["po","po number","purchase order"],   # raw "1102935-16-1" format
+    "carrier_scac":      ["full carrier","ssl","carrier","scac","dray scac",
+                          "carrier_scac","carrier code"],
+    "market":            ["market","region"],
+    "discharged_port":   ["discharged port","discharge port","port","harbor"],
+    "container_status":  ["container status","status","ctr status"],
+    "_site_facility":    ["facility","fc","destination","facility code"],  # "A320-RBTCS"
+    "shipped_volume_cbm":["cbm","volume cbm","volume (cbm)","shipped volume cbm","volume"],
+    "shipped_cartons":   ["cartoncount","carton count","cartons","shipped cartons","total cartons"],
+    "ocean_eta":         ["ocean eta","eta","vessel eta","ocean_eta"],
+    "off_vessel_date":   ["off vessel","off_vessel","vessel discharge date","discharged date"],
+    "ready_date":        ["ready date/time","ready date","ready_date","ready datetime"],
+    "lfd_demurrage":     ["lfd demurrage","lfd_demurrage","demurrage lfd"],
+    "lfd_per_diem":      ["lfd per diem","lfd_per_diem","per diem lfd","detention lfd"],
+    "actual_pickup":     ["actual pickup at port","actual pickup","pickup date","picked up"],
+    "enter_facility":    ["enter facility","enter_facility","facility arrival","arrived facility"],
+    "container_empty":   ["container empty","container_empty","empty date","emptied"],
+    "return_to_port":    ["return to port","return_to_port","returned to port","empty return"],
+}
+
+# Robotics Lanes (quarterly site reference)
+_LANES_ALIASES = {
+    "a_code":                  ["destination node code","a-code","a_code","node code",
+                                 "dest node code","destination code"],
+    "_full_address":           ["destination final node address","destination address",
+                                "address","facility address","node address"],
+    "node_type":               ["node type","node_type","type"],
+    "destination_ocean_port":  ["destination ocean port","ocean port","dest port",
+                                "destination port","dest ocean port"],
 }
 
 
-def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
-    lower_map = {c.lower().strip().replace(" ","_"): c for c in df.columns}
+def _col_norm(df: pd.DataFrame, alias_map: dict) -> pd.DataFrame:
+    """Case/space-insensitive column rename via alias map."""
+    lower_map = {
+        c.lower().strip().replace(" ", "_").replace("/", "_"): c
+        for c in df.columns
+    }
     rename = {}
-    for spec_col in _SPEC_COLS:
-        if spec_col in df.columns:
+    for target, aliases in alias_map.items():
+        if target in df.columns:
             continue
-        if spec_col in lower_map:
-            rename[lower_map[spec_col]] = spec_col
-            continue
-        for alias in _ALIASES.get(spec_col, []):
-            key = alias.lower().replace(" ","_")
+        for alias in aliases:
+            key = alias.lower().replace(" ", "_").replace("/", "_")
             if key in lower_map:
-                rename[lower_map[key]] = spec_col
+                rename[lower_map[key]] = target
                 break
-    df = df.rename(columns=rename)
-    for col in _SPEC_COLS:
+    return df.rename(columns=rename)
+
+
+def _normalize_loads(df: pd.DataFrame) -> pd.DataFrame:
+    """Map Inbound Loads Report columns to unified schema."""
+    df = _col_norm(df, _LOADS_ALIASES)
+    # String columns
+    for col in ["container_id","po_number","part_number","item_description","supplier",
+                "a_code","origin_ocean_port","vessel_name","container_size"]:
+        df[col] = df[col].astype(str).str.strip() if col in df.columns else None
+    # Clean numeric PO (remove ".0" from Excel coercion)
+    df["po_number"] = df["po_number"].str.split(".").str[0]
+    df["a_code"]    = df["a_code"].str.strip()
+    # Numeric measures
+    for col in ["po_line_number","po_shipment_number","ordered_units"]:
+        df[col] = pd.to_numeric(df.get(col), errors="coerce") if col in df.columns else None
+    df["shipped_weight_kg"] = pd.to_numeric(df.get("shipped_weight_kg"), errors="coerce")                                if "shipped_weight_kg" in df.columns else None
+    # Date columns
+    for col in ["departure_date","actual_arrival_port","po_promised_date","eta_final_destination"]:
+        if col in df.columns:
+            df[col] = pd.to_datetime(df[col], errors="coerce").dt.strftime("%Y-%m-%d")
+            df[col] = df[col].where(df[col].notna() & (df[col] != "NaT"), None)
+        else:
+            df[col] = None
+    return df
+
+
+def _normalize_iss(df: pd.DataFrame) -> pd.DataFrame:
+    """Map ISS / Inbound by PO columns to unified schema."""
+    if df.empty:
+        return df
+    df = _col_norm(df, _ISS_ALIASES)
+    # Extract po_number root from raw ISS PO field ("1102935-16-1" → "1102935")
+    if "_po_iss" in df.columns:
+        df["po_number"] = df["_po_iss"].astype(str).str.split("-").str[0].str.strip()
+    elif "po_number" not in df.columns:
+        df["po_number"] = None
+    # Extract a_code from facility field ("A320-RBTCS" → "A320")
+    if "_site_facility" in df.columns:
+        df["a_code"] = df["_site_facility"].astype(str).str.split("-").str[0].str.strip()
+    elif "a_code" not in df.columns:
+        df["a_code"] = None
+    # Clean join keys
+    df["container_id"] = df["container_id"].astype(str).str.strip()                           if "container_id" in df.columns else None
+    df["po_number"]    = df["po_number"].astype(str).str.strip()
+    # Numerics
+    for col in ["shipped_cartons","shipped_volume_cbm"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+        else:
+            df[col] = None
+    # Date columns
+    for col in ["ocean_eta","lfd_demurrage","lfd_per_diem"]:
+        if col in df.columns:
+            df[col] = pd.to_datetime(df[col], errors="coerce").dt.strftime("%Y-%m-%d")
+            df[col] = df[col].where(df[col].notna() & (df[col] != "NaT"), None)
+        else:
+            df[col] = None
+    # Datetime columns
+    for col in ["off_vessel_date","ready_date","actual_pickup","enter_facility",
+                "container_empty","return_to_port"]:
+        if col in df.columns:
+            df[col] = pd.to_datetime(df[col], errors="coerce").astype(str)
+            df[col] = df[col].where(df[col].notna() & (df[col] != "NaT"), None)
+        else:
+            df[col] = None
+    for col in ["carrier_scac","market","discharged_port","container_status"]:
         if col not in df.columns:
             df[col] = None
-    return df[_SPEC_COLS]
+    return df
+
+
+def _parse_lanes(df: pd.DataFrame) -> pd.DataFrame:
+    """Parse Robotics Lanes Excel into ar_site_lookup shape."""
+    import re as _re
+    df = _col_norm(df, _LANES_ALIASES)
+    if "_full_address" in df.columns:
+        addr = df["_full_address"].astype(str)
+        # FC code lives in parentheses at end: "Tighe Logistics - 483 ... (ARW0)"
+        df["fc_identifier"]      = addr.str.extract(r"\(([A-Z0-9]{3,6})\)\s*$")[0]
+        df["warehouse_operator"] = addr.str.extract(r"^([^-]+?)(?:\s*-|$)")[0].str.strip()
+        df["warehouse_address"]  = addr.str.extract(
+            r"-\s*(.+?)(?:\s*\([A-Z0-9]+\))?\s*$"
+        )[0].str.strip()
+    else:
+        df["fc_identifier"]      = None
+        df["warehouse_operator"] = None
+        df["warehouse_address"]  = None
+    for col in ["a_code","node_type","destination_ocean_port"]:
+        if col not in df.columns:
+            df[col] = None
+    df["updated_at"] = datetime.now(_PHX).isoformat()
+    keep = ["a_code","fc_identifier","warehouse_operator","warehouse_address",
+            "node_type","destination_ocean_port","updated_at"]
+    return df[keep].dropna(subset=["a_code"])
+
+
+def _merge_to_unified(df_loads: pd.DataFrame, df_iss: pd.DataFrame,
+                      df_lanes: pd.DataFrame, report_date: str) -> pd.DataFrame:
+    """JOIN Loads + ISS + Lanes → ar_inbound_unified rows."""
+    today = date.today().isoformat()
+
+    # ISS columns to bring into merge
+    _iss_cols = ["container_id","po_number","carrier_scac","market","discharged_port",
+                 "container_status","a_code","shipped_volume_cbm","shipped_cartons",
+                 "ocean_eta","off_vessel_date","ready_date","lfd_demurrage","lfd_per_diem",
+                 "actual_pickup","enter_facility","container_empty","return_to_port"]
+    if not df_iss.empty:
+        iss_sub = df_iss[[c for c in _iss_cols if c in df_iss.columns]]                        .drop_duplicates(subset=["container_id","po_number"])
+        merged = df_loads.merge(iss_sub, on=["container_id","po_number"],
+                                how="left", suffixes=("","_iss"))
+        # Prefer Loads a_code; fall back to ISS a_code
+        if "a_code_iss" in merged.columns:
+            merged["a_code"] = merged["a_code"].where(
+                merged["a_code"].notna() &
+                ~merged["a_code"].isin(["None","nan",""]),
+                merged["a_code_iss"]
+            )
+            merged = merged.drop(columns=["a_code_iss"])
+        has_iss = merged["carrier_scac"].notna() | merged["container_status"].notna()
+        merged["data_source"] = "LOADS_ONLY"
+        merged.loc[has_iss, "data_source"] = "MATCHED"
+    else:
+        merged = df_loads.copy()
+        merged["data_source"] = "LOADS_ONLY"
+        for col in [c for c in _iss_cols if c not in ["container_id","po_number","a_code"]]:
+            if col not in merged.columns:
+                merged[col] = None
+
+    # Enrich with site lookup (Lanes)
+    if not df_lanes.empty and "a_code" in merged.columns and "a_code" in df_lanes.columns:
+        lane_cols = [c for c in ["a_code","fc_identifier","warehouse_operator",
+                                  "warehouse_address","node_type","destination_ocean_port"]
+                     if c in df_lanes.columns]
+        merged = merged.merge(df_lanes[lane_cols], on="a_code", how="left")
+
+    # Derived measures
+    ordered = pd.to_numeric(merged.get("ordered_units"), errors="coerce")
+    cartons  = pd.to_numeric(merged.get("shipped_cartons"), errors="coerce")
+    merged["units_per_carton"] = (ordered / cartons).where(cartons > 0)
+    merged["shipped_units"]    = (cartons * merged["units_per_carton"]).round(0)
+
+    # Metadata
+    merged["report_date"]       = report_date
+    merged["loads_refresh_date"] = today
+    merged["iss_refresh_date"]   = today
+    merged["uploaded_at"]        = datetime.now(_PHX).isoformat()
+
+    # Ensure all spec columns exist
+    for col in _SPEC_COLS:
+        if col not in merged.columns:
+            merged[col] = None
+
+    return merged[_SPEC_COLS + ["uploaded_at"]]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -216,6 +428,17 @@ def _load_carrier_targets(conn: sqlite3.Connection) -> dict[str, float]:
         return {r["scac"]: round(float(r["wpct"]),1) for r in rows if r["wpct"] is not None}
     except Exception:
         return {}
+
+
+def _load_site_lookup(conn: sqlite3.Connection) -> pd.DataFrame:
+    try:
+        rows = conn.execute(
+            "SELECT a_code,fc_identifier,warehouse_operator,warehouse_address,"
+            "node_type,destination_ocean_port,updated_at FROM ar_site_lookup ORDER BY a_code"
+        ).fetchall()
+        return pd.DataFrame([dict(r) for r in rows])
+    except Exception:
+        return pd.DataFrame()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -659,42 +882,87 @@ def render_inbound_forecast_tab(conn: sqlite3.Connection) -> None:
         "carrier allocation targets, and volume simulation."
     )
 
-    # Upload section
-    with st.expander("\U0001f4c2 Upload ar_inbound_unified (daily CSV / XLSX)", expanded=False):
+    # ── Robotics Lanes (Site Reference — quarterly) ──────────────────────────
+    with st.expander("\U0001f5fa\ufe0f  Robotics Lanes — Site Reference (quarterly upload)", expanded=False):
         st.caption(
-            "Upload `ar_inbound_unified_YYYY-MM-DD.csv` (or .xlsx). "
-            "Previous data for the same report_date is replaced automatically."
+            "Upload the **Robotics Lanes** Excel file to enable warehouse / A-code / FC enrichment. "
+            "Only needs updating when new sites are added (~every 2\u20134 months)."
         )
-        uc1, uc2 = st.columns([3,1])
-        up_file  = uc1.file_uploader(
-            "File", type=["csv","xlsx"], key="aru_upload", label_visibility="collapsed"
-        )
-        do_upload = uc2.button("\u2b06\ufe0f Load", key="aru_load", use_container_width=True)
+        df_lanes_status = _load_site_lookup(conn)
+        if not df_lanes_status.empty:
+            last_upd = df_lanes_status["updated_at"].max()[:10] if "updated_at" in df_lanes_status.columns else "unknown"
+            st.success(f"\u2705 {len(df_lanes_status)} A-codes loaded \u00b7 last updated {last_upd}")
+            with st.expander("View current site reference", expanded=False):
+                st.dataframe(df_lanes_status.drop(columns=["updated_at"], errors="ignore"),
+                             hide_index=True, use_container_width=True)
+        else:
+            st.warning("No site reference loaded. Upload to enable warehouse/FC enrichment (optional).")
+        lanes_file = st.file_uploader("Robotics Lanes XLSX", type=["xlsx","csv"],
+                                       key="lanes_upload", label_visibility="collapsed")
+        if lanes_file and st.button("\U0001f4be Save Site Reference", key="lanes_save"):
+            try:
+                raw_l = (pd.read_excel(lanes_file) if lanes_file.name.endswith(".xlsx")
+                         else pd.read_csv(lanes_file))
+                df_lanes_new = _parse_lanes(raw_l)
+                conn.execute("DELETE FROM ar_site_lookup")
+                df_lanes_new.to_sql("ar_site_lookup", conn, if_exists="append", index=False)
+                conn.commit()
+                st.success(f"\u2705 {len(df_lanes_new)} A-codes saved.")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Lanes parse failed: {e}")
 
-        if up_file and do_upload:
-            with st.spinner("Parsing and loading\u2026"):
+    # ── Daily Merge: Inbound Loads + ISS → ar_inbound_unified ────────────────
+    with st.expander("\U0001f4c2 Daily Upload — Merge Inbound Loads + ISS", expanded=True):
+        st.caption(
+            "Upload your two source reports. The app joins them and loads the result. "
+            "**Inbound Loads Report** refreshes daily (Sun\u2013Sat). "
+            "**Import Shipment Status (ISS)** refreshes Mon\u2013Fri."
+        )
+        dc1, dc2 = st.columns(2)
+        dc1.markdown("**\U0001f4e6 Inbound Loads Report** *(required)*")
+        loads_file = dc1.file_uploader("Loads", type=["xlsx","csv"],
+                                        key="loads_upload", label_visibility="collapsed")
+        dc2.markdown("**\U0001f6a2 Import Shipment Status (ISS)** *(optional — adds carrier & port data)*")
+        iss_file = dc2.file_uploader("ISS", type=["xlsx","csv"],
+                                      key="iss_upload", label_visibility="collapsed")
+        rpt_date_val = st.date_input(
+            "Report date", value=datetime.now(_PHX).date(), key="merge_rpt_date",
+            help="Date this snapshot represents (defaults to today)"
+        )
+        if st.button("\u2699\ufe0f  Merge & Load", key="merge_load",
+                     use_container_width=True, disabled=(loads_file is None)):
+            with st.spinner("Merging reports\u2026"):
                 try:
-                    raw = (pd.read_excel(up_file) if up_file.name.endswith(".xlsx")
-                           else pd.read_csv(up_file))
-                    df_up = _normalize_df(raw)
-                    rpt_date = (
-                        str(df_up["report_date"].dropna().iloc[0])[:10]
-                        if df_up["report_date"].notna().any()
-                        else datetime.now(_PHX).date().isoformat()
+                    df_loads_raw = (pd.read_excel(loads_file) if loads_file.name.endswith(".xlsx")
+                                    else pd.read_csv(loads_file))
+                    if iss_file:
+                        df_iss_raw = (pd.read_excel(iss_file) if iss_file.name.endswith(".xlsx")
+                                      else pd.read_csv(iss_file))
+                    else:
+                        df_iss_raw = pd.DataFrame()
+                    df_lanes_ref = _load_site_lookup(conn)
+                    df_loads_n   = _normalize_loads(df_loads_raw)
+                    df_iss_n     = _normalize_iss(df_iss_raw) if not df_iss_raw.empty else pd.DataFrame()
+                    df_unified   = _merge_to_unified(
+                        df_loads_n, df_iss_n, df_lanes_ref, rpt_date_val.isoformat()
                     )
-                    df_up["report_date"] = rpt_date
-                    df_up["uploaded_at"] = datetime.now(_PHX).isoformat()
-                    conn.execute(
-                        "DELETE FROM ar_inbound_unified WHERE report_date=?", (rpt_date,)
-                    )
-                    df_up.to_sql("ar_inbound_unified", conn, if_exists="append", index=False)
+                    conn.execute("DELETE FROM ar_inbound_unified WHERE report_date=?",
+                                 (rpt_date_val.isoformat(),))
+                    df_unified.to_sql("ar_inbound_unified", conn, if_exists="append", index=False)
                     conn.commit()
-                    n_ctr = df_up["container_id"].nunique()
+                    n_ctr     = df_unified["container_id"].nunique()
+                    n_matched = (df_unified["data_source"] == "MATCHED").sum()
+                    src_note  = f"{n_matched:,} rows matched" if not df_iss_raw.empty else "Loads only (no ISS)"
                     st.success(
-                        f"\u2705 {len(df_up):,} rows loaded \u00b7 {n_ctr} containers \u00b7 as-of {rpt_date}"
+                        f"\u2705 {len(df_unified):,} rows loaded \u00b7 "
+                        f"{n_ctr} containers \u00b7 {src_note} \u00b7 as-of {rpt_date_val}"
                     )
+                    st.rerun()
                 except Exception as e:
-                    st.error(f"Upload failed: {e}")
+                    import traceback
+                    st.error(f"Merge failed: {e}")
+                    st.code(traceback.format_exc())
 
     # Load
     df_all        = _load_latest_unified(conn)
@@ -705,8 +973,9 @@ def render_inbound_forecast_tab(conn: sqlite3.Connection) -> None:
 
     if df_all.empty:
         st.info(
-            "No inbound data loaded yet. Upload the `ar_inbound_unified` file above "
-            "to enable forecasting and allocation analysis."
+            "No inbound data loaded yet. "
+            "Upload your **Inbound Loads Report** using the expander above to get started. "
+            "Adding the ISS report enriches with carrier, port, and milestone data."
         )
         return
 
