@@ -393,66 +393,28 @@ def _render_allocation_manager(df_active_ctr, total_active, carrier_sla,
                                 carrier_tgt, carrier_sites, site_cfg, conn):
     st.markdown("### Carrier Allocation Manager")
     st.caption(
-        "Set carrier target allocations, review actual pipeline distribution, "
-        "and compare against WBR SLA performance. Site type context visible throughout."
+        "Review actual pipeline distribution against target allocations and WBR SLA performance. "
+        "Site type context shown throughout. Edit config in **Planning → Config**."
     )
 
-    # Site type config
-    with st.expander("\U0001f3ed Site Type Configuration", expanded=False):
-        st.caption(
-            "Tag each site: **Static** (steady-state) · "
-            "**BF** (Brownfield/Retrofit — constrained) · "
-            "**GF** (Greenfield/New Build — ramping). "
-            "Effective date tracks transitions over time."
-        )
+    # Site type config — read-only; edits live in Planning -> Config
+    with st.expander("🏭 Site Configuration (read-only)", expanded=False):
+        st.info("To edit site configuration, go to **Planning → Config**.")
         if site_cfg.empty:
-            st.info("No active sites. Configure in the Planning tab.")
+            st.caption("No active sites configured.")
         else:
-            hdr = st.columns([1,1,2,2,1,1])
-            for lbl, col in zip(["Site","FC","Type","Effective","Max/day","Days/wk"], hdr):
-                col.caption(f"**{lbl}**")
-
-            edits: list[tuple] = []
-            for _, row in site_cfg.iterrows():
-                ec = st.columns([1,1,2,2,1,1])
-                ec[0].markdown(f"**{row['site_code']}**")
-                ec[1].caption(row.get("fc_name") or "")
-                opts = ["Static","BF (Brownfield/Retrofit)","GF (Greenfield/New Build)"]
-                cur  = row.get("site_type") or "Static"
-                idx  = opts.index(cur) if cur in opts else 0
-                new_type = ec[2].selectbox(
-                    "t", opts, index=idx,
-                    key=f"stype_{row['site_code']}", label_visibility="collapsed"
-                )
-                eff_default = pd.to_datetime(
-                    row.get("site_type_effective") or date.today()
-                ).date()
-                new_eff = ec[3].date_input(
-                    "e", value=eff_default,
-                    key=f"seff_{row['site_code']}", label_visibility="collapsed"
-                )
-                new_cap  = ec[4].number_input(
-                    "c", value=int(row.get("capacity_day") or 9),
-                    min_value=1, max_value=30, step=1,
-                    key=f"scap_{row['site_code']}", label_visibility="collapsed"
-                )
-                new_days = ec[5].number_input(
-                    "d", value=int(row.get("recv_days_per_week") or 4),
-                    min_value=1, max_value=6, step=1,
-                    key=f"sdays_{row['site_code']}", label_visibility="collapsed"
-                )
-                edits.append((new_type, new_eff.isoformat(), new_cap, new_days, row["site_code"]))
-
-            if st.button("\U0001f4be Save Site Configuration", key="save_site_cfg"):
-                for (st_t, st_e, st_c, st_d, sc) in edits:
-                    conn.execute(
-                        "UPDATE plan_sites SET site_type=?, site_type_effective=?, "
-                        "capacity_day=?, recv_days_per_week=? WHERE site_code=?",
-                        (st_t, st_e, st_c, st_d, sc)
-                    )
-                conn.commit()
-                st.success("Site configuration saved.")
-                st.rerun()
+            display_cols = [c for c in ["site_code","fc_name","site_type",
+                "site_type_effective","capacity_day","recv_days_per_week"]
+                if c in site_cfg.columns]
+            rename_map = {
+                "site_code": "Site", "fc_name": "FC",
+                "site_type": "Type", "site_type_effective": "Effective",
+                "capacity_day": "Max/day", "recv_days_per_week": "Days/wk",
+            }
+            disp = site_cfg[display_cols].rename(columns=rename_map).copy()
+            if "Days/wk" in disp.columns and "Max/day" in disp.columns:
+                disp["Weekly Cap"] = disp["Max/day"] * disp["Days/wk"]
+            st.dataframe(disp, hide_index=True, use_container_width=True)
 
     # Target vs. Actual table
     st.markdown("#### Current Allocation — Target vs. Actual vs. SLA")
@@ -498,39 +460,21 @@ def _render_allocation_manager(df_active_ctr, total_active, carrier_sla,
     else:
         st.info("Upload ar_inbound_unified and confirm carrier config in Planning tab.")
 
-    with st.expander("\u270f\ufe0f Edit Target Allocations (by Site-Carrier)", expanded=False):
+    with st.expander("✏️ Target Allocations (read-only)", expanded=False):
+        st.info("To edit target allocations, go to **Planning → Config**.")
         sc_rows = conn.execute("""
-            SELECT sc.id, sc.site_code, sc.scac, c.carrier_name, sc.allocation_pct
+            SELECT sc.site_code, sc.scac, c.carrier_name, sc.allocation_pct
             FROM plan_site_carrier sc
             JOIN plan_carriers c ON c.scac = sc.scac
             WHERE sc.active=1 ORDER BY sc.site_code, sc.scac
         """).fetchall()
         if not sc_rows:
-            st.info("No site-carrier assignments. Configure in the Planning tab.")
+            st.caption("No site-carrier assignments configured.")
         else:
-            edits_alloc: dict[int,float] = {}
-            cur_site = None
-            for r in sc_rows:
-                if r["site_code"] != cur_site:
-                    if cur_site: st.markdown("---")
-                    st.markdown(f"**{r['site_code']}**")
-                    cur_site = r["site_code"]
-                ac1, ac2 = st.columns([3,1])
-                ac1.caption(f"{r['carrier_name']} ({r['scac']})")
-                edits_alloc[r["id"]] = ac2.number_input(
-                    "%", value=float(r["allocation_pct"] or 0),
-                    min_value=0.0, max_value=100.0, step=5.0,
-                    key=f"al_{r['id']}", label_visibility="collapsed"
-                )
-            if st.button("\U0001f4be Save Target Allocations", key="save_alloc"):
-                for rid, pct in edits_alloc.items():
-                    conn.execute(
-                        "UPDATE plan_site_carrier SET allocation_pct=? WHERE id=?",
-                        (pct, rid)
-                    )
-                conn.commit()
-                st.success("Allocations saved.")
-                st.rerun()
+            rows = [{"Site": r["site_code"], "Carrier": f"{r['carrier_name']} ({r['scac']})",
+                     "Target %": f"{r['allocation_pct']:.0f}%" if r["allocation_pct"] is not None else "—"}
+                    for r in sc_rows]
+            st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
