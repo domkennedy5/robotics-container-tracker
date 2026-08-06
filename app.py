@@ -17,6 +17,7 @@ def _ct_to_mst(hour: int, minute: int = 0) -> str:
     """Return formatted MST equivalent of a CT clock time (uses today's offset)."""
     _t = datetime.now(_CENTRAL).replace(hour=hour, minute=minute, second=0, microsecond=0)
     return _t.astimezone(_PHX).strftime('%I:%M %p').lstrip('0')
+from inbound_forecast import render_inbound_forecast_tab
 
 from streamlit_js_eval import streamlit_js_eval
 from utils import (
@@ -804,7 +805,7 @@ with st.sidebar:
 
 # ── tabs ───────────────────────────────────────────────────────────────────────
 st.title("Robotics Container Tracker")
-tab9, tab8, tab7, tab6, tab1, tab2, tab4, tab3, tab5 = st.tabs(["WBR Dashboard", "WBR Generator", "Planning", "Insights", "Container Lookup", "Carrier Submission", "Carrier Data", "Empty Returns", "Lane Costs"])
+tab9, tab8, tab7, tab6, tab1, tab2, tab4, tab3, tab5, tab10 = st.tabs(["WBR Dashboard", "WBR Generator", "Planning", "Insights", "Container Lookup", "Carrier Submission", "Carrier Data", "Empty Returns", "Lane Costs", "Inbound Forecast"])
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -5937,3 +5938,12 @@ PATH TO GREEN
                     st.success("W24–W28 seeded. Upload files above to generate.")
                     st.rerun()
 
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 10 — Inbound Forecast & Carrier Allocation
+# ══════════════════════════════════════════════════════════════════════════════
+with tab10:
+    _ifc_conn = get_db()
+    render_inbound_forecast_tab(_ifc_conn)
+    _ifc_conn.close()
