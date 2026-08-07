@@ -73,6 +73,11 @@ def _check_password():
     if st.session_state.get("authenticated"):
         return True
 
+    try:
+        correct = st.secrets["password"]
+    except Exception:
+        correct = "robotics2026"
+
     st.title("Robotics Container Tracker")
     pwd = st.text_input("Password", type="password")
     if st.button("Sign in"):
