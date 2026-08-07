@@ -3514,8 +3514,162 @@ HUDD LAX  : RE: DBR Bridges Report - HUDD - [DATE]  (Desirae/Ailua)""", language
                         ]) if not _pdf.empty else 0
                         st.caption(f"In plan: {_in_plan} / {item['qty']}")
 
-        # ── Step 2: Add containers ────────────────────────────────────────────
-        with st.expander("Step 2 — Add Container IDs", expanded=False):
+        # ── Step 2: GVT Cross-Reference ──────────────────────────────────────
+        with st.expander("Step 2 — GVT Cross-Reference (Import At-Yard Containers)", expanded=False):
+            from wbr_engine import load_gvt as _load_gvt_plan
+            st.caption(
+                "Upload your GVT export to see which containers are at yard vs. contingent, "
+                "sorted FIFO by Ready Date. Select and add directly to the plan."
+            )
+            _gvt_plan_file = st.file_uploader("GVT Export (.xlsx)", type=["xlsx"], key="gvt_plan_upload")
+            if _gvt_plan_file:
+                try:
+                    _gvt_raw = _load_gvt_plan(_gvt_plan_file.read())
+                    if _gvt_raw.empty:
+                        st.warning("No containers found in GVT file.")
+                    else:
+                        # Classify: "In Yard Full" -> SCHEDULED, everything else -> PENDING (contingent)
+                        _AT_YARD = {"in yard full", "available", "at yard", "in yard"}
+                        _gvt_raw["_plan_status"] = _gvt_raw["status"].apply(
+                            lambda s: "SCHEDULED" if str(s or "").strip().lower() in _AT_YARD else "PENDING"
+                        )
+                        # Map facility string -> known site code (flexible contains-match)
+                        _known_sites_gvt = _act_sites or ["RIC6","ILM1","IAG1","DBM6","ATL2","DRO1","LAX","OAK","SJC8","RSW9"]
+                        def _map_fac(f):
+                            fu = str(f or "").upper()
+                            for sc in _known_sites_gvt:
+                                if sc in fu:
+                                    return sc
+                            return ""
+                        _gvt_raw["_site_mapped"] = _gvt_raw["facility"].apply(_map_fac)
+                        # Site filter dropdown (defaults to parsed_site if available)
+                        _gvt_sf_opts = ["All sites"] + _known_sites_gvt
+                        _gvt_sf_def  = st.session_state.get("parsed_site", "")
+                        _gvt_sf = st.selectbox(
+                            "Filter by site", _gvt_sf_opts,
+                            index=(_gvt_sf_opts.index(_gvt_sf_def) if _gvt_sf_def in _gvt_sf_opts else 0),
+                            key="gvt_site_filter_v2",
+                        )
+                        _gvt_view = _gvt_raw.copy()
+                        if _gvt_sf != "All sites":
+                            _gvt_view = _gvt_view[_gvt_view["_site_mapped"] == _gvt_sf]
+                        # Sort FIFO -- oldest ready_date first so level-load assigns oldest to earliest days
+                        _gvt_view = _gvt_view.sort_values("ready_date", na_position="last").reset_index(drop=True)
+                        # Default product type from parsed request (Step 1)
+                        _gvt_parsed_items = st.session_state.get("parsed_items", [])
+                        _gvt_def_prod = _gvt_parsed_items[0]["material"] if _gvt_parsed_items else _PLAN_PRODUCTS[0]
+                        # Summary counts
+                        _n_at_yard_gvt   = int((_gvt_view["_plan_status"] == "SCHEDULED").sum())
+                        _n_not_ready_gvt = int((_gvt_view["_plan_status"] == "PENDING").sum())
+                        st.caption(
+                            f"**{len(_gvt_view)} containers** \u2014 "
+                            f"\U0001f7e2 {_n_at_yard_gvt} at yard (schedulable)  "
+                            f"\U0001f534 {_n_not_ready_gvt} not ready (contingent)  "
+                            f"\u00b7 Sorted FIFO by Ready Date"
+                        )
+                        # Build editable table
+                        _gvt_editor_df = pd.DataFrame({
+                            "Add":          _gvt_view["_plan_status"].apply(lambda s: s == "SCHEDULED"),
+                            "Container":    _gvt_view["container"].astype(str),
+                            "GVT Status":   _gvt_view["status"].fillna("").astype(str),
+                            "Ready Date":   _gvt_view["ready_date"].apply(
+                                                lambda d: d.strftime("%m/%d/%y") if pd.notna(d) else ""),
+                            "Site":         _gvt_view["_site_mapped"].apply(lambda s: s if s else "?"),
+                            "Carrier":      _gvt_view["scac"].fillna("").astype(str),
+                            "Product Type": [_gvt_def_prod] * len(_gvt_view),
+                            "Plan Status":  _gvt_view["_plan_status"],
+                        })
+                        _gvt_scac_opts      = (_act_scacs or list(_SCAC_COLOR.keys())) + [""]
+                        _gvt_site_edit_opts = _known_sites_gvt + ["?"]
+                        _gvt_edited = st.data_editor(
+                            _gvt_editor_df,
+                            column_config={
+                                "Add":          st.column_config.CheckboxColumn("Add", help="Check to include in plan", default=False),
+                                "Container":    st.column_config.TextColumn("Container", disabled=True),
+                                "GVT Status":   st.column_config.TextColumn("GVT Status", disabled=True),
+                                "Ready Date":   st.column_config.TextColumn("Ready Date \u2191", disabled=True),
+                                "Site":         st.column_config.SelectboxColumn("Site", options=_gvt_site_edit_opts),
+                                "Carrier":      st.column_config.SelectboxColumn("Carrier", options=_gvt_scac_opts),
+                                "Product Type": st.column_config.SelectboxColumn("Product Type", options=_PLAN_PRODUCTS),
+                                "Plan Status":  st.column_config.TextColumn("Plan Status", disabled=True),
+                            },
+                            use_container_width=True,
+                            hide_index=True,
+                            key="gvt_editor_v2",
+                            height=min(420, 38 + len(_gvt_view) * 35),
+                        )
+                        # Options row
+                        _gvt_oc1, _gvt_oc2, _gvt_oc3 = st.columns(3)
+                        with _gvt_oc1:
+                            _gvt_wk_date = st.date_input("Planning Week", value=_today, key="gvt_week_date_v2")
+                        with _gvt_oc2:
+                            _gvt_ll = st.checkbox("Level load (FIFO order)", value=True, key="gvt_ll_v2")
+                        with _gvt_oc3:
+                            _gvt_incsat = st.checkbox("Include Saturday", value=True, key="gvt_incsat_v2")
+                        # Selection summary
+                        _gvt_sel    = _gvt_edited[_gvt_edited["Add"] == True]
+                        _gvt_sel_sc = _gvt_sel[_gvt_sel["Plan Status"] == "SCHEDULED"]
+                        _gvt_sel_pe = _gvt_sel[_gvt_sel["Plan Status"] == "PENDING"]
+                        st.caption(
+                            f"Selected: **{len(_gvt_sel)}** \u2014 "
+                            f"{len(_gvt_sel_sc)} to schedule, {len(_gvt_sel_pe)} as contingent (PENDING)"
+                        )
+                        if st.button("Add Selected to Plan", type="primary", key="gvt_add_btn_v2"):
+                            if _gvt_sel.empty:
+                                st.warning("No containers selected \u2014 check the Add column.")
+                            else:
+                                # Build work days for level loading
+                                _gvt_ll_cfg  = _get_week_config(_plan_week_start(_gvt_wk_date).isoformat())
+                                _gvt_day_map = {"Sun":6,"Mon":0,"Tue":1,"Wed":2,"Thu":3,"Fri":4,"Sat":5}
+                                _gvt_ws2     = _plan_week_start(_gvt_wk_date)
+                                _gvt_wdays   = sorted([
+                                    _gvt_ws2 + timedelta(days=(_gvt_day_map[d]-_gvt_ws2.weekday())%7)
+                                    for d in _gvt_ll_cfg if d in _gvt_day_map
+                                ])
+                                if not _gvt_wdays:
+                                    _gvt_wdays = [_gvt_ws2 + timedelta(days=i) for i in range(5)]
+                                if not _gvt_incsat:
+                                    _gvt_wdays = [d for d in _gvt_wdays if d.weekday() != 5]
+                                _gvt_added  = 0
+                                _gvt_ll_idx = 0  # increments only for SCHEDULED rows (FIFO across days)
+                                for _, _gs in _gvt_sel.iterrows():
+                                    _gcid  = str(_gs["Container"]).strip()
+                                    _gscac = str(_gs["Carrier"]).strip()
+                                    _gsite = str(_gs["Site"]).strip()
+                                    _gprod = str(_gs["Product Type"])
+                                    _gpst  = str(_gs["Plan Status"])
+                                    if not _gcid or _gsite == "?":
+                                        continue
+                                    if _gpst == "PENDING":
+                                        _add_plan_entry(
+                                            _plan_week_start(_gvt_wk_date), None, "TBD", 99,
+                                            _gcid, _gscac, _gsite, _gprod, 1190,
+                                            "Contingent \u2014 GVT Not Ready", "PENDING"
+                                        )
+                                    else:
+                                        _gday = (_gvt_wdays[_gvt_ll_idx % len(_gvt_wdays)]
+                                                 if _gvt_ll and _gvt_wdays else _gvt_wk_date)
+                                        _gvt_ll_idx += 1
+                                        _gscm_r = _scm[(_scm["site_code"]==_gsite)&(_scm["scac"]==_gscac)]
+                                        _gdef_t = (_gscm_r["priority_time"].iloc[0]
+                                                   if not _gscm_r.empty and pd.notna(_gscm_r["priority_time"].iloc[0])
+                                                   else "8:30 AM")
+                                        _gsn = dict(_PLAN_SLOTS).get(_gdef_t, 2)
+                                        _add_plan_entry(
+                                            _plan_week_start(_gday), _gday, _gdef_t, _gsn,
+                                            _gcid, _gscac, _gsite, _gprod, 1190, "", "SCHEDULED"
+                                        )
+                                    _gvt_added += 1
+                                st.success(
+                                    f"Added {_gvt_added} container(s) \u2014 "
+                                    f"{len(_gvt_sel_sc)} scheduled, {len(_gvt_sel_pe)} contingent."
+                                )
+                                st.rerun()
+                except Exception as _gvt_err:
+                    st.error(f"Error reading GVT file: {_gvt_err}")
+
+        # ── Step 3: Manual add / override ────────────────────────────────────────
+        with st.expander("Step 3 — Manual Add / Override", expanded=False):
             _add_tab_s, _add_tab_b = st.tabs(["Single", "Bulk Paste"])
 
             with _add_tab_s:
