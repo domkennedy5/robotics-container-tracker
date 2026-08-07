@@ -2161,7 +2161,7 @@ with tab6:
 _PLAN_SLOTS = [
     ("7:30 AM", 1), ("8:30 AM", 2), ("9:30 AM", 3),
     ("10:30 AM", 4), ("11:30 AM", 5),
-    ("1:00 PM", 6), ("2:00 PM", 7), ("3:00 PM", 8), ("3:30 PM", 9),
+    ("1:00 PM", 6), ("2:00 PM", 7), ("3:00 PM", 8), ("3:30 PM", 9), ("4:00 PM", 10),
 ]
 _PLAN_PRODUCTS = ["SHELF, HDTP", "STRAP, HDTP", "SHELF, CLDTP", "HDPT 2.0", "BASE ASSEMBLY, HDTP", "OTHER"]
 _SCAC_COLOR = {
@@ -2305,10 +2305,147 @@ def _migrate_plan_config():
            (site_code,scac,site_contact,site_contact_email,priority_time,allocation_pct,active,notes)
            VALUES ('SJC8','ATMI','Tyler Domingues','tdomingues@cargomatic.com','8:30 AM',100.0,1,'')"""
     )
+    # New site constraint columns
+    for _col_ddl in [
+        "ALTER TABLE plan_sites ADD COLUMN capacity_sat INTEGER DEFAULT 5",
+        "ALTER TABLE plan_sites ADD COLUMN last_appt_time TEXT DEFAULT '4:00 PM'",
+        "ALTER TABLE plan_sites ADD COLUMN last_appt_sat TEXT DEFAULT '11:30 AM'",
+        "ALTER TABLE plan_sites ADD COLUMN capacity_week INTEGER DEFAULT 0",
+    ]:
+        try:
+            conn.execute(_col_ddl)
+        except sqlite3.OperationalError:
+            pass
+    # RIC6 hard constraints from SOP
+    conn.execute("""UPDATE plan_sites SET capacity_day=10, capacity_sat=5,
+        last_appt_time='4:00 PM', last_appt_sat='11:30 AM', capacity_week=115
+        WHERE site_code='RIC6'""")
     conn.commit()
     conn.close()
 
 _migrate_plan_config()
+
+# ── Planning: slot tables, HUDD rule, smart scheduler ────────────────────────
+_WEEKDAY_SLOTS  = [
+    ("7:30 AM",1),("8:30 AM",2),("9:30 AM",3),("10:30 AM",4),("11:30 AM",5),
+    ("1:00 PM",6),("2:00 PM",7),("3:00 PM",8),("3:30 PM",9),("4:00 PM",10),
+]
+_SATURDAY_SLOTS = [("7:30 AM",1),("8:30 AM",2),("9:30 AM",3),("10:30 AM",4),("11:30 AM",5)]
+_HUDD_SCACS     = {"HUDD","HDDR"}
+
+
+def _get_site_constraints(site_code: str) -> dict:
+    """Return site constraint dict from plan_sites with safe defaults."""
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT capacity_day, capacity_sat, last_appt_time, last_appt_sat, capacity_week "
+            "FROM plan_sites WHERE site_code=?", (site_code,)
+        ).fetchone()
+    except Exception:
+        row = None
+    conn.close()
+    if row:
+        return {
+            "capacity_day":   int(row[0] or 10),
+            "capacity_sat":   int(row[1] or 5),
+            "last_appt_time": row[2] or "4:00 PM",
+            "last_appt_sat":  row[3] or "11:30 AM",
+            "capacity_week":  int(row[4] or 0),
+        }
+    return {"capacity_day":10,"capacity_sat":5,"last_appt_time":"4:00 PM",
+            "last_appt_sat":"11:30 AM","capacity_week":0}
+
+
+def _get_reschedulable_pool(site_code: str, current_week_iso: str) -> pd.DataFrame:
+    """Pull containers needing rescheduling from prior plan weeks.
+
+    Returns two buckets tagged in pool_reason:
+    - 'Undelivered': status SCHEDULED/HOLD with appt_date before today (never delivered)
+    - 'Refused/Rejected': status REJECTED (delivery was turned away)
+    """
+    today_iso = date.today().isoformat()
+    conn = get_db()
+    try:
+        df = pd.read_sql_query(
+            """
+            SELECT *, 'Undelivered' AS pool_reason FROM delivery_plan
+            WHERE site_code=? AND week_start < ?
+              AND status IN ('SCHEDULED','HOLD')
+              AND appt_date IS NOT NULL AND appt_date < ?
+            UNION ALL
+            SELECT *, 'Refused/Rejected' AS pool_reason FROM delivery_plan
+            WHERE site_code=? AND status='REJECTED'
+            ORDER BY appt_date ASC
+            """,
+            conn, params=(site_code, current_week_iso, today_iso, site_code)
+        )
+    except Exception:
+        df = pd.DataFrame()
+    conn.close()
+    if df.empty:
+        return df
+    # Deduplicate: keep REJECTED over Undelivered for the same container
+    df = df.sort_values("pool_reason").drop_duplicates("container_id", keep="last")
+    return df.reset_index(drop=True)
+
+
+def _auto_schedule_pool(containers: list, week_start, work_days: list, site_code: str) -> tuple:
+    """Smart slot filler.
+
+    containers: list of dicts {cid, scac, product, site, notes, status, ...}
+    Assumes already FIFO-sorted (refused first, then carried-over, then new GVT).
+
+    Rules:
+    - HUDD/HDDR: 7:30 AM first slot, one per weekday
+    - Other carriers: fill remaining slots round-robin (level-load) across all active days
+    - Saturday: 5 slots max (7:30-11:30 AM only)
+    - Overflow = containers that could not be placed
+
+    Returns (scheduled: list[dict], overflow: list[dict])
+    """
+    slots_by_day = {}
+    for day in work_days:
+        is_sat = day.weekday() == 5
+        slots_by_day[day] = list(_SATURDAY_SLOTS if is_sat else _WEEKDAY_SLOTS)
+
+    scheduled, overflow = [], []
+    hudd_q  = [c for c in containers if c.get("scac","") in _HUDD_SCACS]
+    other_q = [c for c in containers if c.get("scac","") not in _HUDD_SCACS]
+
+    # Assign HUDD: one per weekday at 7:30 AM (Saturday excluded)
+    for day in [d for d in work_days if d.weekday() != 5]:
+        if not hudd_q:
+            break
+        c = hudd_q.pop(0)
+        slots = slots_by_day[day]
+        idx = next((i for i,(t,_) in enumerate(slots) if t == "7:30 AM"), None)
+        if idx is not None:
+            slots.pop(idx)
+            scheduled.append({**c, "appt_date": day, "appt_time": "7:30 AM",
+                               "slot_num": 1, "status": "SCHEDULED"})
+        else:
+            overflow.append(c)
+    overflow.extend(hudd_q)  # HUDD with no remaining weekday
+
+    # Level-load others: round-robin across all active days
+    days_list = list(work_days)
+    d_idx = 0
+    for c in other_q:
+        placed = False
+        for attempt in range(len(days_list)):
+            day = days_list[(d_idx + attempt) % len(days_list)]
+            if slots_by_day[day]:
+                t, sn = slots_by_day[day].pop(0)
+                scheduled.append({**c, "appt_date": day, "appt_time": t,
+                                   "slot_num": sn, "status": "SCHEDULED"})
+                d_idx = (d_idx + attempt + 1) % len(days_list)
+                placed = True
+                break
+        if not placed:
+            overflow.append(c)
+
+    return scheduled, overflow
 
 _ALL_DAYS   = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"]
 _DEFAULT_DAYS = ["Mon","Tue","Wed","Thu","Fri"]
@@ -2894,19 +3031,30 @@ def _status_editor(df: pd.DataFrame, key_prefix: str):
                 st.success(f"Saved — {sel_row['container_id']} updated.")
             st.rerun()
 
-def _week_grid(plan_df: pd.DataFrame, week_days: list):
+def _week_grid(plan_df: pd.DataFrame, week_days: list, constraints: dict | None = None):
+    """Week grid with dynamic daily cap indicators.
+
+    Saturday uses constraints["capacity_sat"] (default 5);
+    weekdays use constraints["capacity_day"] (default 10).
+    Color: green < 70%, orange >= 70%, red = full.
+    """
+    _c = constraints or {}
+    cap_wd  = _c.get("capacity_day", 10)
+    cap_sat = _c.get("capacity_sat", 5)
     day_abbrs = ["Mon","Tue","Wed","Thu","Fri","Sat"]
     gcols = st.columns(6)
     for ci, (gc, gd) in enumerate(zip(gcols, week_days)):
         day_iso = gd.isoformat()
         ent = plan_df[(plan_df["appt_date"]==day_iso)&(plan_df["status"]!="PENDING")].sort_values("slot_num")
+        cap = cap_sat if gd.weekday() == 5 else cap_wd
         with gc:
             dc = len(ent)
             st.markdown(f"**{day_abbrs[ci]} {gd.month}/{gd.day}**")
-            cap_c = "red" if dc >= 9 else "gray"
-            st.markdown(f"<small style='color:{cap_c}'>{dc}/9</small>", unsafe_allow_html=True)
+            cap_color = "red" if dc >= cap else ("#E8A020" if dc >= cap * 0.7 else "#34A853")
+            cap_label = "FULL" if dc >= cap else f"{dc}/{cap}"
+            st.markdown(f"<small style='color:{cap_color};font-weight:600'>{cap_label}</small>", unsafe_allow_html=True)
             if ent.empty:
-                st.markdown("<small style='color:#ccc'>—</small>", unsafe_allow_html=True)
+                st.markdown("<small style='color:#555'>—</small>", unsafe_allow_html=True)
             else:
                 for _, er in ent.iterrows():
                     clr  = _SCAC_COLOR.get(er["carrier"], "#888")
@@ -2918,7 +3066,7 @@ def _week_grid(plan_df: pd.DataFrame, week_days: list):
                             <b>{er["appt_time"]}</b> {emj}<br/>
                             <code style="font-size:10px">{er["container_id"]}</code><br/>
                             <span style="color:{clr};font-weight:600">{er["carrier"]}</span>
-                            {"<span style=\'color:#666\'> · " + site + "</span>" if site else ""}
+                            {"<span style='color:#666'> · " + site + "</span>" if site else ""}
                         </div>""",
                         unsafe_allow_html=True
                     )
@@ -3477,216 +3625,309 @@ HUDD LAX  : RE: DBR Bridges Report - HUDD - [DATE]  (Desirae/Ailua)""", language
         _act_sites  = _sites_df[_sites_df["active"]==1]["site_code"].tolist() if not _sites_df.empty else []
         _act_scacs  = _cdf[_cdf["active"]==1]["scac"].tolist() if not _cdf.empty else list(_SCAC_COLOR.keys())
 
-        # ── Step 1: Parse stakeholder request ────────────────────────────────
-        with st.expander("Step 1 — Paste Stakeholder Request", expanded=True):
+        # site selector + constraint bar
+        _pb_site = st.selectbox(
+            "Site", _act_sites or ["RIC6"], key="pb_site_select",
+            help="All steps below apply to this site's constraints."
+        )
+        _site_cfg = _get_site_constraints(_pb_site)
+        _cap_d  = _site_cfg.get("capacity_day", 10)
+        _cap_s  = _site_cfg.get("capacity_sat", 5)
+        _cap_w  = _site_cfg.get("capacity_week", 0)
+        _lat    = _site_cfg.get("last_appt_time", "4:00 PM")
+        _las    = _site_cfg.get("last_appt_sat", "11:30 AM")
+        _cap_w_str = f"{_cap_w}/wk  \u00b7  " if _cap_w else ""
+        st.caption(
+            f"**{_pb_site} constraints** \u2014 "
+            f"{_cap_d}/day  \u00b7  {_cap_s}/Sat  \u00b7  {_cap_w_str}"
+            f"Last appt {_lat} (weekday) / {_las} (Sat)  \u00b7  Saturday morning-only"
+        )
+
+        # Step 1: Parse stakeholder request
+        with st.expander("Step 1 \u2014 Paste Stakeholder Request", expanded=True):
             st.caption("Paste the message from Miguel or site ops. The tool will extract material needs and generate a plan structure.")
             _req_text = st.text_area(
                 "Stakeholder request",
                 height=160, key="req_text",
-                placeholder='SHELF, HDTP: 52 containers (level loaded including saturday)\nSTRAP, HDTP: 5 containers (level loaded including saturday)',
+                placeholder='SHELF, HDTP: 52 containers (level loaded including saturday)',
             )
-            _req_site = st.selectbox("Site this request is for", _act_sites or ["RIC6"], key="req_site")
-
             if st.button("Parse Request", key="req_parse", type="primary") and _req_text.strip():
                 parsed = _parse_site_request(_req_text)
                 if parsed:
                     st.session_state["parsed_items"] = parsed
-                    st.session_state["parsed_site"]  = _req_site
+                    st.session_state["parsed_site"]  = _pb_site
                     st.success(f"Parsed {len(parsed)} material line(s).")
                 else:
-                    st.warning("No recognizable material lines found. Expected format: `MATERIAL TYPE: N containers (instructions)`")
-
-            # show parsed items if available
+                    st.warning("No recognizable material lines found.")
             if st.session_state.get("parsed_items"):
                 items = st.session_state["parsed_items"]
-                parsed_site = st.session_state.get("parsed_site", _req_site)
+                parsed_site = st.session_state.get("parsed_site", _pb_site)
                 st.markdown("**Parsed demand:**")
                 for i, item in enumerate(items):
                     col_a, col_b, col_c, col_d = st.columns([3,1,2,2])
-                    with col_a:
-                        st.markdown(f"**{item['material']}**")
-                    with col_b:
-                        st.markdown(f"{item['qty']} {item['unit']}(s)")
+                    with col_a: st.markdown(f"**{item['material']}**")
+                    with col_b: st.markdown(f"{item['qty']} {item['unit']}(s)")
                     with col_c:
                         ll = "Level load" if item["level_load"] else "Manual"
                         sat = " + Sat" if item["include_sat"] else ""
                         st.caption(f"{ll}{sat}")
                     with col_d:
-                        # look up how many already in plan for this material+site
                         _in_plan = len(_pdf[
                             (_pdf["site_code"]==parsed_site) &
                             (_pdf["product_type"].str.upper()==item["material"].upper())
                         ]) if not _pdf.empty else 0
                         st.caption(f"In plan: {_in_plan} / {item['qty']}")
 
-        # ── Step 2: GVT Cross-Reference ──────────────────────────────────────
-        with st.expander("Step 2 — GVT Cross-Reference (Import At-Yard Containers)", expanded=False):
-            from wbr_engine import load_gvt as _load_gvt_plan
-            st.caption(
-                "Upload your GVT export to see which containers are at yard vs. contingent, "
-                "sorted FIFO by Ready Date. Select and add directly to the plan."
+        # Step 2: Container Pool
+        with st.expander("Step 2 \u2014 Container Pool", expanded=False):
+            _pool_tab_gvt, _pool_tab_co, _pool_tab_ref = st.tabs(
+                ["\U0001f7e2 At Yard \u2014 GVT", "\U0001f504 Carried Over", "\U0001f6ab Refused / Rejected"]
             )
-            _gvt_plan_file = st.file_uploader("GVT Export (.xlsx)", type=["xlsx"], key="gvt_plan_upload")
-            if _gvt_plan_file:
-                try:
-                    _gvt_raw = _load_gvt_plan(_gvt_plan_file.read())
-                    if _gvt_raw.empty:
-                        st.warning("No containers found in GVT file.")
-                    else:
-                        # Classify: "In Yard Full" -> SCHEDULED, everything else -> PENDING (contingent)
-                        _AT_YARD = {"in yard full", "available", "at yard", "in yard"}
-                        _gvt_raw["_plan_status"] = _gvt_raw["status"].apply(
-                            lambda s: "SCHEDULED" if str(s or "").strip().lower() in _AT_YARD else "PENDING"
-                        )
-                        # Map facility string -> known site code (flexible contains-match)
-                        _known_sites_gvt = _act_sites or ["RIC6","ILM1","IAG1","DBM6","ATL2","DRO1","LAX","OAK","SJC8","RSW9"]
-                        def _map_fac(f):
-                            fu = str(f or "").upper()
-                            for sc in _known_sites_gvt:
-                                if sc in fu:
-                                    return sc
-                            return ""
-                        _gvt_raw["_site_mapped"] = _gvt_raw["facility"].apply(_map_fac)
-                        # Site filter dropdown (defaults to parsed_site if available)
-                        _gvt_sf_opts = ["All sites"] + _known_sites_gvt
-                        _gvt_sf_def  = st.session_state.get("parsed_site", "")
-                        _gvt_sf = st.selectbox(
-                            "Filter by site", _gvt_sf_opts,
-                            index=(_gvt_sf_opts.index(_gvt_sf_def) if _gvt_sf_def in _gvt_sf_opts else 0),
-                            key="gvt_site_filter_v2",
-                        )
-                        _gvt_view = _gvt_raw.copy()
-                        if _gvt_sf != "All sites":
-                            _gvt_view = _gvt_view[_gvt_view["_site_mapped"] == _gvt_sf]
-                        # Sort FIFO -- oldest ready_date first so level-load assigns oldest to earliest days
-                        _gvt_view = _gvt_view.sort_values("ready_date", na_position="last").reset_index(drop=True)
-                        # Default product type from parsed request (Step 1)
-                        _gvt_parsed_items = st.session_state.get("parsed_items", [])
-                        _gvt_def_prod = _gvt_parsed_items[0]["material"] if _gvt_parsed_items else _PLAN_PRODUCTS[0]
-                        # Summary counts
-                        _n_at_yard_gvt   = int((_gvt_view["_plan_status"] == "SCHEDULED").sum())
-                        _n_not_ready_gvt = int((_gvt_view["_plan_status"] == "PENDING").sum())
-                        st.caption(
-                            f"**{len(_gvt_view)} containers** \u2014 "
-                            f"\U0001f7e2 {_n_at_yard_gvt} at yard (schedulable)  "
-                            f"\U0001f534 {_n_not_ready_gvt} not ready (contingent)  "
-                            f"\u00b7 Sorted FIFO by Ready Date"
-                        )
-                        # Build editable table
-                        _gvt_editor_df = pd.DataFrame({
-                            "Add":          _gvt_view["_plan_status"].apply(lambda s: s == "SCHEDULED"),
-                            "Container":    _gvt_view["container"].astype(str),
-                            "GVT Status":   _gvt_view["status"].fillna("").astype(str),
-                            "Ready Date":   _gvt_view["ready_date"].apply(
-                                                lambda d: d.strftime("%m/%d/%y") if pd.notna(d) else ""),
-                            "Site":         _gvt_view["_site_mapped"].apply(lambda s: s if s else "?"),
-                            "Carrier":      _gvt_view["scac"].fillna("").astype(str),
-                            "Product Type": [_gvt_def_prod] * len(_gvt_view),
-                            "Plan Status":  _gvt_view["_plan_status"],
-                        })
-                        _gvt_scac_opts      = (_act_scacs or list(_SCAC_COLOR.keys())) + [""]
-                        _gvt_site_edit_opts = _known_sites_gvt + ["?"]
-                        _gvt_edited = st.data_editor(
-                            _gvt_editor_df,
-                            column_config={
-                                "Add":          st.column_config.CheckboxColumn("Add", help="Check to include in plan", default=False),
-                                "Container":    st.column_config.TextColumn("Container", disabled=True),
-                                "GVT Status":   st.column_config.TextColumn("GVT Status", disabled=True),
-                                "Ready Date":   st.column_config.TextColumn("Ready Date \u2191", disabled=True),
-                                "Site":         st.column_config.SelectboxColumn("Site", options=_gvt_site_edit_opts),
-                                "Carrier":      st.column_config.SelectboxColumn("Carrier", options=_gvt_scac_opts),
-                                "Product Type": st.column_config.SelectboxColumn("Product Type", options=_PLAN_PRODUCTS),
-                                "Plan Status":  st.column_config.TextColumn("Plan Status", disabled=True),
-                            },
-                            use_container_width=True,
-                            hide_index=True,
-                            key="gvt_editor_v2",
-                            height=min(420, 38 + len(_gvt_view) * 35),
-                        )
-                        # Options row
-                        _gvt_oc1, _gvt_oc2, _gvt_oc3 = st.columns(3)
-                        with _gvt_oc1:
-                            _gvt_wk_date = st.date_input("Planning Week", value=_today, key="gvt_week_date_v2")
-                        with _gvt_oc2:
-                            _gvt_ll = st.checkbox("Level load (FIFO order)", value=True, key="gvt_ll_v2")
-                        with _gvt_oc3:
-                            _gvt_incsat = st.checkbox("Include Saturday", value=True, key="gvt_incsat_v2")
-                        # Selection summary
-                        _gvt_sel    = _gvt_edited[_gvt_edited["Add"] == True]
-                        _gvt_sel_sc = _gvt_sel[_gvt_sel["Plan Status"] == "SCHEDULED"]
-                        _gvt_sel_pe = _gvt_sel[_gvt_sel["Plan Status"] == "PENDING"]
-                        st.caption(
-                            f"Selected: **{len(_gvt_sel)}** \u2014 "
-                            f"{len(_gvt_sel_sc)} to schedule, {len(_gvt_sel_pe)} as contingent (PENDING)"
-                        )
-                        if st.button("Add Selected to Plan", type="primary", key="gvt_add_btn_v2"):
-                            if _gvt_sel.empty:
-                                st.warning("No containers selected \u2014 check the Add column.")
-                            else:
-                                # Build work days for level loading
-                                _gvt_ll_cfg  = _get_week_config(_plan_week_start(_gvt_wk_date).isoformat())
-                                _gvt_day_map = {"Sun":6,"Mon":0,"Tue":1,"Wed":2,"Thu":3,"Fri":4,"Sat":5}
-                                _gvt_ws2     = _plan_week_start(_gvt_wk_date)
-                                _gvt_wdays   = sorted([
-                                    _gvt_ws2 + timedelta(days=(_gvt_day_map[d]-_gvt_ws2.weekday())%7)
-                                    for d in _gvt_ll_cfg if d in _gvt_day_map
-                                ])
-                                if not _gvt_wdays:
-                                    _gvt_wdays = [_gvt_ws2 + timedelta(days=i) for i in range(5)]
-                                if not _gvt_incsat:
-                                    _gvt_wdays = [d for d in _gvt_wdays if d.weekday() != 5]
-                                _gvt_added  = 0
-                                _gvt_ll_idx = 0  # increments only for SCHEDULED rows (FIFO across days)
+
+            with _pool_tab_gvt:
+                from wbr_engine import load_gvt as _load_gvt_plan
+                st.caption("Upload your GVT export to see which containers are at yard vs. contingent, sorted FIFO by Ready Date.")
+                _gvt_plan_file = st.file_uploader("GVT Export (.xlsx)", type=["xlsx"], key="gvt_plan_upload")
+                if _gvt_plan_file:
+                    try:
+                        _gvt_raw = _load_gvt_plan(_gvt_plan_file.read())
+                        if _gvt_raw.empty:
+                            st.warning("No containers found in GVT file.")
+                        else:
+                            _AT_YARD = {"in yard full", "available", "at yard", "in yard"}
+                            _gvt_raw["_plan_status"] = _gvt_raw["status"].apply(
+                                lambda s: "SCHEDULED" if str(s or "").strip().lower() in _AT_YARD else "PENDING"
+                            )
+                            _known_sites_gvt = _act_sites or ["RIC6","ILM1","IAG1","DBM6","ATL2","DRO1","LAX","OAK","SJC8","RSW9"]
+                            def _map_fac(f):
+                                fu = str(f or "").upper()
+                                for sc in _known_sites_gvt:
+                                    if sc in fu: return sc
+                                return ""
+                            _gvt_raw["_site_mapped"] = _gvt_raw["facility"].apply(_map_fac)
+                            _gvt_sf_opts = ["All sites"] + _known_sites_gvt
+                            _gvt_sf = st.selectbox(
+                                "Filter by site", _gvt_sf_opts,
+                                index=(_gvt_sf_opts.index(_pb_site) if _pb_site in _gvt_sf_opts else 0),
+                                key="gvt_site_filter_v3",
+                            )
+                            _gvt_view = _gvt_raw.copy()
+                            if _gvt_sf != "All sites":
+                                _gvt_view = _gvt_view[_gvt_view["_site_mapped"] == _gvt_sf]
+                            _gvt_view = _gvt_view.sort_values("ready_date", na_position="last").reset_index(drop=True)
+                            _gvt_parsed_items = st.session_state.get("parsed_items", [])
+                            _gvt_def_prod = _gvt_parsed_items[0]["material"] if _gvt_parsed_items else _PLAN_PRODUCTS[0]
+                            _n_at_yard_gvt   = int((_gvt_view["_plan_status"] == "SCHEDULED").sum())
+                            _n_not_ready_gvt = int((_gvt_view["_plan_status"] == "PENDING").sum())
+                            st.caption(
+                                f"**{len(_gvt_view)} containers** \u2014 "
+                                f"\U0001f7e2 {_n_at_yard_gvt} at yard  "
+                                f"\U0001f534 {_n_not_ready_gvt} not ready  \u00b7 FIFO by Ready Date"
+                            )
+                            _gvt_editor_df = pd.DataFrame({
+                                "Add":          _gvt_view["_plan_status"].apply(lambda s: s == "SCHEDULED"),
+                                "Container":    _gvt_view["container"].astype(str),
+                                "GVT Status":   _gvt_view["status"].fillna("").astype(str),
+                                "Ready Date":   _gvt_view["ready_date"].apply(
+                                                    lambda d: d.strftime("%m/%d/%y") if pd.notna(d) else ""),
+                                "Site":         _gvt_view["_site_mapped"].apply(lambda s: s if s else "?"),
+                                "Carrier":      _gvt_view["scac"].fillna("").astype(str),
+                                "Product Type": [_gvt_def_prod] * len(_gvt_view),
+                                "Plan Status":  _gvt_view["_plan_status"],
+                            })
+                            _gvt_scac_opts      = (_act_scacs or list(_SCAC_COLOR.keys())) + [""]
+                            _gvt_site_edit_opts = _known_sites_gvt + ["?"]
+                            _gvt_edited = st.data_editor(
+                                _gvt_editor_df,
+                                column_config={
+                                    "Add":          st.column_config.CheckboxColumn("Add", default=False),
+                                    "Container":    st.column_config.TextColumn("Container", disabled=True),
+                                    "GVT Status":   st.column_config.TextColumn("GVT Status", disabled=True),
+                                    "Ready Date":   st.column_config.TextColumn("Ready Date \u2191", disabled=True),
+                                    "Site":         st.column_config.SelectboxColumn("Site", options=_gvt_site_edit_opts),
+                                    "Carrier":      st.column_config.SelectboxColumn("Carrier", options=_gvt_scac_opts),
+                                    "Product Type": st.column_config.SelectboxColumn("Product Type", options=_PLAN_PRODUCTS),
+                                    "Plan Status":  st.column_config.TextColumn("Plan Status", disabled=True),
+                                },
+                                use_container_width=True, hide_index=True,
+                                key="gvt_editor_v3",
+                                height=min(420, 38 + len(_gvt_view) * 35),
+                            )
+                            _gvt_sel = _gvt_edited[_gvt_edited["Add"] == True]
+                            st.caption(f"**{len(_gvt_sel)} selected** \u2014 will be included in Step 3 auto-schedule.")
+                            if st.button("Stage for Auto-Schedule", key="gvt_stage_btn", type="secondary"):
+                                _staged = []
                                 for _, _gs in _gvt_sel.iterrows():
-                                    _gcid  = str(_gs["Container"]).strip()
-                                    _gscac = str(_gs["Carrier"]).strip()
+                                    _gcid = str(_gs["Container"]).strip()
                                     _gsite = str(_gs["Site"]).strip()
-                                    _gprod = str(_gs["Product Type"])
-                                    _gpst  = str(_gs["Plan Status"])
-                                    if not _gcid or _gsite == "?":
-                                        continue
-                                    if _gpst == "PENDING":
-                                        _add_plan_entry(
-                                            _plan_week_start(_gvt_wk_date), None, "TBD", 99,
-                                            _gcid, _gscac, _gsite, _gprod, 1190,
-                                            "Contingent \u2014 GVT Not Ready", "PENDING"
-                                        )
-                                    else:
-                                        _gday = (_gvt_wdays[_gvt_ll_idx % len(_gvt_wdays)]
-                                                 if _gvt_ll and _gvt_wdays else _gvt_wk_date)
-                                        _gvt_ll_idx += 1
-                                        _gscm_r = _scm[(_scm["site_code"]==_gsite)&(_scm["scac"]==_gscac)]
-                                        _gdef_t = (_gscm_r["priority_time"].iloc[0]
-                                                   if not _gscm_r.empty and pd.notna(_gscm_r["priority_time"].iloc[0])
-                                                   else "8:30 AM")
-                                        _gsn = dict(_PLAN_SLOTS).get(_gdef_t, 2)
-                                        _add_plan_entry(
-                                            _plan_week_start(_gday), _gday, _gdef_t, _gsn,
-                                            _gcid, _gscac, _gsite, _gprod, 1190, "", "SCHEDULED"
-                                        )
-                                    _gvt_added += 1
-                                st.success(
-                                    f"Added {_gvt_added} container(s) \u2014 "
-                                    f"{len(_gvt_sel_sc)} scheduled, {len(_gvt_sel_pe)} contingent."
-                                )
-                                st.rerun()
-                except Exception as _gvt_err:
-                    st.error(f"Error reading GVT file: {_gvt_err}")
+                                    if not _gcid or _gsite == "?": continue
+                                    _staged.append({
+                                        "container": _gcid, "scac": str(_gs["Carrier"]).strip(),
+                                        "site_code": _gsite, "product_type": str(_gs["Product Type"]),
+                                        "plan_status": str(_gs["Plan Status"]), "source": "gvt", "priority": 3,
+                                    })
+                                st.session_state["pb_staged_gvt"] = _staged
+                                st.success(f"Staged {len(_staged)} container(s) for auto-schedule.")
+                    except Exception as _gvt_err:
+                        st.error(f"Error reading GVT file: {_gvt_err}")
 
-        # ── Step 3: Manual add / override ────────────────────────────────────────
-        with st.expander("Step 3 — Manual Add / Override", expanded=False):
+            with _pool_tab_co:
+                st.caption("Containers from prior weeks that were never delivered. Automatically pulled from the plan DB.")
+                _co_pool = _get_reschedulable_pool(_pb_site, _ws.isoformat())
+                _co_carried = _co_pool[_co_pool["pool_source"] == "carried_over"] if not _co_pool.empty else pd.DataFrame()
+                if _co_carried.empty:
+                    st.info("No carried-over containers for this site.")
+                else:
+                    _co_editor_df = pd.DataFrame({
+                        "Include":      [True] * len(_co_carried),
+                        "Container":    _co_carried["container_id"].astype(str),
+                        "Carrier":      _co_carried["scac"].fillna("").astype(str),
+                        "Product Type": _co_carried["product_type"].fillna("").astype(str),
+                        "Prior Week":   _co_carried["week_start"].astype(str),
+                        "Prior Status": _co_carried["status"].astype(str),
+                    })
+                    _co_edited = st.data_editor(
+                        _co_editor_df,
+                        column_config={
+                            "Include":      st.column_config.CheckboxColumn("Include", default=True),
+                            "Container":    st.column_config.TextColumn("Container", disabled=True),
+                            "Carrier":      st.column_config.TextColumn("Carrier", disabled=True),
+                            "Product Type": st.column_config.TextColumn("Product Type", disabled=True),
+                            "Prior Week":   st.column_config.TextColumn("Prior Week", disabled=True),
+                            "Prior Status": st.column_config.TextColumn("Prior Status", disabled=True),
+                        },
+                        use_container_width=True, hide_index=True, key="co_editor",
+                        height=min(360, 38 + len(_co_carried) * 35),
+                    )
+                    _co_sel = _co_edited[_co_edited["Include"] == True]
+                    st.caption(f"**{len(_co_sel)} carried-over** container(s) will be included in auto-schedule (priority 2).")
+                    if st.button("Stage Carried-Over", key="co_stage_btn", type="secondary"):
+                        _co_staged = []
+                        for _, _cr in _co_sel.iterrows():
+                            _co_staged.append({
+                                "container": str(_cr["Container"]).strip(),
+                                "scac": str(_cr["Carrier"]).strip(),
+                                "site_code": _pb_site,
+                                "product_type": str(_cr["Product Type"]).strip(),
+                                "plan_status": "SCHEDULED", "source": "carried_over", "priority": 2,
+                            })
+                        st.session_state["pb_staged_co"] = _co_staged
+                        st.success(f"Staged {len(_co_staged)} carried-over container(s).")
+
+            with _pool_tab_ref:
+                st.caption("Containers refused at the gate or rejected. Highest rescheduling priority (longest dwell risk).")
+                _ref_pool = _co_pool[_co_pool["pool_source"] == "refused"] if not _co_pool.empty else pd.DataFrame()
+                if _ref_pool.empty:
+                    st.info("No refused/rejected containers for this site.")
+                else:
+                    _ref_editor_df = pd.DataFrame({
+                        "Include":      [True] * len(_ref_pool),
+                        "Container":    _ref_pool["container_id"].astype(str),
+                        "Carrier":      _ref_pool["scac"].fillna("").astype(str),
+                        "Product Type": _ref_pool["product_type"].fillna("").astype(str),
+                        "Prior Week":   _ref_pool["week_start"].astype(str),
+                        "Prior Status": _ref_pool["status"].astype(str),
+                    })
+                    _ref_edited = st.data_editor(
+                        _ref_editor_df,
+                        column_config={
+                            "Include":      st.column_config.CheckboxColumn("Include", default=True),
+                            "Container":    st.column_config.TextColumn("Container", disabled=True),
+                            "Carrier":      st.column_config.TextColumn("Carrier", disabled=True),
+                            "Product Type": st.column_config.TextColumn("Product Type", disabled=True),
+                            "Prior Week":   st.column_config.TextColumn("Prior Week", disabled=True),
+                            "Prior Status": st.column_config.TextColumn("Prior Status", disabled=True),
+                        },
+                        use_container_width=True, hide_index=True, key="ref_editor",
+                        height=min(360, 38 + len(_ref_pool) * 35),
+                    )
+                    _ref_sel = _ref_edited[_ref_edited["Include"] == True]
+                    st.caption(f"**{len(_ref_sel)} refused/rejected** container(s) will be included in auto-schedule (priority 1).")
+                    if st.button("Stage Refused/Rejected", key="ref_stage_btn", type="secondary"):
+                        _ref_staged = []
+                        for _, _rr in _ref_sel.iterrows():
+                            _ref_staged.append({
+                                "container": str(_rr["Container"]).strip(),
+                                "scac": str(_rr["Carrier"]).strip(),
+                                "site_code": _pb_site,
+                                "product_type": str(_rr["Product Type"]).strip(),
+                                "plan_status": "SCHEDULED", "source": "refused", "priority": 1,
+                            })
+                        st.session_state["pb_staged_ref"] = _ref_staged
+                        st.success(f"Staged {len(_ref_staged)} refused/rejected container(s).")
+
+        # Step 3: Auto-Schedule
+        with st.expander("Step 3 \u2014 Auto-Schedule", expanded=False):
+            st.caption(
+                "Combines staged containers (refused first \u2192 carried-over \u2192 GVT at-yard), "
+                "applies site constraints, and fills the week. HUDD/HDDR pinned to 7:30 AM. "
+                "Overflow held below for push-to-next-week."
+            )
+            _all_staged = (
+                st.session_state.get("pb_staged_ref", []) +
+                st.session_state.get("pb_staged_co",  []) +
+                st.session_state.get("pb_staged_gvt", [])
+            )
+            st.metric("Staged containers", len(_all_staged),
+                      help="Refused/rejected + carried-over + GVT at-yard. Stage items in Step 2 first.")
+            if _all_staged:
+                _as_c1, _as_c2, _as_c3 = st.columns(3)
+                with _as_c1: _as_incsat = st.checkbox("Include Saturday", value=True, key="as_incsat")
+                with _as_c2: _as_respect_cap = st.checkbox("Respect daily/weekly caps", value=True, key="as_respect_cap")
+                with _as_c3: _as_dry = st.checkbox("Preview only (don't write)", value=False, key="as_dry")
+                if st.button("Run Auto-Schedule", type="primary", key="as_run"):
+                    _as_ll_cfg  = _get_week_config(_ws.isoformat())
+                    _as_day_map = {"Sun":6,"Mon":0,"Tue":1,"Wed":2,"Thu":3,"Fri":4,"Sat":5}
+                    _as_wdays   = sorted([
+                        _ws + timedelta(days=(_as_day_map[d]-_ws.weekday())%7)
+                        for d in _as_ll_cfg if d in _as_day_map
+                    ])
+                    if not _as_wdays:
+                        _as_wdays = [_ws + timedelta(days=i) for i in range(5)]
+                    if not _as_incsat:
+                        _as_wdays = [d for d in _as_wdays if d.weekday() != 5]
+                    _scheduled_rows, _overflow = _auto_schedule_pool(_all_staged, _ws, _as_wdays, _pb_site)
+                    if not _as_dry:
+                        _as_added = 0
+                        for _row in _scheduled_rows:
+                            _add_plan_entry(
+                                _ws, _row["date"], _row["appt_time"], _row["slot_num"],
+                                _row["container"], _row["scac"], _row["site_code"],
+                                _row["product_type"], 1190,
+                                f"Auto-scheduled ({_row['source']})", "SCHEDULED"
+                            )
+                            _as_added += 1
+                        if _overflow:
+                            st.session_state["pb_overflow"] = _overflow
+                        for _k in ("pb_staged_ref","pb_staged_co","pb_staged_gvt"):
+                            st.session_state.pop(_k, None)
+                        st.success(
+                            f"Scheduled {_as_added} container(s). "
+                            f"{len(_overflow)} overflow \u2014 see queue below."
+                        )
+                        st.rerun()
+                    else:
+                        st.markdown(f"**Preview: {len(_scheduled_rows)} scheduled, {len(_overflow)} overflow**")
+                        if _scheduled_rows:
+                            _prev_df = pd.DataFrame(_scheduled_rows)[["date","appt_time","container","scac","product_type","source"]]
+                            _prev_df.columns = ["Date","Time","Container","Carrier","Product","Source"]
+                            st.dataframe(_prev_df, use_container_width=True, hide_index=True)
+                        if _overflow:
+                            st.warning(f"{len(_overflow)} container(s) would overflow:")
+                            _ov_df2 = pd.DataFrame(_overflow)[["container","scac","product_type","source"]]
+                            _ov_df2.columns = ["Container","Carrier","Product","Source"]
+                            st.dataframe(_ov_df2, use_container_width=True, hide_index=True)
+
+        # Step 4: Manual Add / Override
+        with st.expander("Step 4 \u2014 Manual Add / Override", expanded=False):
             _add_tab_s, _add_tab_b = st.tabs(["Single", "Bulk Paste"])
-
             with _add_tab_s:
-                # pre-fill from parsed request if available
                 _parsed_items = st.session_state.get("parsed_items", [])
-                _parsed_site  = st.session_state.get("parsed_site", _act_sites[0] if _act_sites else "RIC6")
                 _mat_opts     = _PLAN_PRODUCTS
                 _default_mat  = _parsed_items[0]["material"] if _parsed_items and _parsed_items[0]["material"] in _mat_opts else _mat_opts[0]
-
                 sa1, sa2, sa3, sa4 = st.columns(4)
                 with sa1:
-                    _s_site   = st.selectbox("Site", _act_sites or ["RIC6"], index=(_act_sites.index(_parsed_site) if _parsed_site in _act_sites else 0), key="s_site")
+                    _s_site   = st.selectbox("Site", _act_sites or ["RIC6"], index=(_act_sites.index(_pb_site) if _pb_site in _act_sites else 0), key="s_site")
                     _mapped   = _scm[_scm["site_code"]==_s_site]["scac"].tolist() if not _scm.empty else _act_scacs
                     _s_scac   = st.selectbox("Carrier", _mapped or _act_scacs, key="s_scac")
                     _s_status = st.selectbox("Status", ["SCHEDULED","PENDING","HOLD"], key="s_status")
@@ -3703,7 +3944,6 @@ HUDD LAX  : RE: DBR Bridges Report - HUDD - [DATE]  (Desirae/Ailua)""", language
                     _s_slot = dict(_PLAN_SLOTS)[_s_time]
                 with sa4:
                     _s_notes = st.text_area("Notes", height=120, key="s_notes", placeholder="Optional")
-
                 if st.button("Add", type="primary", key="s_add"):
                     if _s_cid.strip():
                         _ad = _s_date if _s_status != "PENDING" else None
@@ -3711,11 +3951,10 @@ HUDD LAX  : RE: DBR Bridges Report - HUDD - [DATE]  (Desirae/Ailua)""", language
                         _an = _s_slot if _s_status != "PENDING" else 99
                         _add_plan_entry(_plan_week_start(_s_date),_ad,_at,_an,
                                         _s_cid,_s_scac,_s_site,_s_product,int(_s_qty),_s_notes,_s_status)
-                        st.success(f"{_s_cid.upper().strip()} ({_s_scac} → {_s_site})")
+                        st.success(f"{_s_cid.upper().strip()} ({_s_scac} \u2192 {_s_site})")
                         st.rerun()
                     else:
                         st.warning("Container # required.")
-
             with _add_tab_b:
                 st.caption(
                     "**Format (one container per line):** `CONTAINER_ID  CARRIER  SITE`  \n"
@@ -3730,25 +3969,20 @@ HUDD LAX  : RE: DBR Bridges Report - HUDD - [DATE]  (Desirae/Ailua)""", language
                 with bb3: _b_product = st.selectbox("Default Product", _mat_opts, key="b_product")
                 with bb4: _b_date    = st.date_input("Delivery Date",  value=_today, key="b_date")
                 with bb5: _b_status  = st.selectbox("Status",          ["SCHEDULED","PENDING"], key="b_status")
-
-                # level-load checkbox
                 _b_ll     = st.checkbox("Level load across the week", value=True, key="b_ll")
                 _b_incsat = st.checkbox("Include Saturday",            value=True, key="b_incsat")
-
                 if st.button("Parse & Add All", type="primary", key="b_add"):
                     if _bulk_text.strip():
                         raw_cids, added, skipped = [], 0, []
                         for ln in _bulk_text.strip().splitlines():
                             parts = ln.strip().split()
                             if not parts: continue
-                            cid   = parts[0].upper()
+                            cid = parts[0].upper()
                             if len(cid) < 4: skipped.append(ln); continue
-                            b_sc  = parts[1].upper() if len(parts) > 1 and parts[1].upper() in _act_scacs else _b_scac
-                            b_si  = parts[2].upper() if len(parts) > 2 else _b_site
+                            b_sc = parts[1].upper() if len(parts) > 1 and parts[1].upper() in _act_scacs else _b_scac
+                            b_si = parts[2].upper() if len(parts) > 2 else _b_site
                             raw_cids.append((cid, b_sc, b_si))
-
                         if _b_ll and raw_cids:
-                            # use the configured active receiving days for this week
                             _ll_active = _get_week_config(_plan_week_start(_b_date).isoformat())
                             _ll_day_map = {"Sun":6,"Mon":0,"Tue":1,"Wed":2,"Thu":3,"Fri":4,"Sat":5}
                             _ll_ws = _plan_week_start(_b_date)
@@ -3763,7 +3997,7 @@ HUDD LAX  : RE: DBR Bridges Report - HUDD - [DATE]  (Desirae/Ailua)""", language
                                 day = work_days[idx % n_days]
                                 _scm_r2 = _scm[(_scm["site_code"]==b_si)&(_scm["scac"]==b_sc)]
                                 _def_t2 = _scm_r2["priority_time"].iloc[0] if not _scm_r2.empty and pd.notna(_scm_r2["priority_time"].iloc[0]) else "8:30 AM"
-                                _sn2    = dict(_PLAN_SLOTS).get(_def_t2, 2)
+                                _sn2 = dict(_PLAN_SLOTS).get(_def_t2, 2)
                                 _add_plan_entry(_plan_week_start(day), day, _def_t2, _sn2,
                                                 cid, b_sc, b_si, _b_product, 1190, "", _b_status)
                                 added += 1
@@ -3771,14 +4005,13 @@ HUDD LAX  : RE: DBR Bridges Report - HUDD - [DATE]  (Desirae/Ailua)""", language
                             for cid, b_sc, b_si in raw_cids:
                                 _scm_r2 = _scm[(_scm["site_code"]==b_si)&(_scm["scac"]==b_sc)]
                                 _def_t2 = _scm_r2["priority_time"].iloc[0] if not _scm_r2.empty and pd.notna(_scm_r2["priority_time"].iloc[0]) else "8:30 AM"
-                                _sn2    = dict(_PLAN_SLOTS).get(_def_t2, 2)
-                                _ad2    = _b_date if _b_status != "PENDING" else None
-                                _at2    = _def_t2 if _b_status != "PENDING" else "TBD"
+                                _sn2 = dict(_PLAN_SLOTS).get(_def_t2, 2)
+                                _ad2 = _b_date if _b_status != "PENDING" else None
+                                _at2 = _def_t2 if _b_status != "PENDING" else "TBD"
                                 _add_plan_entry(_plan_week_start(_b_date), _ad2, _at2,
                                                 _sn2 if _b_status != "PENDING" else 99,
                                                 cid, b_sc, b_si, _b_product, 1190, "", _b_status)
                                 added += 1
-
                         msg = f"Added {added} container(s)."
                         if skipped: msg += f" Skipped {len(skipped)} line(s)."
                         st.success(msg)
@@ -3786,15 +4019,49 @@ HUDD LAX  : RE: DBR Bridges Report - HUDD - [DATE]  (Desirae/Ailua)""", language
                     else:
                         st.warning("Nothing to parse.")
 
-        # ── Week grid ─────────────────────────────────────────────────────────
+        # Week grid
         _pdf = _get_plan(_ws.isoformat())
         if _pdf.empty:
             st.info("No entries yet. Use the steps above to build the plan.")
         else:
             st.divider()
-            _week_grid(_pdf[_pdf["status"]!="PENDING"], _wdays)
+            _week_grid(_pdf[_pdf["status"]!="PENDING"], _wdays, constraints=_site_cfg)
             st.divider()
             _status_editor(_pdf, "pb")
+
+        # Overflow queue
+        _overflow_pool = st.session_state.get("pb_overflow", [])
+        if _overflow_pool:
+            with st.expander(f"\u26a0\ufe0f Overflow Queue \u2014 {len(_overflow_pool)} container(s)", expanded=True):
+                st.caption("These containers exceeded this week's capacity. Push to next week or dismiss.")
+                _ov_df = pd.DataFrame(_overflow_pool)
+                st.dataframe(
+                    _ov_df[["container","scac","product_type","source"]].rename(
+                        columns={"container":"Container","scac":"Carrier","product_type":"Product","source":"Source"}
+                    ),
+                    use_container_width=True, hide_index=True
+                )
+                _ov_c1, _ov_c2 = st.columns(2)
+                with _ov_c1:
+                    if st.button("Push to Next Week", type="primary", key="ov_push"):
+                        _next_ws = _ws + timedelta(weeks=1)
+                        _ov_pushed = 0
+                        for _ov in _overflow_pool:
+                            _add_plan_entry(
+                                _next_ws, None, "TBD", 99,
+                                _ov["container"], _ov.get("scac",""),
+                                _ov.get("site_code", _pb_site),
+                                _ov.get("product_type",""),
+                                1190, "Overflow from prior week", "PENDING"
+                            )
+                            _ov_pushed += 1
+                        st.session_state.pop("pb_overflow", None)
+                        st.success(f"Pushed {_ov_pushed} container(s) to week of {_next_ws}.")
+                        st.rerun()
+                with _ov_c2:
+                    if st.button("Dismiss Overflow", type="secondary", key="ov_dismiss"):
+                        st.session_state.pop("pb_overflow", None)
+                        st.rerun()
 
 
     # ══════════════════════════════════════════════════════════════════════════
