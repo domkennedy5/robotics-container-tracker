@@ -141,6 +141,34 @@ TEMPLATE_SHEET_MAP = {
             "sla_notes":       ["If No, Why?", "If no, why?"],
         },
     },
+    # HUDD (Maersk) uses "Delivery Plan" instead of "Static Delivery Plan"
+    "Delivery Plan": {
+        "sheet_type": "delivery",
+        "fields": {
+            "container_id":    ["Container #", "Container"],
+            "port":            ["Port"],
+            "terminal":        ["Terminal", "Terminal "],
+            "fc_building":     ["FC/Building", "FC/Building "],
+            "flexi_id":        ["Flexi ID", "Flexi ID*"],
+            "outgate_date":    ["Outgate Date"],
+            "delivery_date":   ["Delivery Date/Time", "Delivery date/time"],
+            "status":          ["Status"],
+            "within_sla":      ["Within SLA?"],
+            "sla_notes":       ["If No, Why?", "If no, why?"],
+        },
+    },
+    # TGHE (Tighe) puts container data in the USBOS sheet
+    "USBOS": {
+        "sheet_type": "delivery",
+        "fields": {
+            "container_id":    ["Container #", "Container"],
+            "port":            ["Port"],
+            "terminal":        ["First Deliver to ", "First Deliver to", "2nd Del To ", "2nd Del To"],
+            "outgate_date":    ["P/U from port Date", "Port Arrival Date"],
+            "delivery_date":   ["Act Del Date", "Sched Del Date"],
+            "notes":           ["Notes"],
+        },
+    },
     "Empty Returns": {
         "sheet_type": "empty_return",
         "fields": {

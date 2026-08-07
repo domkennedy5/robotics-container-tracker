@@ -70,11 +70,6 @@ S3_ENABLED = all([AWS_KEY, AWS_SECRET, AWS_REGION, S3_BUCKET])
 
 # ── password gate ──────────────────────────────────────────────────────────────
 def _check_password():
-    try:
-        correct = st.secrets["app"]["PASSWORD"]
-    except Exception:
-        return True  # no password configured — open access (local dev)
-
     if st.session_state.get("authenticated"):
         return True
 
@@ -275,6 +270,21 @@ def init_db():
             otp_pct        INTEGER,
             generated_at   TEXT,
             UNIQUE(year, week_num)
+        );
+        CREATE TABLE IF NOT EXISTS wbr_carrier_results (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            year            INTEGER NOT NULL,
+            week_num        INTEGER NOT NULL,
+            carrier         TEXT NOT NULL,
+            volume          INTEGER,
+            av_oa_sla_pct   INTEGER,
+            av_oa_avg       REAL,
+            av_oa_misses    INTEGER,
+            oa_del_sla_pct  INTEGER,
+            oa_del_avg      REAL,
+            oa_del_misses   INTEGER,
+            generated_at    TEXT,
+            UNIQUE(year, week_num, carrier)
         );
         CREATE TABLE IF NOT EXISTS wbr_context_notes (
             id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -995,7 +1005,7 @@ with tab2:
     )
     _wk_start = _wk_input - timedelta(days=_wk_input.weekday())
     _wk_end   = _wk_start + timedelta(days=4)
-    st.caption(f"**{_wk_start.strftime('%b %-d')} – {_wk_end.strftime('%b %-d, %Y')}**")
+    st.caption(f"**{_wk_start.strftime('%b %d').lstrip('0')} – {_wk_end.strftime('%b %d, %Y').lstrip('0')}**")
 
     TRACKED_CARRIERS = ["ATMI", "ARVY", "HDDR", "RKNE", "TGHE"]
 
@@ -1049,7 +1059,7 @@ with tab2:
                 _tmpl = (
                     f"Hi {_mc} Team,\n\n"
                     f"We haven\u2019t received your container status DBR for the week of "
-                    f"{_wk_start.strftime('%B %-d, %Y')}. Could you please submit your weekly "
+                    f"{_wk_start.strftime('%B %d, %Y').lstrip('0')}. Could you please submit your weekly "
                     f"update at your earliest convenience?\n\n"
                     f"You can submit via the AGL carrier portal: {VENDOR_PORTAL_URL}\n\n"
                     f"Thank you,\nAGL Robotics Logistics"
@@ -4732,10 +4742,14 @@ with tab9:
                 _ewd  = _lwdb(_ec, _sel_yr, _wns)
                 _ec.close()
 
+                # load_weeks_from_db returns a dict keyed by week_num;
+                # generate_standard_wbr and compute_totals expect an ordered list
+                _weeks_list = [_ewd.get(w) for w in _wns]
+
                 _epdf = _gwbr(
                     week_labels=[ f"W{w}" for w in _wns ],
-                    weeks_data=_ewd,
-                    totals=_ctot(_ewd),
+                    weeks_data=_weeks_list,
+                    totals=_ctot(_weeks_list),
                     report_date=_exp_rd,
                     current_week_label=f"W{_exp_wk}",
                 )
