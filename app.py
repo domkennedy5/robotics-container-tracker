@@ -37,7 +37,8 @@ st.set_page_config(
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH  = os.path.join(BASE_DIR, "tracker.db")
-VENDOR_PORTAL_URL = "https://robotics-container-tracker-7uf88f7ez9tga3k44phfjm.streamlit.app/vendor_upload"
+VENDOR_PORTAL_URL     = "https://robotics-container-tracker-7uf88f7ez9tga3k44phfjm.streamlit.app/vendor_upload"
+CARRIER_PLAN_BASE_URL = "https://robotics-container-tracker-7uf88f7ez9tga3k44phfjm.streamlit.app/carrier_plan"
 
 # Friendly display labels for carrier codes
 CARRIER_DISPLAY = {
@@ -2207,6 +2208,11 @@ def _init_plan_config():
             notes              TEXT,
             UNIQUE(site_code, scac)
         );
+        CREATE TABLE IF NOT EXISTS plan_carrier_tokens (
+            scac        TEXT NOT NULL UNIQUE,
+            token       TEXT NOT NULL UNIQUE,
+            created_at  TEXT
+        );
     """)
     conn.commit()
     try:
@@ -2320,6 +2326,16 @@ def _migrate_plan_config():
     conn.execute("""UPDATE plan_sites SET capacity_day=10, capacity_sat=5,
         last_appt_time='4:00 PM', last_appt_sat='11:30 AM', capacity_week=115
         WHERE site_code='RIC6'""")
+    # delivery_plan confirmation columns
+    for _col in [
+        "ALTER TABLE delivery_plan ADD COLUMN carrier_confirmed INTEGER DEFAULT 0",
+        "ALTER TABLE delivery_plan ADD COLUMN confirmed_at TEXT",
+        "ALTER TABLE delivery_plan ADD COLUMN carrier_note TEXT",
+    ]:
+        try:
+            conn.execute(_col)
+        except sqlite3.OperationalError:
+            pass
     conn.commit()
     conn.close()
 
@@ -2446,6 +2462,39 @@ def _auto_schedule_pool(containers: list, week_start, work_days: list, site_code
             overflow.append(c)
 
     return scheduled, overflow
+
+
+def _get_or_create_carrier_token(scac: str) -> str:
+    """Return existing token for SCAC or generate a new UUID token."""
+    import uuid
+    conn = get_db()
+    row = conn.execute("SELECT token FROM plan_carrier_tokens WHERE scac=?", (scac,)).fetchone()
+    if row:
+        conn.close()
+        return row["token"]
+    token = str(uuid.uuid4()).replace("-", "")
+    conn.execute(
+        "INSERT INTO plan_carrier_tokens (scac,token,created_at) VALUES (?,?,?)",
+        (scac, token, datetime.now().isoformat())
+    )
+    conn.commit()
+    conn.close()
+    return token
+
+
+def _regenerate_carrier_token(scac: str) -> str:
+    """Force-generate a new token for SCAC (invalidates old link)."""
+    import uuid
+    conn = get_db()
+    token = str(uuid.uuid4()).replace("-", "")
+    conn.execute(
+        "INSERT OR REPLACE INTO plan_carrier_tokens (scac,token,created_at) VALUES (?,?,?)",
+        (scac, token, datetime.now().isoformat())
+    )
+    conn.commit()
+    conn.close()
+    return token
+
 
 _ALL_DAYS   = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"]
 _DEFAULT_DAYS = ["Mon","Tue","Wed","Thu","Fri"]
@@ -4208,64 +4257,143 @@ HUDD LAX  : RE: DBR Bridges Report - HUDD - [DATE]  (Desirae/Ailua)""", language
     # CARRIER VIEW (EXTERNAL / SHAREABLE)
     # ══════════════════════════════════════════════════════════════════════════
     with _tp4:
-        _pdf = _get_plan(_ws.isoformat())
+        _pdf  = _get_plan(_ws.isoformat())
         _cdf2 = _get_carriers_df()
+
+        # ── Carrier link panel ────────────────────────────────────────────────
+        st.markdown("### 🔗 Carrier Links")
+        st.caption(
+            "Each carrier has a unique, token-gated link to their delivery schedule. "
+            "Share the link after verifying the data in the admin preview below. "
+            "Use **Regenerate Token** to invalidate an old link."
+        )
+        # Build table of all known carriers + their tokens
+        _all_carriers_df = _cdf2 if not _cdf2.empty else pd.DataFrame(
+            columns=["scac","carrier_name","ops_contact","ops_email"]
+        )
+        _link_rows = []
+        for _, _cr in _all_carriers_df.iterrows():
+            _cr_scac  = str(_cr["scac"])
+            _cr_name  = str(_cr.get("carrier_name",""))
+            _cr_email = str(_cr.get("ops_email",""))
+            _tok = _get_or_create_carrier_token(_cr_scac)
+            _link = f"{CARRIER_PLAN_BASE_URL}?token={_tok}"
+            _link_rows.append({
+                "SCAC":    _cr_scac,
+                "Carrier": _cr_name,
+                "Contact": _cr_email,
+                "Link":    _link,
+                "Token":   _tok[:12] + "...",
+            })
+        if _link_rows:
+            _ldf = pd.DataFrame(_link_rows)
+            # One info box per carrier — copyable link
+            for _, _lr in _ldf.iterrows():
+                _lclr = _SCAC_COLOR.get(_lr["SCAC"], "#888")
+                _lc1, _lc2 = st.columns([5, 1])
+                with _lc1:
+                    st.markdown(
+                        f"<div style='background:{_lclr}12;border-left:3px solid {_lclr};"
+                        f"padding:8px 12px;border-radius:4px;margin-bottom:4px'>"
+                        f"<b>{_lr['Carrier']} ({_lr['SCAC']})</b>"
+                        f"{'  <small>· ' + _lr['Contact'] + '</small>' if _lr['Contact'] and _lr['Contact'] != 'nan' else ''}  "
+                        f"<br/><code style='font-size:11px'>{_lr['Link']}</code></div>",
+                        unsafe_allow_html=True
+                    )
+                with _lc2:
+                    if st.button("Regenerate", key=f"regen_{_lr['SCAC']}",
+                                 help="Invalidates the old link — carrier must use new URL"):
+                        _regenerate_carrier_token(_lr["SCAC"])
+                        st.success(f"{_lr['SCAC']} token regenerated.")
+                        st.rerun()
+
+        st.divider()
+
+        # ── Admin preview (view as carrier) ───────────────────────────────────
+        st.markdown("### 👁️ Admin Preview — View as Carrier")
+        st.caption(
+            "Select a carrier to see exactly what they will see at their link. "
+            "Verify data before sending. Confirmation status shows once carriers have responded."
+        )
         _avail_scacs = sorted(_pdf["carrier"].dropna().unique().tolist()) if not _pdf.empty else []
         if not _avail_scacs:
-            st.info("No entries for this week.")
+            st.info("No plan entries for this week.")
         else:
             _sel_scac = st.selectbox("Carrier", _avail_scacs, key="carr_sel")
             _cn_r = _cdf2[_cdf2["scac"]==_sel_scac]
-            _cname = _cn_r["carrier_name"].iloc[0] if not _cn_r.empty else _sel_scac
+            _cname    = _cn_r["carrier_name"].iloc[0] if not _cn_r.empty else _sel_scac
             _ccontact = _cn_r["ops_contact"].iloc[0] if not _cn_r.empty else ""
-            clr_cv = _SCAC_COLOR.get(_sel_scac, "#888")
+            _cemail   = _cn_r["ops_email"].iloc[0] if not _cn_r.empty else ""
+            clr_cv    = _SCAC_COLOR.get(_sel_scac, "#888")
+
             st.markdown(
                 f"<div style='background:{clr_cv}15;border-left:4px solid {clr_cv};"
                 f"padding:10px 14px;border-radius:4px;margin-bottom:8px'>"
                 f"<b style='font-size:16px'>{_cname} ({_sel_scac})</b>"
                 f"{'<br/><small>Ops: ' + _ccontact + '</small>' if _ccontact else ''}"
+                f"{'<br/><small>' + _cemail + '</small>' if _cemail and _cemail != 'nan' else ''}"
                 f"</div>", unsafe_allow_html=True)
+
             _cdf_w = _pdf[_pdf["carrier"]==_sel_scac]
             _cact  = _cdf_w[_cdf_w["status"]!="PENDING"]
-            # site breakdown
+
+            # site breakdown metrics
             _csite_c = _cact.groupby("site_code")["id"].count() if not _cact.empty else pd.Series(dtype=int)
             cmc = st.columns(max(len(_csite_c), 1))
             for cmi, (cs, cc) in enumerate(sorted(_csite_c.items())):
                 with cmc[cmi]: st.metric(cs, int(cc))
+
+            # confirmation summary
+            if "carrier_confirmed" in _cact.columns:
+                _n_conf = int(_cact["carrier_confirmed"].fillna(0).astype(int).sum())
+                _n_total = len(_cact)
+                if _n_conf > 0:
+                    st.success(f"✅ {_n_conf} / {_n_total} containers confirmed by carrier")
+                elif _n_total > 0:
+                    st.warning(f"⏳ Awaiting carrier confirmation — 0 / {_n_total} confirmed")
+
             st.divider()
-            st.caption("**Shareable view** — no internal status labels.")
+            st.caption("**Carrier view** — no internal fields. Confirmation column shows once carrier responds.")
             ext_rows = []
             for r in _cact.sort_values(["appt_date","site_code","slot_num"]).itertuples():
                 try: day_s = date.fromisoformat(str(r.appt_date)).strftime("%a %m/%d")
                 except: day_s = "TBD"
-                ext_rows.append({"Day": day_s, "Site": r.site_code or "",
-                                  "Appt Time": r.appt_time, "Container #": r.container_id,
-                                  "Product Type": r.product_type or "", "Qty": r.qty or "",
-                                  "Notes": r.notes or ""})
+                _conf = getattr(r, "carrier_confirmed", 0) or 0
+                ext_rows.append({
+                    "Day":          day_s,
+                    "Site":         r.site_code or "",
+                    "Appt Time":    r.appt_time,
+                    "Container #":  r.container_id,
+                    "Product Type": r.product_type or "",
+                    "Qty":          r.qty or "",
+                    "Notes":        r.notes or "",
+                    "Confirmed":    "✅" if int(_conf) else "⬜",
+                })
             if ext_rows:
                 st.dataframe(pd.DataFrame(ext_rows), use_container_width=True, hide_index=True)
             _cpend = _cdf_w[_cdf_w["status"]=="PENDING"]
             if not _cpend.empty:
-                st.caption(f"**{len(_cpend)} pending**")
+                st.caption(f"**{len(_cpend)} pending / contingent**")
                 pext = [{"Site": r.site_code or "", "Container #": r.container_id,
                           "Product Type": r.product_type or "", "Notes": r.notes or ""}
                          for r in _cpend.itertuples()]
                 st.dataframe(pd.DataFrame(pext), use_container_width=True, hide_index=True)
+
             if not _cdf_w.empty:
-                # ── Pre-send validation checklist ─────────────────────────────────────
+                # Pre-send validation checklist
                 with st.expander("✅ Pre-Send Validation Checklist — verify before exporting", expanded=False):
                     st.caption("Check off each item before sending the plan to this carrier.")
                     _chk_key = f"chk_{_sel_scac}_{_ws.isoformat()}"
                     _checks = [
-                        ("all_at_yard",    "All containers verified as at-yard with no actual FC delivery date"),
-                        ("product_split",  "Product type (Shelf/Strap) matches site's requested split"),
-                        ("fifo_order",     "FIFO order respected — longest-dwelling containers scheduled first"),
-                        ("no_lunch",       "No appointments during lunch break (12:00–1:00 PM)"),
-                        ("last_appt",      "Last appointment at or before 3:30 PM (or site-specific cutoff)"),
-                        ("level_load",     "Level-loaded across days (+/- 1–2 container difference max)"),
-                        ("hddr_am",        "HDDR/HUDD containers in early morning slots (before lunch)"),
-                        ("carrier_tab",    "Carrier tab is clean and ready to copy/paste"),
-                        ("contingent",     "Contingent containers clearly marked with status note (PENDING)"),
+                        ("all_at_yard",   "All containers verified as at-yard with no actual FC delivery date"),
+                        ("product_split", "Product type (Shelf/Strap) matches site's requested split"),
+                        ("fifo_order",    "FIFO order respected — longest-dwelling containers scheduled first"),
+                        ("no_lunch",      "No appointments during lunch break (12:00–1:00 PM)"),
+                        ("last_appt",     "Last appointment at or before site-specific cutoff"),
+                        ("level_load",    "Level-loaded across days (+/- 1–2 container difference max)"),
+                        ("hddr_am",       "HDDR/HUDD containers in early morning slots (before lunch)"),
+                        ("carrier_tab",   "Carrier tab is clean and ready to share"),
+                        ("contingent",    "Contingent containers clearly marked as PENDING"),
                     ]
                     _all_checked = True
                     for _ck, _clabel in _checks:
@@ -4276,11 +4404,19 @@ HUDD LAX  : RE: DBR Bridges Report - HUDD - [DATE]  (Desirae/Ailua)""", language
                         st.success("All checks passed — plan is ready to send.")
                     else:
                         st.warning("Complete all checks before exporting.")
-                xl = _export_carrier_excel(_pdf, _sel_scac, _cname, _ws)
-                st.download_button(f"Export {_cname} Plan to Excel", data=xl,
-                    file_name=f"{_sel_scac} Delivery Plan {_ws.strftime('%m.%d.%y')}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    type="primary")
+
+                _dl_c1, _dl_c2 = st.columns([3, 2])
+                with _dl_c1:
+                    xl = _export_carrier_excel(_pdf, _sel_scac, _cname, _ws)
+                    st.download_button(f"Export {_cname} Plan to Excel", data=xl,
+                        file_name=f"{_sel_scac} Delivery Plan {_ws.strftime('%m.%d.%y')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        type="primary")
+                with _dl_c2:
+                    # Show their carrier link for quick copy
+                    _tok2 = _get_or_create_carrier_token(_sel_scac)
+                    _clink = f"{CARRIER_PLAN_BASE_URL}?token={_tok2}"
+                    st.info(f"🔗 [Carrier portal link]({_clink})")
 
     # ══════════════════════════════════════════════════════════════════════════
     # WoW / HISTORY
