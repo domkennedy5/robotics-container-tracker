@@ -4924,436 +4924,6 @@ with tab9:
         "📊 Summary", "📈 Trends", "⚙️ Build", "📋 History"
     ])
 
-    with _wbr_trends:
-        import plotly.graph_objects as go
-        from datetime import date as _dt_cls
-
-
-        # ── Load all DB data ───────────────────────────────────────────────────────
-        _d_conn = get_db()
-        try:
-            _all_wbr = pd.read_sql_query(
-                "SELECT * FROM wbr_results ORDER BY year, week_num", _d_conn
-            )
-            try:
-                _car_wbr = pd.read_sql_query(
-                    "SELECT * FROM wbr_carrier_results ORDER BY year, week_num, volume DESC",
-                    _d_conn
-                )
-            except Exception:
-                _car_wbr = pd.DataFrame()
-        finally:
-            _d_conn.close()
-
-        if _all_wbr.empty:
-            st.info("No WBR data yet. Run the **WBR Generator** tab — this dashboard updates automatically.")
-            st.stop()
-
-        # ── Year + availability ────────────────────────────────────────────────────
-        _avail_years = sorted(_all_wbr["year"].dropna().unique().tolist(), reverse=True)
-        _yr_col, _trend_col, _carr_col = st.columns([1, 3, 2])
-
-        with _yr_col:
-            _sel_yr = int(st.selectbox("Year", options=_avail_years, index=0, key="d_yr"))
-
-        _yr_wbr = _all_wbr[_all_wbr["year"] == _sel_yr].copy()
-        _yr_wbr["week_num"] = _yr_wbr["week_num"].astype(int)
-
-        # parse dates for each row — fall back to computing from week_num if blank
-        def _wk_dates(row):
-            try:
-                ws = _dt_cls.fromisoformat(str(row["week_start"])[:10])
-                we = _dt_cls.fromisoformat(str(row["week_end"])[:10])
-                return ws, we
-            except Exception:
-                from datetime import date as _d, timedelta as _td
-                import math as _math
-                yr, wn = int(row["year"]), int(row["week_num"])
-                try:
-                    mon = _d.fromisocalendar(yr, wn, 1)
-                    return mon - _td(days=1), mon + _td(days=5)
-                except Exception:
-                    return None, None
-
-        _avail_wks = sorted(_yr_wbr["week_num"].unique().tolist())
-        _max_wk    = max(_avail_wks)
-
-        with _trend_col:
-            _trend = st.radio(
-                "Trend window", ["4WK", "6WK", "12WK", "All"],
-                index=1, horizontal=True, key="d_trend",
-                label_visibility="collapsed"
-            )
-
-        with _carr_col:
-            _carr_opts = (sorted(_car_wbr["carrier"].dropna().unique().tolist())
-                          if not _car_wbr.empty else [])
-            _sel_carr = st.multiselect(
-                "Carrier filter", options=_carr_opts,
-                placeholder="All carriers", key="d_carr"
-            ) if _carr_opts else []
-
-        # ── Row 2: Ending week anchor + Date range + Week multiselect ─────────────
-        _anc_col, _dr_col, _wk_col = st.columns([1, 2, 3])
-
-        with _anc_col:
-            # Ending week — trend window counts backward from here.
-            # Defaults to most recent available; change to anchor any earlier week.
-            _anchor_wk = st.selectbox(
-                "Ending week",
-                options=list(reversed(_avail_wks)),
-                index=0,
-                format_func=lambda w: f"W{w}",
-                key="d_anchor",
-            )
-
-        with _dr_col:
-            _all_starts, _all_ends = [], []
-            for _, _r in _yr_wbr.iterrows():
-                _ws, _we = _wk_dates(_r)
-                if _ws: _all_starts.append(_ws)
-                if _we: _all_ends.append(_we)
-            _min_d = min(_all_starts) if _all_starts else _dt_cls(_sel_yr, 1, 1)
-            _max_d = max(_all_ends)   if _all_ends   else _dt_cls.today()
-            _date_range = st.date_input(
-                "Date range (maps to weeks)",
-                value=(_min_d, _max_d),
-                min_value=_dt_cls(_sel_yr, 1, 1),
-                max_value=_dt_cls(_sel_yr, 12, 31),
-                key="d_dates",
-            )
-
-        # Resolve trend window backward from anchor week
-        _trend_n = {"4WK": 4, "6WK": 6, "12WK": 12, "All": len(_avail_wks)}[_trend]
-        _anchor_idx  = _avail_wks.index(_anchor_wk)
-        _start_idx   = max(0, _anchor_idx - _trend_n + 1)
-        _trend_wks   = _avail_wks[_start_idx : _anchor_idx + 1]
-
-        # Resolve date range → matching weeks
-        _date_wks = list(_avail_wks)
-        if isinstance(_date_range, (list, tuple)) and len(_date_range) >= 2:
-            _dr_s, _dr_e = _date_range[0], _date_range[1]
-            _date_wks = []
-            for _, _r in _yr_wbr.iterrows():
-                _ws, _we = _wk_dates(_r)
-                if _ws and _we and _ws <= _dr_e and _we >= _dr_s:
-                    _date_wks.append(int(_r["week_num"]))
-        elif isinstance(_date_range, _dt_cls):
-            _date_wks = []
-            for _, _r in _yr_wbr.iterrows():
-                _ws, _we = _wk_dates(_r)
-                if _ws and _we and _ws <= _date_range <= _we:
-                    _date_wks.append(int(_r["week_num"]))
-
-        # Combine: intersection of trend window + date range
-        _auto_wks = sorted(set(_trend_wks) & set(_date_wks)) or _trend_wks
-
-        with _wk_col:
-            _sel_wks = st.multiselect(
-                "Weeks (override above selection)",
-                options=_avail_wks,
-                default=_auto_wks,
-                format_func=lambda w: f"W{w}",
-                key="d_wks",
-                placeholder="Select weeks...",
-            )
-
-        if not _sel_wks:
-            st.warning("Select at least one week.")
-            st.stop()
-
-        # ── Final filtered data ────────────────────────────────────────────────────
-        _wdf = _yr_wbr[_yr_wbr["week_num"].isin(_sel_wks)].copy().sort_values("week_num")
-        _wdf["wl"] = "W" + _wdf["week_num"].astype(str)
-
-        if _wdf.empty:
-            st.warning("No data for selected filters.")
-            st.stop()
-
-        # ── KPI Cards — latest week with WoW delta ─────────────────────────────────
-        _lw = _wdf.iloc[-1]
-        _pw = _wdf.iloc[-2] if len(_wdf) > 1 else None
-        _ws_str = str(_lw.get("week_start") or "")[:10]
-        _we_str = str(_lw.get("week_end")   or "")[:10]
-        st.markdown(f"#### W{int(_lw['week_num'])}  ·  {_ws_str} → {_we_str}")
-
-        def _vv(row, col):
-            v = row[col] if col in row.index else None
-            return None if (v is None or (isinstance(v, float) and pd.isna(v))) else v
-
-        def _d(col, invert=False):
-            if _pw is None: return None
-            c, p = _vv(_lw, col), _vv(_pw, col)
-            if c is None or p is None: return None
-            diff = round(c - p, 1)
-            return -diff if invert else diff
-
-        _kc = st.columns(5)
-        _kc[0].metric("Containers",    str(int(_vv(_lw,"containers")))       if _vv(_lw,"containers")    is not None else "—", delta=int(_d("containers"))      if _d("containers")      is not None else None)
-        _kc[1].metric("AV→OA SLA%",   f"{int(_vv(_lw,'av_oa_sla_pct'))}%"   if _vv(_lw,"av_oa_sla_pct") is not None else "—", delta=f"{int(_d('av_oa_sla_pct'))}pp" if _d("av_oa_sla_pct") is not None else None)
-        _kc[2].metric("OA→Del SLA%",  f"{int(_vv(_lw,'oa_del_sla_pct'))}%"  if _vv(_lw,"oa_del_sla_pct") is not None else "—", delta=f"{int(_d('oa_del_sla_pct'))}pp" if _d("oa_del_sla_pct") is not None else None)
-        _kc[3].metric("E2E Avg (days)",str(int(_vv(_lw,"e2e_avg")))          if _vv(_lw,"e2e_avg")       is not None else "—", delta=round(_d("e2e_avg",invert=True),1) if _d("e2e_avg") is not None else None, delta_color="normal")
-        _kc[4].metric("OTP%",         f"{int(_vv(_lw,'otp_pct'))}%"          if _vv(_lw,"otp_pct")       is not None else "—", delta=f"{int(_d('otp_pct'))}pp"         if _d("otp_pct")      is not None else None)
-
-        # ── SLA Goals box ─────────────────────────────────────────────────────────
-        _sg1, _sg2 = st.columns([1, 3])
-        with _sg1:
-            st.markdown(
-                """<div style="border:1px solid #555;border-radius:6px;padding:10px 14px;
-                background:#1a1a1a;font-size:13px;line-height:1.8;">
-                <b style="font-size:14px;">SLA Goals</b><hr style="border-color:#444;margin:4px 0 6px 0;">
-                &bull; AV to OA &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&le; 3 Days<br>
-                &bull; OA to Delivery &le; 3 Days<br>
-                &bull; Empty to Term &nbsp;&le; 3 Days<br>
-                &bull; E2E / OTP &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&ge; 95%
-                </div>""",
-                unsafe_allow_html=True
-            )
-
-        st.markdown("---")
-
-        # ── Shared Plotly style ────────────────────────────────────────────────────
-        _CS = dict(
-            plot_bgcolor="rgba(0,0,0,0)",
-            paper_bgcolor="rgba(0,0,0,0)",
-            font=dict(color="#dddddd", size=11),
-            margin=dict(t=36, b=8, l=5, r=5),
-            showlegend=False,
-        )
-        _XAXIS = dict(gridcolor="#252525", linecolor="#444", tickfont=dict(size=10))
-        _YAXIS = dict(gridcolor="#252525", linecolor="#444")
-
-        def _lc(col, name, color, suffix="", sla_line=None):
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(
-                x=_wdf["wl"], y=_wdf[col], name=name,
-                mode="lines+markers",
-                line=dict(color=color, width=2.5), marker=dict(size=7, color=color),
-                hovertemplate=f"%{{x}}: <b>%{{y}}{suffix}</b><extra></extra>"
-            ))
-            if sla_line is not None:
-                fig.add_hline(y=sla_line, line_dash="dash", line_color="#E8A838",
-                              line_width=1.5,
-                              annotation_text=f"Goal: {sla_line}{suffix}",
-                              annotation_font_color="#E8A838",
-                              annotation_font_size=10)
-            return fig
-
-        # ── Performance Trends — 2 rows × 3 charts, exact slide titles + style ────
-        # Single line color (#4BACC6 teal), orange goal lines (#E8A838) — matches slide
-        _C_LINE = "#4BACC6"   # teal — same as C_DOT on slide
-        _C_GOAL = "#E8A838"   # orange — same as C_ACCENT on slide
-
-        st.markdown("#### Performance Trends")
-        _r1a, _r1b, _r1c = st.columns(3)
-
-        with _r1a:
-            _f = _lc("av_oa_avg", "Leg: AV to OA (avg. days)", _C_LINE, "d", sla_line=3)
-            _f.update_layout(title="Leg: AV to OA (avg. days)", yaxis=dict(**_YAXIS), xaxis=_XAXIS, **_CS)
-            st.plotly_chart(_f, use_container_width=True)
-
-        with _r1b:
-            _f = _lc("oa_del_avg", "Leg: OA to Delivery (avg. days)", _C_LINE, "d", sla_line=3)
-            _f.update_layout(title="Leg: OA to Delivery (avg. days)", yaxis=dict(**_YAXIS), xaxis=_XAXIS, **_CS)
-            st.plotly_chart(_f, use_container_width=True)
-
-        with _r1c:
-            _f = _lc("e2e_avg", "Leg: E2E Transit (avg. days)", _C_LINE, "d")
-            _f.update_layout(title="Leg: E2E Transit (avg. days)", yaxis=dict(**_YAXIS), xaxis=_XAXIS, **_CS)
-            st.plotly_chart(_f, use_container_width=True)
-
-        # ── Row 2 ─────────────────────────────────────────────────────────────────
-        _r2a, _r2b, _r2c = st.columns(3)
-
-        with _r2a:
-            _f = _lc("empty_term_pct", "Leg: Empty to Termination (%)", _C_LINE, "%")
-            _f.update_layout(title="Leg: Empty to Termination (%)",
-                             yaxis=dict(range=[0,110], ticksuffix="%", **_YAXIS),
-                             xaxis=_XAXIS, **_CS)
-            st.plotly_chart(_f, use_container_width=True)
-
-        with _r2b:
-            _f = _lc("otp_pct", "Leg: On-Time to Promise %", _C_LINE, "%", sla_line=95)
-            _f.update_layout(title="Leg: On-Time to Promise %",
-                             yaxis=dict(range=[0,110], ticksuffix="%", **_YAXIS),
-                             xaxis=_XAXIS, **_CS)
-            st.plotly_chart(_f, use_container_width=True)
-
-        with _r2c:
-            _f = _lc("containers", "Volume (containers)", _C_LINE, "")
-            _f.update_layout(title="Volume (containers)", yaxis=dict(**_YAXIS), xaxis=_XAXIS, **_CS)
-            st.plotly_chart(_f, use_container_width=True)
-
-        # ── Weekly Performance Table ───────────────────────────────────────────────
-        st.markdown("---")
-        st.markdown("#### Weekly Performance")
-
-        _METRICS = [
-            ("Containers",     "containers",     lambda v: str(int(v)) if v is not None else "—"),
-            ("AV→OA SLA%",     "av_oa_sla_pct",  lambda v: f"{int(v)}%" if v is not None else "—"),
-            ("AV→OA Avg (d)",  "av_oa_avg",      lambda v: f"{v:.1f}" if v is not None else "—"),
-            ("AV→OA P90 (d)",  "av_oa_p90",      lambda v: str(int(v)) if v is not None else "—"),
-            ("OA→Del SLA%",    "oa_del_sla_pct", lambda v: f"{int(v)}%" if v is not None else "—"),
-            ("OA→Del Avg (d)", "oa_del_avg",     lambda v: f"{v:.1f}" if v is not None else "—"),
-            ("OA→Del P90 (d)", "oa_del_p90",     lambda v: str(int(v)) if v is not None else "—"),
-            ("Empty→Term%",    "empty_term_pct", lambda v: f"{int(v)}%" if v is not None else "—"),
-            ("E2E Avg (d)",    "e2e_avg",        lambda v: str(int(v)) if v is not None else "—"),
-            ("OTP%",           "otp_pct",        lambda v: f"{int(v)}%" if v is not None else "—"),
-        ]
-
-        _tbl = {"Metric": [m[0] for m in _METRICS]}
-        for _, _wr in _wdf.iterrows():
-            _ws_short = str(_wr.get("week_start") or "")[:5]
-            _col_h = f"W{int(_wr['week_num'])}" + (f"\n{_ws_short}" if _ws_short else "")
-            _tbl[_col_h] = [_fmt(_vv(_wr, col)) for _, col, _fmt in _METRICS]
-
-        # ── Totals column — volume sum; all other metrics weighted avg by containers
-        def _wtot(col):
-            """Weighted average of col across _wdf, weighted by containers."""
-            _rows = _wdf[["containers", col]].dropna()
-            if _rows.empty: return None
-            _wts = _rows["containers"].astype(float)
-            if _wts.sum() == 0: return None
-            return (_rows[col].astype(float) * _wts).sum() / _wts.sum()
-
-        _tot_vals = []
-        for _, col, _fmt in _METRICS:
-            if col == "containers":
-                _v = _wdf["containers"].dropna().sum()
-                _tot_vals.append(str(int(_v)) if _v else "—")
-            else:
-                _v = _wtot(col)
-                _tot_vals.append(_fmt(round(_v, 1) if _v is not None else None))
-        _tbl["Totals"] = _tot_vals
-
-        _tbl_df = pd.DataFrame(_tbl)
-        st.dataframe(_tbl_df, use_container_width=True, hide_index=True,
-                     column_config={"Metric": st.column_config.TextColumn(width="medium"),
-                                    "Totals": st.column_config.TextColumn(width="small")})
-
-        # ── Carrier Performance ────────────────────────────────────────────────────
-        if not _car_wbr.empty:
-            _cdf = _car_wbr[
-                (_car_wbr["year"] == _sel_yr) &
-                (_car_wbr["week_num"].isin(_sel_wks))
-            ].copy()
-            if _sel_carr:
-                _cdf = _cdf[_cdf["carrier"].isin(_sel_carr)]
-
-            if not _cdf.empty:
-                st.markdown("---")
-                st.markdown("#### Carrier Performance")
-                _cagg = (
-                    _cdf.groupby("carrier", as_index=False)
-                    .agg(
-                        Containers    =("volume",         "sum"),
-                        **{"AV→OA SLA%":    ("av_oa_sla_pct",  "mean"),
-                           "OA→Del SLA%":   ("oa_del_sla_pct", "mean"),
-                           "AV→OA Avg (d)": ("av_oa_avg",      "mean"),
-                           "OA→Del Avg (d)":("oa_del_avg",     "mean")}
-                    )
-                    .round(1)
-                    .sort_values("Containers", ascending=False)
-                )
-                _fc = go.Figure()
-                _fc.add_trace(go.Bar(
-                    x=_cagg["carrier"], y=_cagg["AV→OA SLA%"],
-                    name="AV→OA SLA%", marker_color="#FF6B35"
-                ))
-                _fc.add_trace(go.Bar(
-                    x=_cagg["carrier"], y=_cagg["OA→Del SLA%"],
-                    name="OA→Del SLA%", marker_color="#4BACC6"
-                ))
-                _fc.add_hline(y=85, line_dash="dash", line_color="#555")
-                _fc.update_layout(
-                    barmode="group", title="Carrier SLA Performance",
-                    yaxis=dict(range=[0,110], ticksuffix="%", **_YAXIS),
-                    xaxis=_XAXIS, showlegend=True,
-                    legend=dict(orientation="h", y=-0.2),
-                    **{k:v for k,v in _CS.items() if k != "showlegend"},
-                    plot_bgcolor="rgba(0,0,0,0)",
-                    paper_bgcolor="rgba(0,0,0,0)",
-                )
-                st.plotly_chart(_fc, use_container_width=True)
-                st.dataframe(
-                    _cagg.rename(columns={"carrier": "Carrier"}),
-                    use_container_width=True, hide_index=True
-                )
-            else:
-                st.info("Carrier breakdown available after the next WBR Generator run.")
-
-        # ── Export to Slide ────────────────────────────────────────────────────────
-        st.markdown("---")
-        st.markdown("#### Export to Slide")
-        st.caption("Generates the standard WBR slide from DB data — no source file re-upload needed.")
-
-        _ex1, _ex2 = st.columns([2, 1])
-        with _ex1:
-            _exp_wk = st.selectbox(
-                "Week to export",
-                options=sorted(_sel_wks, reverse=True),
-                format_func=lambda w: f"W{w}",
-                key="d_exp_wk"
-            )
-        with _ex2:
-            _exp_rd = st.date_input("Report date", value=_dt_cls.today(), key="d_exp_rd")
-
-        if st.button("Generate Slide", type="primary", key="d_gen_slide"):
-            with st.spinner("Generating slide from database..."):
-                try:
-                    from wbr_pdf   import generate_standard_wbr as _gwbr
-                    from wbr_pptx  import pdf_to_pptx as _g2pptx
-                    from wbr_engine import load_weeks_from_db as _lwdb, compute_totals as _ctot
-
-                    _ec   = get_db()
-                    _wns  = list(range(max(1, _exp_wk - 5), _exp_wk + 1))
-                    _ewd  = _lwdb(_ec, _sel_yr, _wns)
-                    _ec.close()
-
-                    # load_weeks_from_db returns a dict keyed by week_num;
-                    # generate_standard_wbr and compute_totals expect an ordered list
-                    _weeks_list = [_ewd.get(w) for w in _wns]
-
-                    _epdf = _gwbr(
-                        week_labels=[ f"W{w}" for w in _wns ],
-                        weeks_data=_weeks_list,
-                        totals=_ctot(_weeks_list),
-                        report_date=_exp_rd,
-                        current_week_label=f"W{_exp_wk}",
-                    )
-                    _efname = f"GLS_Robotics_{_exp_rd.year}-{_exp_rd.month}-{_exp_rd.day}.pdf"
-
-                    import fitz as _ftz
-                    _edoc = _ftz.open(stream=_epdf, filetype="pdf")
-                    _epng = _edoc[0].get_pixmap(matrix=_ftz.Matrix(2.0, 2.0), alpha=False).tobytes("png")
-                    _edoc.close()
-                    st.image(_epng, use_container_width=True, caption=f"W{_exp_wk} · {_exp_rd}")
-
-                    _dl1, _dl2 = st.columns(2)
-                    with _dl1:
-                        st.download_button(
-                            label=f"⬇️ PDF — {_efname}",
-                            data=_epdf, file_name=_efname,
-                            mime="application/pdf", key="d_dl_pdf"
-                        )
-                    with _dl2:
-                        try:
-                            _epptx = _g2pptx(_epdf, dpi=200)
-                            st.download_button(
-                                label=f"⬇️ PPTX — {_efname.replace('.pdf','.pptx')}",
-                                data=_epptx,
-                                file_name=_efname.replace(".pdf", ".pptx"),
-                                mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-                                key="d_dl_pptx"
-                            )
-                        except Exception as _pe:
-                            st.warning(f"PPTX error: {_pe}")
-                except Exception as _ee:
-                    st.error(f"Export failed: {_ee}")
-                    import traceback; st.code(traceback.format_exc())
-
-
-
     with _wbr_build:
         st.subheader("WBR Slide Generator")
         st.caption("Upload all three source files to generate both WBR deliverables in one click.")
@@ -6521,10 +6091,8 @@ with tab9:
     with _wbr_sum:
         st.markdown("### WBR Summary")
         # ── Load latest WBR result ────────────────────────────────────────────
-        import sqlite3 as _sqlite3
-        _db_path = get_db_path()
         try:
-            _conn_s = _sqlite3.connect(_db_path)
+            _conn_s = get_db()
             _res = _conn_s.execute(
                 "SELECT week_num, year, week_start, week_end, containers, "
                 "av_oa_sla_pct, oa_del_sla_pct, e2e_avg, otp_pct "
@@ -6564,6 +6132,437 @@ with tab9:
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 10 — Inbound Forecast & Carrier Allocation
 # ══════════════════════════════════════════════════════════════════════════════
+
+    with _wbr_trends:
+        import plotly.graph_objects as go
+        from datetime import date as _dt_cls
+
+
+        # ── Load all DB data ───────────────────────────────────────────────────────
+        _d_conn = get_db()
+        try:
+            _all_wbr = pd.read_sql_query(
+                "SELECT * FROM wbr_results ORDER BY year, week_num", _d_conn
+            )
+            try:
+                _car_wbr = pd.read_sql_query(
+                    "SELECT * FROM wbr_carrier_results ORDER BY year, week_num, volume DESC",
+                    _d_conn
+                )
+            except Exception:
+                _car_wbr = pd.DataFrame()
+        finally:
+            _d_conn.close()
+
+        if _all_wbr.empty:
+            st.info("No WBR data yet. Run the **WBR Generator** tab — this dashboard updates automatically.")
+            st.stop()
+
+        # ── Year + availability ────────────────────────────────────────────────────
+        _avail_years = sorted(_all_wbr["year"].dropna().unique().tolist(), reverse=True)
+        _yr_col, _trend_col, _carr_col = st.columns([1, 3, 2])
+
+        with _yr_col:
+            _sel_yr = int(st.selectbox("Year", options=_avail_years, index=0, key="d_yr"))
+
+        _yr_wbr = _all_wbr[_all_wbr["year"] == _sel_yr].copy()
+        _yr_wbr["week_num"] = _yr_wbr["week_num"].astype(int)
+
+        # parse dates for each row — fall back to computing from week_num if blank
+        def _wk_dates(row):
+            try:
+                ws = _dt_cls.fromisoformat(str(row["week_start"])[:10])
+                we = _dt_cls.fromisoformat(str(row["week_end"])[:10])
+                return ws, we
+            except Exception:
+                from datetime import date as _d, timedelta as _td
+                import math as _math
+                yr, wn = int(row["year"]), int(row["week_num"])
+                try:
+                    mon = _d.fromisocalendar(yr, wn, 1)
+                    return mon - _td(days=1), mon + _td(days=5)
+                except Exception:
+                    return None, None
+
+        _avail_wks = sorted(_yr_wbr["week_num"].unique().tolist())
+        _max_wk    = max(_avail_wks)
+
+        with _trend_col:
+            _trend = st.radio(
+                "Trend window", ["4WK", "6WK", "12WK", "All"],
+                index=1, horizontal=True, key="d_trend",
+                label_visibility="collapsed"
+            )
+
+        with _carr_col:
+            _carr_opts = (sorted(_car_wbr["carrier"].dropna().unique().tolist())
+                          if not _car_wbr.empty else [])
+            _sel_carr = st.multiselect(
+                "Carrier filter", options=_carr_opts,
+                placeholder="All carriers", key="d_carr"
+            ) if _carr_opts else []
+
+        # ── Row 2: Ending week anchor + Date range + Week multiselect ─────────────
+        _anc_col, _dr_col, _wk_col = st.columns([1, 2, 3])
+
+        with _anc_col:
+            # Ending week — trend window counts backward from here.
+            # Defaults to most recent available; change to anchor any earlier week.
+            _anchor_wk = st.selectbox(
+                "Ending week",
+                options=list(reversed(_avail_wks)),
+                index=0,
+                format_func=lambda w: f"W{w}",
+                key="d_anchor",
+            )
+
+        with _dr_col:
+            _all_starts, _all_ends = [], []
+            for _, _r in _yr_wbr.iterrows():
+                _ws, _we = _wk_dates(_r)
+                if _ws: _all_starts.append(_ws)
+                if _we: _all_ends.append(_we)
+            _min_d = min(_all_starts) if _all_starts else _dt_cls(_sel_yr, 1, 1)
+            _max_d = max(_all_ends)   if _all_ends   else _dt_cls.today()
+            _date_range = st.date_input(
+                "Date range (maps to weeks)",
+                value=(_min_d, _max_d),
+                min_value=_dt_cls(_sel_yr, 1, 1),
+                max_value=_dt_cls(_sel_yr, 12, 31),
+                key="d_dates",
+            )
+
+        # Resolve trend window backward from anchor week
+        _trend_n = {"4WK": 4, "6WK": 6, "12WK": 12, "All": len(_avail_wks)}[_trend]
+        _anchor_idx  = _avail_wks.index(_anchor_wk)
+        _start_idx   = max(0, _anchor_idx - _trend_n + 1)
+        _trend_wks   = _avail_wks[_start_idx : _anchor_idx + 1]
+
+        # Resolve date range → matching weeks
+        _date_wks = list(_avail_wks)
+        if isinstance(_date_range, (list, tuple)) and len(_date_range) >= 2:
+            _dr_s, _dr_e = _date_range[0], _date_range[1]
+            _date_wks = []
+            for _, _r in _yr_wbr.iterrows():
+                _ws, _we = _wk_dates(_r)
+                if _ws and _we and _ws <= _dr_e and _we >= _dr_s:
+                    _date_wks.append(int(_r["week_num"]))
+        elif isinstance(_date_range, _dt_cls):
+            _date_wks = []
+            for _, _r in _yr_wbr.iterrows():
+                _ws, _we = _wk_dates(_r)
+                if _ws and _we and _ws <= _date_range <= _we:
+                    _date_wks.append(int(_r["week_num"]))
+
+        # Combine: intersection of trend window + date range
+        _auto_wks = sorted(set(_trend_wks) & set(_date_wks)) or _trend_wks
+
+        with _wk_col:
+            _sel_wks = st.multiselect(
+                "Weeks (override above selection)",
+                options=_avail_wks,
+                default=_auto_wks,
+                format_func=lambda w: f"W{w}",
+                key="d_wks",
+                placeholder="Select weeks...",
+            )
+
+        if not _sel_wks:
+            st.warning("Select at least one week.")
+            st.stop()
+
+        # ── Final filtered data ────────────────────────────────────────────────────
+        _wdf = _yr_wbr[_yr_wbr["week_num"].isin(_sel_wks)].copy().sort_values("week_num")
+        _wdf["wl"] = "W" + _wdf["week_num"].astype(str)
+
+        if _wdf.empty:
+            st.warning("No data for selected filters.")
+            st.stop()
+
+        # ── KPI Cards — latest week with WoW delta ─────────────────────────────────
+        _lw = _wdf.iloc[-1]
+        _pw = _wdf.iloc[-2] if len(_wdf) > 1 else None
+        _ws_str = str(_lw.get("week_start") or "")[:10]
+        _we_str = str(_lw.get("week_end")   or "")[:10]
+        st.markdown(f"#### W{int(_lw['week_num'])}  ·  {_ws_str} → {_we_str}")
+
+        def _vv(row, col):
+            v = row[col] if col in row.index else None
+            return None if (v is None or (isinstance(v, float) and pd.isna(v))) else v
+
+        def _d(col, invert=False):
+            if _pw is None: return None
+            c, p = _vv(_lw, col), _vv(_pw, col)
+            if c is None or p is None: return None
+            diff = round(c - p, 1)
+            return -diff if invert else diff
+
+        _kc = st.columns(5)
+        _kc[0].metric("Containers",    str(int(_vv(_lw,"containers")))       if _vv(_lw,"containers")    is not None else "—", delta=int(_d("containers"))      if _d("containers")      is not None else None)
+        _kc[1].metric("AV→OA SLA%",   f"{int(_vv(_lw,'av_oa_sla_pct'))}%"   if _vv(_lw,"av_oa_sla_pct") is not None else "—", delta=f"{int(_d('av_oa_sla_pct'))}pp" if _d("av_oa_sla_pct") is not None else None)
+        _kc[2].metric("OA→Del SLA%",  f"{int(_vv(_lw,'oa_del_sla_pct'))}%"  if _vv(_lw,"oa_del_sla_pct") is not None else "—", delta=f"{int(_d('oa_del_sla_pct'))}pp" if _d("oa_del_sla_pct") is not None else None)
+        _kc[3].metric("E2E Avg (days)",str(int(_vv(_lw,"e2e_avg")))          if _vv(_lw,"e2e_avg")       is not None else "—", delta=round(_d("e2e_avg",invert=True),1) if _d("e2e_avg") is not None else None, delta_color="normal")
+        _kc[4].metric("OTP%",         f"{int(_vv(_lw,'otp_pct'))}%"          if _vv(_lw,"otp_pct")       is not None else "—", delta=f"{int(_d('otp_pct'))}pp"         if _d("otp_pct")      is not None else None)
+
+        # ── SLA Goals box ─────────────────────────────────────────────────────────
+        _sg1, _sg2 = st.columns([1, 3])
+        with _sg1:
+            st.markdown(
+                """<div style="border:1px solid #555;border-radius:6px;padding:10px 14px;
+                background:#1a1a1a;font-size:13px;line-height:1.8;">
+                <b style="font-size:14px;">SLA Goals</b><hr style="border-color:#444;margin:4px 0 6px 0;">
+                &bull; AV to OA &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&le; 3 Days<br>
+                &bull; OA to Delivery &le; 3 Days<br>
+                &bull; Empty to Term &nbsp;&le; 3 Days<br>
+                &bull; E2E / OTP &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&ge; 95%
+                </div>""",
+                unsafe_allow_html=True
+            )
+
+        st.markdown("---")
+
+        # ── Shared Plotly style ────────────────────────────────────────────────────
+        _CS = dict(
+            plot_bgcolor="rgba(0,0,0,0)",
+            paper_bgcolor="rgba(0,0,0,0)",
+            font=dict(color="#dddddd", size=11),
+            margin=dict(t=36, b=8, l=5, r=5),
+            showlegend=False,
+        )
+        _XAXIS = dict(gridcolor="#252525", linecolor="#444", tickfont=dict(size=10))
+        _YAXIS = dict(gridcolor="#252525", linecolor="#444")
+
+        def _lc(col, name, color, suffix="", sla_line=None):
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=_wdf["wl"], y=_wdf[col], name=name,
+                mode="lines+markers",
+                line=dict(color=color, width=2.5), marker=dict(size=7, color=color),
+                hovertemplate=f"%{{x}}: <b>%{{y}}{suffix}</b><extra></extra>"
+            ))
+            if sla_line is not None:
+                fig.add_hline(y=sla_line, line_dash="dash", line_color="#E8A838",
+                              line_width=1.5,
+                              annotation_text=f"Goal: {sla_line}{suffix}",
+                              annotation_font_color="#E8A838",
+                              annotation_font_size=10)
+            return fig
+
+        # ── Performance Trends — 2 rows × 3 charts, exact slide titles + style ────
+        # Single line color (#4BACC6 teal), orange goal lines (#E8A838) — matches slide
+        _C_LINE = "#4BACC6"   # teal — same as C_DOT on slide
+        _C_GOAL = "#E8A838"   # orange — same as C_ACCENT on slide
+
+        st.markdown("#### Performance Trends")
+        _r1a, _r1b, _r1c = st.columns(3)
+
+        with _r1a:
+            _f = _lc("av_oa_avg", "Leg: AV to OA (avg. days)", _C_LINE, "d", sla_line=3)
+            _f.update_layout(title="Leg: AV to OA (avg. days)", yaxis=dict(**_YAXIS), xaxis=_XAXIS, **_CS)
+            st.plotly_chart(_f, use_container_width=True)
+
+        with _r1b:
+            _f = _lc("oa_del_avg", "Leg: OA to Delivery (avg. days)", _C_LINE, "d", sla_line=3)
+            _f.update_layout(title="Leg: OA to Delivery (avg. days)", yaxis=dict(**_YAXIS), xaxis=_XAXIS, **_CS)
+            st.plotly_chart(_f, use_container_width=True)
+
+        with _r1c:
+            _f = _lc("e2e_avg", "Leg: E2E Transit (avg. days)", _C_LINE, "d")
+            _f.update_layout(title="Leg: E2E Transit (avg. days)", yaxis=dict(**_YAXIS), xaxis=_XAXIS, **_CS)
+            st.plotly_chart(_f, use_container_width=True)
+
+        # ── Row 2 ─────────────────────────────────────────────────────────────────
+        _r2a, _r2b, _r2c = st.columns(3)
+
+        with _r2a:
+            _f = _lc("empty_term_pct", "Leg: Empty to Termination (%)", _C_LINE, "%")
+            _f.update_layout(title="Leg: Empty to Termination (%)",
+                             yaxis=dict(range=[0,110], ticksuffix="%", **_YAXIS),
+                             xaxis=_XAXIS, **_CS)
+            st.plotly_chart(_f, use_container_width=True)
+
+        with _r2b:
+            _f = _lc("otp_pct", "Leg: On-Time to Promise %", _C_LINE, "%", sla_line=95)
+            _f.update_layout(title="Leg: On-Time to Promise %",
+                             yaxis=dict(range=[0,110], ticksuffix="%", **_YAXIS),
+                             xaxis=_XAXIS, **_CS)
+            st.plotly_chart(_f, use_container_width=True)
+
+        with _r2c:
+            _f = _lc("containers", "Volume (containers)", _C_LINE, "")
+            _f.update_layout(title="Volume (containers)", yaxis=dict(**_YAXIS), xaxis=_XAXIS, **_CS)
+            st.plotly_chart(_f, use_container_width=True)
+
+        # ── Weekly Performance Table ───────────────────────────────────────────────
+        st.markdown("---")
+        st.markdown("#### Weekly Performance")
+
+        _METRICS = [
+            ("Containers",     "containers",     lambda v: str(int(v)) if v is not None else "—"),
+            ("AV→OA SLA%",     "av_oa_sla_pct",  lambda v: f"{int(v)}%" if v is not None else "—"),
+            ("AV→OA Avg (d)",  "av_oa_avg",      lambda v: f"{v:.1f}" if v is not None else "—"),
+            ("AV→OA P90 (d)",  "av_oa_p90",      lambda v: str(int(v)) if v is not None else "—"),
+            ("OA→Del SLA%",    "oa_del_sla_pct", lambda v: f"{int(v)}%" if v is not None else "—"),
+            ("OA→Del Avg (d)", "oa_del_avg",     lambda v: f"{v:.1f}" if v is not None else "—"),
+            ("OA→Del P90 (d)", "oa_del_p90",     lambda v: str(int(v)) if v is not None else "—"),
+            ("Empty→Term%",    "empty_term_pct", lambda v: f"{int(v)}%" if v is not None else "—"),
+            ("E2E Avg (d)",    "e2e_avg",        lambda v: str(int(v)) if v is not None else "—"),
+            ("OTP%",           "otp_pct",        lambda v: f"{int(v)}%" if v is not None else "—"),
+        ]
+
+        _tbl = {"Metric": [m[0] for m in _METRICS]}
+        for _, _wr in _wdf.iterrows():
+            _ws_short = str(_wr.get("week_start") or "")[:5]
+            _col_h = f"W{int(_wr['week_num'])}" + (f"\n{_ws_short}" if _ws_short else "")
+            _tbl[_col_h] = [_fmt(_vv(_wr, col)) for _, col, _fmt in _METRICS]
+
+        # ── Totals column — volume sum; all other metrics weighted avg by containers
+        def _wtot(col):
+            """Weighted average of col across _wdf, weighted by containers."""
+            _rows = _wdf[["containers", col]].dropna()
+            if _rows.empty: return None
+            _wts = _rows["containers"].astype(float)
+            if _wts.sum() == 0: return None
+            return (_rows[col].astype(float) * _wts).sum() / _wts.sum()
+
+        _tot_vals = []
+        for _, col, _fmt in _METRICS:
+            if col == "containers":
+                _v = _wdf["containers"].dropna().sum()
+                _tot_vals.append(str(int(_v)) if _v else "—")
+            else:
+                _v = _wtot(col)
+                _tot_vals.append(_fmt(round(_v, 1) if _v is not None else None))
+        _tbl["Totals"] = _tot_vals
+
+        _tbl_df = pd.DataFrame(_tbl)
+        st.dataframe(_tbl_df, use_container_width=True, hide_index=True,
+                     column_config={"Metric": st.column_config.TextColumn(width="medium"),
+                                    "Totals": st.column_config.TextColumn(width="small")})
+
+        # ── Carrier Performance ────────────────────────────────────────────────────
+        if not _car_wbr.empty:
+            _cdf = _car_wbr[
+                (_car_wbr["year"] == _sel_yr) &
+                (_car_wbr["week_num"].isin(_sel_wks))
+            ].copy()
+            if _sel_carr:
+                _cdf = _cdf[_cdf["carrier"].isin(_sel_carr)]
+
+            if not _cdf.empty:
+                st.markdown("---")
+                st.markdown("#### Carrier Performance")
+                _cagg = (
+                    _cdf.groupby("carrier", as_index=False)
+                    .agg(
+                        Containers    =("volume",         "sum"),
+                        **{"AV→OA SLA%":    ("av_oa_sla_pct",  "mean"),
+                           "OA→Del SLA%":   ("oa_del_sla_pct", "mean"),
+                           "AV→OA Avg (d)": ("av_oa_avg",      "mean"),
+                           "OA→Del Avg (d)":("oa_del_avg",     "mean")}
+                    )
+                    .round(1)
+                    .sort_values("Containers", ascending=False)
+                )
+                _fc = go.Figure()
+                _fc.add_trace(go.Bar(
+                    x=_cagg["carrier"], y=_cagg["AV→OA SLA%"],
+                    name="AV→OA SLA%", marker_color="#FF6B35"
+                ))
+                _fc.add_trace(go.Bar(
+                    x=_cagg["carrier"], y=_cagg["OA→Del SLA%"],
+                    name="OA→Del SLA%", marker_color="#4BACC6"
+                ))
+                _fc.add_hline(y=85, line_dash="dash", line_color="#555")
+                _fc.update_layout(
+                    barmode="group", title="Carrier SLA Performance",
+                    yaxis=dict(range=[0,110], ticksuffix="%", **_YAXIS),
+                    xaxis=_XAXIS, showlegend=True,
+                    legend=dict(orientation="h", y=-0.2),
+                    **{k:v for k,v in _CS.items() if k != "showlegend"},
+                    plot_bgcolor="rgba(0,0,0,0)",
+                    paper_bgcolor="rgba(0,0,0,0)",
+                )
+                st.plotly_chart(_fc, use_container_width=True)
+                st.dataframe(
+                    _cagg.rename(columns={"carrier": "Carrier"}),
+                    use_container_width=True, hide_index=True
+                )
+            else:
+                st.info("Carrier breakdown available after the next WBR Generator run.")
+
+        # ── Export to Slide ────────────────────────────────────────────────────────
+        st.markdown("---")
+        st.markdown("#### Export to Slide")
+        st.caption("Generates the standard WBR slide from DB data — no source file re-upload needed.")
+
+        _ex1, _ex2 = st.columns([2, 1])
+        with _ex1:
+            _exp_wk = st.selectbox(
+                "Week to export",
+                options=sorted(_sel_wks, reverse=True),
+                format_func=lambda w: f"W{w}",
+                key="d_exp_wk"
+            )
+        with _ex2:
+            _exp_rd = st.date_input("Report date", value=_dt_cls.today(), key="d_exp_rd")
+
+        if st.button("Generate Slide", type="primary", key="d_gen_slide"):
+            with st.spinner("Generating slide from database..."):
+                try:
+                    from wbr_pdf   import generate_standard_wbr as _gwbr
+                    from wbr_pptx  import pdf_to_pptx as _g2pptx
+                    from wbr_engine import load_weeks_from_db as _lwdb, compute_totals as _ctot
+
+                    _ec   = get_db()
+                    _wns  = list(range(max(1, _exp_wk - 5), _exp_wk + 1))
+                    _ewd  = _lwdb(_ec, _sel_yr, _wns)
+                    _ec.close()
+
+                    # load_weeks_from_db returns a dict keyed by week_num;
+                    # generate_standard_wbr and compute_totals expect an ordered list
+                    _weeks_list = [_ewd.get(w) for w in _wns]
+
+                    _epdf = _gwbr(
+                        week_labels=[ f"W{w}" for w in _wns ],
+                        weeks_data=_weeks_list,
+                        totals=_ctot(_weeks_list),
+                        report_date=_exp_rd,
+                        current_week_label=f"W{_exp_wk}",
+                    )
+                    _efname = f"GLS_Robotics_{_exp_rd.year}-{_exp_rd.month}-{_exp_rd.day}.pdf"
+
+                    import fitz as _ftz
+                    _edoc = _ftz.open(stream=_epdf, filetype="pdf")
+                    _epng = _edoc[0].get_pixmap(matrix=_ftz.Matrix(2.0, 2.0), alpha=False).tobytes("png")
+                    _edoc.close()
+                    st.image(_epng, use_container_width=True, caption=f"W{_exp_wk} · {_exp_rd}")
+
+                    _dl1, _dl2 = st.columns(2)
+                    with _dl1:
+                        st.download_button(
+                            label=f"⬇️ PDF — {_efname}",
+                            data=_epdf, file_name=_efname,
+                            mime="application/pdf", key="d_dl_pdf"
+                        )
+                    with _dl2:
+                        try:
+                            _epptx = _g2pptx(_epdf, dpi=200)
+                            st.download_button(
+                                label=f"⬇️ PPTX — {_efname.replace('.pdf','.pptx')}",
+                                data=_epptx,
+                                file_name=_efname.replace(".pdf", ".pptx"),
+                                mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                                key="d_dl_pptx"
+                            )
+                        except Exception as _pe:
+                            st.warning(f"PPTX error: {_pe}")
+                except Exception as _ee:
+                    st.error(f"Export failed: {_ee}")
+                    import traceback; st.code(traceback.format_exc())
+
+
+
 with tab10:
     _ifc_conn = get_db()
     render_inbound_forecast_tab(_ifc_conn)
