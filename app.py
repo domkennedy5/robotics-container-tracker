@@ -821,7 +821,7 @@ with st.sidebar:
 
 # ── tabs ───────────────────────────────────────────────────────────────────────
 st.title("Robotics Container Tracker")
-tab9, tab7, tab6, tab1, tab2, tab4, tab3, tab5, tab10 = st.tabs(["WBR", "Planning", "Insights", "Container Lookup", "Carrier Submission", "Carrier Data", "Empty Returns", "Lane Costs", "Inbound Forecast"])
+tab9, tab7, tab6, tab1, tabC, tab10 = st.tabs(["WBR", "Planning", "Insights", "Container Lookup", "Carriers", "Inbound Forecast"])
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -969,1193 +969,1197 @@ with tab1:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TAB 2 — Carrier Submission
-# ══════════════════════════════════════════════════════════════════════════════
-with tab2:
-    st.subheader("Carrier Submission Portal")
-    st.caption("🎯 **Purpose:** The single intake point for all carrier status updates. Carriers upload their weekly template here so you have one place to review submissions instead of managing files across email.")
-    st.caption("📋 **How to use:** Upload a completed AGL Carrier Template and click Confirm & Submit, or share the vendor portal link with carriers to submit directly.")
+# TAB C — Carriers (Submission + Data)
+# ─────────────────────────────────────────────────────────────────────────────
 
-    _vp_col, _tmpl_col = st.columns([3, 1])
-    with _vp_col:
-        st.info(
-            f"**🔗 Share this link with your carriers:**  \n"
-            f"[{VENDOR_PORTAL_URL}]({VENDOR_PORTAL_URL})  \n"
-            "Carriers submit directly through this portal — no manual upload needed on your end."
+with tabC:
+    _car_submit, _car_data = st.tabs(["📥 Submit", "📊 Data"])
+
+    with _car_submit:
+        st.subheader("Carrier Submission Portal")
+        st.caption("🎯 **Purpose:** The single intake point for all carrier status updates. Carriers upload their weekly template here so you have one place to review submissions instead of managing files across email.")
+        st.caption("📋 **How to use:** Upload a completed AGL Carrier Template and click Confirm & Submit, or share the vendor portal link with carriers to submit directly.")
+
+        _vp_col, _tmpl_col = st.columns([3, 1])
+        with _vp_col:
+            st.info(
+                f"**🔗 Share this link with your carriers:**  \n"
+                f"[{VENDOR_PORTAL_URL}]({VENDOR_PORTAL_URL})  \n"
+                "Carriers submit directly through this portal — no manual upload needed on your end."
+            )
+        with _tmpl_col:
+            tmpl_path = os.path.join(BASE_DIR, "agl_carrier_template.xlsx")
+            if os.path.exists(tmpl_path):
+                with open(tmpl_path, "rb") as f:
+                    st.download_button(
+                        "⬇️ Download Carrier Template",
+                        data=f.read(),
+                        file_name="AGL_Carrier_Template.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True,
+                    )
+
+        st.divider()
+
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        # DBR Receipt Tracker
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        st.markdown("### 📋 DBR Receipt Tracker")
+        st.caption("Track whether each carrier has submitted their weekly DBR. Use the week selector to navigate; missing submissions are flagged automatically.")
+
+        _today_rd  = datetime.now(_EASTERN).date()
+        _this_mon  = _today_rd - timedelta(days=_today_rd.weekday())
+        _wk_input  = st.date_input(
+            "Week (select any day)", value=_this_mon, key="receipt_wk_sel",
+            label_visibility="collapsed",
         )
-    with _tmpl_col:
-        tmpl_path = os.path.join(BASE_DIR, "agl_carrier_template.xlsx")
-        if os.path.exists(tmpl_path):
-            with open(tmpl_path, "rb") as f:
-                st.download_button(
-                    "⬇️ Download Carrier Template",
-                    data=f.read(),
-                    file_name="AGL_Carrier_Template.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True,
-                )
+        _wk_start = _wk_input - timedelta(days=_wk_input.weekday())
+        _wk_end   = _wk_start + timedelta(days=4)
+        st.caption(f"**{_wk_start.strftime('%b %d').lstrip('0')} – {_wk_end.strftime('%b %d, %Y').lstrip('0')}**")
 
-    st.divider()
+        TRACKED_CARRIERS = ["ATMI", "ARVY", "HDDR", "RKNE", "TGHE"]
 
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # DBR Receipt Tracker
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    st.markdown("### 📋 DBR Receipt Tracker")
-    st.caption("Track whether each carrier has submitted their weekly DBR. Use the week selector to navigate; missing submissions are flagged automatically.")
+        _conn_rd = get_db()
+        _rec_df  = pd.read_sql(
+            "SELECT carrier, received_date FROM dbr_receipts WHERE week_start = ?",
+            _conn_rd, params=(_wk_start.isoformat(),)
+        )
+        _conn_rd.close()
 
-    _today_rd  = datetime.now(_EASTERN).date()
-    _this_mon  = _today_rd - timedelta(days=_today_rd.weekday())
-    _wk_input  = st.date_input(
-        "Week (select any day)", value=_this_mon, key="receipt_wk_sel",
-        label_visibility="collapsed",
-    )
-    _wk_start = _wk_input - timedelta(days=_wk_input.weekday())
-    _wk_end   = _wk_start + timedelta(days=4)
-    st.caption(f"**{_wk_start.strftime('%b %d').lstrip('0')} – {_wk_end.strftime('%b %d, %Y').lstrip('0')}**")
+        _rec_map = {}
+        for _, _r in _rec_df.iterrows():
+            _rec_map.setdefault(_r["carrier"], set()).add(_r["received_date"])
 
-    TRACKED_CARRIERS = ["ATMI", "ARVY", "HDDR", "RKNE", "TGHE"]
+        _days     = [_wk_start + timedelta(days=i) for i in range(5)]
+        _day_cols = [f"{d.strftime('%a')} {d.month}/{d.day}" for d in _days]
 
-    _conn_rd = get_db()
-    _rec_df  = pd.read_sql(
-        "SELECT carrier, received_date FROM dbr_receipts WHERE week_start = ?",
-        _conn_rd, params=(_wk_start.isoformat(),)
-    )
-    _conn_rd.close()
-
-    _rec_map = {}
-    for _, _r in _rec_df.iterrows():
-        _rec_map.setdefault(_r["carrier"], set()).add(_r["received_date"])
-
-    _days     = [_wk_start + timedelta(days=i) for i in range(5)]
-    _day_cols = [f"{d.strftime('%a')} {d.month}/{d.day}" for d in _days]
-
-    _grid_rows, _missing_carriers = [], []
-    for _carrier in TRACKED_CARRIERS:
-        _row = {"Carrier": _carrier}
-        _got = False
-        for _d, _dc in zip(_days, _day_cols):
-            if _d.isoformat() in _rec_map.get(_carrier, set()):
-                _row[_dc] = "✅"
-                _got = True
+        _grid_rows, _missing_carriers = [], []
+        for _carrier in TRACKED_CARRIERS:
+            _row = {"Carrier": _carrier}
+            _got = False
+            for _d, _dc in zip(_days, _day_cols):
+                if _d.isoformat() in _rec_map.get(_carrier, set()):
+                    _row[_dc] = "✅"
+                    _got = True
+                else:
+                    _row[_dc] = ""
+            if _got:
+                _row["Status"] = "✅ Received"
+            elif _wk_start <= _today_rd:
+                _row["Status"] = "⚠️ Missing"
+                _missing_carriers.append(_carrier)
             else:
-                _row[_dc] = ""
-        if _got:
-            _row["Status"] = "✅ Received"
-        elif _wk_start <= _today_rd:
-            _row["Status"] = "⚠️ Missing"
-            _missing_carriers.append(_carrier)
-        else:
-            _row["Status"] = "—"
-        _grid_rows.append(_row)
+                _row["Status"] = "—"
+            _grid_rows.append(_row)
 
-    _grid_df = pd.DataFrame(_grid_rows)
-    st.dataframe(
-        _grid_df, use_container_width=True, hide_index=True,
-        column_config={
-            "Carrier": st.column_config.TextColumn("Carrier", width="small"),
-            "Status":  st.column_config.TextColumn("Status",  width="medium"),
-            **{dc: st.column_config.TextColumn(dc, width="small") for dc in _day_cols},
-        },
-    )
+        _grid_df = pd.DataFrame(_grid_rows)
+        st.dataframe(
+            _grid_df, use_container_width=True, hide_index=True,
+            column_config={
+                "Carrier": st.column_config.TextColumn("Carrier", width="small"),
+                "Status":  st.column_config.TextColumn("Status",  width="medium"),
+                **{dc: st.column_config.TextColumn(dc, width="small") for dc in _day_cols},
+            },
+        )
 
-    if _missing_carriers and _wk_start <= _today_rd:
-        st.warning(f"**{len(_missing_carriers)} carrier(s) missing this week:** {', '.join(_missing_carriers)}")
-        for _mc in _missing_carriers:
-            with st.expander(f"📧 Follow-up message — {_mc}"):
-                _tmpl = (
-                    f"Hi {_mc} Team,\n\n"
-                    f"We haven\u2019t received your container status DBR for the week of "
-                    f"{_wk_start.strftime('%B %d, %Y').lstrip('0')}. Could you please submit your weekly "
-                    f"update at your earliest convenience?\n\n"
-                    f"You can submit via the AGL carrier portal: {VENDOR_PORTAL_URL}\n\n"
-                    f"Thank you,\nAGL Robotics Logistics"
-                )
-                st.code(_tmpl.replace("\n", "\n"), language=None)
+        if _missing_carriers and _wk_start <= _today_rd:
+            st.warning(f"**{len(_missing_carriers)} carrier(s) missing this week:** {', '.join(_missing_carriers)}")
+            for _mc in _missing_carriers:
+                with st.expander(f"📧 Follow-up message — {_mc}"):
+                    _tmpl = (
+                        f"Hi {_mc} Team,\n\n"
+                        f"We haven\u2019t received your container status DBR for the week of "
+                        f"{_wk_start.strftime('%B %d, %Y').lstrip('0')}. Could you please submit your weekly "
+                        f"update at your earliest convenience?\n\n"
+                        f"You can submit via the AGL carrier portal: {VENDOR_PORTAL_URL}\n\n"
+                        f"Thank you,\nAGL Robotics Logistics"
+                    )
+                    st.code(_tmpl.replace("\n", "\n"), language=None)
 
-    st.divider()
+        st.divider()
 
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # Bulk DBR File Upload
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    st.markdown("### 📤 Submit DBR Files")
-    st.caption("Upload one or more files in one shot — mix carriers, mix weeks. Carrier and file date are auto-detected from the filename; override either if needed.")
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        # Bulk DBR File Upload
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        st.markdown("### 📤 Submit DBR Files")
+        st.caption("Upload one or more files in one shot — mix carriers, mix weeks. Carrier and file date are auto-detected from the filename; override either if needed.")
 
-    def _detect_carrier_from_name(fname: str) -> str:
-        fn = fname.upper()
-        for sc in ["ATMI", "ARVY", "RKNE", "TGHE"]:
-            if sc in fn: return sc
-        if "HUDD" in fn or "HDDR" in fn: return "HDDR"
-        return ""
+        def _detect_carrier_from_name(fname: str) -> str:
+            fn = fname.upper()
+            for sc in ["ATMI", "ARVY", "RKNE", "TGHE"]:
+                if sc in fn: return sc
+            if "HUDD" in fn or "HDDR" in fn: return "HDDR"
+            return ""
 
-    def _detect_date_from_name(fname: str) -> date:
-        import re as _re
-        for pat in [r"(\d{1,2})[.\-](\d{1,2})[.\-](\d{2,4})", r"(\d{2})(\d{2})(\d{2,4})"]:
-            m = _re.search(pat, fname)
-            if m:
-                try:
-                    mo, dy, yr = int(m.group(1)), int(m.group(2)), int(m.group(3))
-                    if yr < 100: yr += 2000
-                    if 1 <= mo <= 12 and 1 <= dy <= 31:
-                        return date(yr, mo, dy)
-                except Exception:
-                    pass
-        return datetime.now(_EASTERN).date()
+        def _detect_date_from_name(fname: str) -> date:
+            import re as _re
+            for pat in [r"(\d{1,2})[.\-](\d{1,2})[.\-](\d{2,4})", r"(\d{2})(\d{2})(\d{2,4})"]:
+                m = _re.search(pat, fname)
+                if m:
+                    try:
+                        mo, dy, yr = int(m.group(1)), int(m.group(2)), int(m.group(3))
+                        if yr < 100: yr += 2000
+                        if 1 <= mo <= 12 and 1 <= dy <= 31:
+                            return date(yr, mo, dy)
+                    except Exception:
+                        pass
+            return datetime.now(_EASTERN).date()
 
-    _CARRIER_OPTS = ["", "ATMI", "ARVY", "HDDR", "RKNE", "TGHE"]
+        _CARRIER_OPTS = ["", "ATMI", "ARVY", "HDDR", "RKNE", "TGHE"]
 
-    # Key counter resets the file uploader widget after a successful submit
-    if "bulk_upload_key" not in st.session_state:
-        st.session_state.bulk_upload_key = 0
+        # Key counter resets the file uploader widget after a successful submit
+        if "bulk_upload_key" not in st.session_state:
+            st.session_state.bulk_upload_key = 0
 
-    # Show toast confirmation from previous submit (fires once, then cleared)
-    if st.session_state.get("upload_toast"):
-        st.toast(st.session_state.pop("upload_toast"), icon="✅")
+        # Show toast confirmation from previous submit (fires once, then cleared)
+        if st.session_state.get("upload_toast"):
+            st.toast(st.session_state.pop("upload_toast"), icon="✅")
 
-    bulk_files = st.file_uploader(
-        "Drop DBR files here",
-        type=["xlsx", "csv"],
-        accept_multiple_files=True,
-        key=f"bulk_dbr_upload_{st.session_state.bulk_upload_key}",
-        label_visibility="collapsed",
-    )
+        bulk_files = st.file_uploader(
+            "Drop DBR files here",
+            type=["xlsx", "csv"],
+            accept_multiple_files=True,
+            key=f"bulk_dbr_upload_{st.session_state.bulk_upload_key}",
+            label_visibility="collapsed",
+        )
 
-    if bulk_files:
-        st.caption(f"{len(bulk_files)} file(s) selected — confirm carrier for each:")
+        if bulk_files:
+            st.caption(f"{len(bulk_files)} file(s) selected — confirm carrier for each:")
 
-        _file_carrier_map = {}
-        _hdr1, _hdr2, _hdr3 = st.columns([4, 1, 2])
-        _hdr2.caption("Carrier")
-        _hdr3.caption("File date — which day is this data from?")
-        for _fi, _uf in enumerate(bulk_files):
-            _det      = _detect_carrier_from_name(_uf.name)
-            _det_date = _detect_date_from_name(_uf.name)
-            _hd1, _hd2, _hd3 = st.columns([4, 1, 2])
-            with _hd1:
-                st.markdown(f"&nbsp;&nbsp;📄 `{_uf.name}`")
-            with _hd2:
-                _chosen = st.selectbox(
-                    "Carrier",
-                    _CARRIER_OPTS,
-                    index=_CARRIER_OPTS.index(_det) if _det in _CARRIER_OPTS else 0,
-                    key=f"bulk_c_{_fi}",
-                    label_visibility="collapsed",
-                )
-            with _hd3:
-                _file_date = st.date_input(
-                    "File date",
-                    value=_det_date,
-                    key=f"bulk_d_{_fi}",
-                    label_visibility="collapsed",
-                )
-            _file_carrier_map[_fi] = (_uf, _chosen, _file_date)
+            _file_carrier_map = {}
+            _hdr1, _hdr2, _hdr3 = st.columns([4, 1, 2])
+            _hdr2.caption("Carrier")
+            _hdr3.caption("File date — which day is this data from?")
+            for _fi, _uf in enumerate(bulk_files):
+                _det      = _detect_carrier_from_name(_uf.name)
+                _det_date = _detect_date_from_name(_uf.name)
+                _hd1, _hd2, _hd3 = st.columns([4, 1, 2])
+                with _hd1:
+                    st.markdown(f"&nbsp;&nbsp;📄 `{_uf.name}`")
+                with _hd2:
+                    _chosen = st.selectbox(
+                        "Carrier",
+                        _CARRIER_OPTS,
+                        index=_CARRIER_OPTS.index(_det) if _det in _CARRIER_OPTS else 0,
+                        key=f"bulk_c_{_fi}",
+                        label_visibility="collapsed",
+                    )
+                with _hd3:
+                    _file_date = st.date_input(
+                        "File date",
+                        value=_det_date,
+                        key=f"bulk_d_{_fi}",
+                        label_visibility="collapsed",
+                    )
+                _file_carrier_map[_fi] = (_uf, _chosen, _file_date)
 
-        _unassigned = [_uf.name for _, (_uf, _c, _fd) in _file_carrier_map.items() if not _c]
-        if _unassigned:
-            st.warning(f"Assign carrier for: {', '.join(_unassigned)}")
-        else:
-            # Parse all files, group by carrier
-            _all_parsed = {}
-            _parse_errs = []
-            for _fi, (_uf, _carrier, _file_date) in _file_carrier_map.items():
-                _ck = f"bulk_{_uf.name}_{_uf.size}"
-                if _ck not in st.session_state:
-                    st.session_state[_ck] = _uf.read()
-                _raw = st.session_state[_ck]
-                try:
-                    _p = parse_carrier_template(_raw, _uf.name)
-                    if _p:
-                        if _carrier not in _all_parsed:
-                            _all_parsed[_carrier] = {}
-                        for _stype, _rows in _p.items():
-                            _all_parsed[_carrier].setdefault(_stype, [])
-                            for _r in _rows:
-                                _r["_src"] = _uf.name
-                            _all_parsed[_carrier][_stype].extend(_rows)
-                    else:
-                        _parse_errs.append(f"{_uf.name}: no container data found")
-                except Exception as _e:
-                    _parse_errs.append(f"{_uf.name}: {_e}")
+            _unassigned = [_uf.name for _, (_uf, _c, _fd) in _file_carrier_map.items() if not _c]
+            if _unassigned:
+                st.warning(f"Assign carrier for: {', '.join(_unassigned)}")
+            else:
+                # Parse all files, group by carrier
+                _all_parsed = {}
+                _parse_errs = []
+                for _fi, (_uf, _carrier, _file_date) in _file_carrier_map.items():
+                    _ck = f"bulk_{_uf.name}_{_uf.size}"
+                    if _ck not in st.session_state:
+                        st.session_state[_ck] = _uf.read()
+                    _raw = st.session_state[_ck]
+                    try:
+                        _p = parse_carrier_template(_raw, _uf.name)
+                        if _p:
+                            if _carrier not in _all_parsed:
+                                _all_parsed[_carrier] = {}
+                            for _stype, _rows in _p.items():
+                                _all_parsed[_carrier].setdefault(_stype, [])
+                                for _r in _rows:
+                                    _r["_src"] = _uf.name
+                                _all_parsed[_carrier][_stype].extend(_rows)
+                        else:
+                            _parse_errs.append(f"{_uf.name}: no container data found")
+                    except Exception as _e:
+                        _parse_errs.append(f"{_uf.name}: {_e}")
 
-            for _err in _parse_errs:
-                st.warning(_err)
+                for _err in _parse_errs:
+                    st.warning(_err)
 
-            if _all_parsed:
-                _tot = sum(len(_r) for _cd in _all_parsed.values() for _r in _cd.values())
-                st.success(f"Ready: **{_tot} containers** across **{len(_all_parsed)} carrier(s)**")
+                if _all_parsed:
+                    _tot = sum(len(_r) for _cd in _all_parsed.values() for _r in _cd.values())
+                    st.success(f"Ready: **{_tot} containers** across **{len(_all_parsed)} carrier(s)**")
 
-                for _carrier, _sheets in _all_parsed.items():
-                    _ctot = sum(len(_r) for _r in _sheets.values())
-                    with st.expander(f"🔎 Preview — {_carrier} ({_ctot} containers)"):
-                        _slabels = {"delivery": "Delivery", "delivery_ilm1": "ILM1",
-                                    "delivery_ric6": "RIC6", "empty_return": "Empty Returns",
-                                    "demurrage": "Demurrage", "accessorial": "Accessorials", "ody": "ODY"}
-                        _ptabs = st.tabs([_slabels.get(_k, _k) for _k in _sheets])
-                        for _ptab, (_st, _rows) in zip(_ptabs, _sheets.items()):
-                            with _ptab:
-                                _df_p = pd.DataFrame(_rows).drop(columns=["_raw_container","_src"], errors="ignore")
-                                st.dataframe(_df_p, use_container_width=True, hide_index=True)
-
-                if st.button("✅ Confirm & Submit All", type="primary", key="bulk_submit_btn"):
-                    _logged_at = datetime.now(_EASTERN).isoformat()
-                    _conn = get_db()
-                    _logged = 0
-                    # file date per carrier from per-file date pickers
-                    _carrier_file_dates = {}
-                    for _fi, (_uf, _carrier, _fdate) in _file_carrier_map.items():
-                        if _carrier:
-                            _carrier_file_dates.setdefault(_carrier, _fdate)
                     for _carrier, _sheets in _all_parsed.items():
-                        _fdate = _carrier_file_dates.get(_carrier, datetime.now(_EASTERN).date())
-                        for _stype, _rows in _sheets.items():
-                            for _row in _rows:
-                                _conn.execute(
-                                    """INSERT OR IGNORE INTO carrier_submissions
-                                       (submitted_at, carrier_name, container_id, sheet_type,
-                                        port, terminal, fc_building, flexi_id, outgate_date,
-                                        delivery_date, status, within_sla, sla_notes,
-                                        empty_return_due, appointment_date, accessorial_type,
-                                        notes, source_file, source)
-                                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                                    (_fdate.isoformat(), _carrier, _row["container_id"], _stype,
-                                     _row.get("port"), _row.get("terminal"), _row.get("fc_building"),
-                                     _row.get("flexi_id"), _row.get("outgate_date"),
-                                     _row.get("delivery_date"), _row.get("status"),
-                                     _row.get("within_sla"), _row.get("sla_notes"),
-                                     _row.get("empty_return_due"), _row.get("appointment_date"),
-                                     _row.get("accessorial_type"), _row.get("notes"),
-                                     _row.get("_src"), "web")
-                                )
-                                _logged += 1
-                        _wk = (_fdate - timedelta(days=_fdate.weekday())).isoformat()
-                        _conn.execute(
-                            "INSERT OR IGNORE INTO dbr_receipts (carrier, week_start, received_date, received_via, logged_at) VALUES (?,?,?,?,?)",
-                            (_carrier, _wk, _fdate.isoformat(), "portal", _logged_at)
+                        _ctot = sum(len(_r) for _r in _sheets.values())
+                        with st.expander(f"🔎 Preview — {_carrier} ({_ctot} containers)"):
+                            _slabels = {"delivery": "Delivery", "delivery_ilm1": "ILM1",
+                                        "delivery_ric6": "RIC6", "empty_return": "Empty Returns",
+                                        "demurrage": "Demurrage", "accessorial": "Accessorials", "ody": "ODY"}
+                            _ptabs = st.tabs([_slabels.get(_k, _k) for _k in _sheets])
+                            for _ptab, (_st, _rows) in zip(_ptabs, _sheets.items()):
+                                with _ptab:
+                                    _df_p = pd.DataFrame(_rows).drop(columns=["_raw_container","_src"], errors="ignore")
+                                    st.dataframe(_df_p, use_container_width=True, hide_index=True)
+
+                    if st.button("✅ Confirm & Submit All", type="primary", key="bulk_submit_btn"):
+                        _logged_at = datetime.now(_EASTERN).isoformat()
+                        _conn = get_db()
+                        _logged = 0
+                        # file date per carrier from per-file date pickers
+                        _carrier_file_dates = {}
+                        for _fi, (_uf, _carrier, _fdate) in _file_carrier_map.items():
+                            if _carrier:
+                                _carrier_file_dates.setdefault(_carrier, _fdate)
+                        for _carrier, _sheets in _all_parsed.items():
+                            _fdate = _carrier_file_dates.get(_carrier, datetime.now(_EASTERN).date())
+                            for _stype, _rows in _sheets.items():
+                                for _row in _rows:
+                                    _conn.execute(
+                                        """INSERT OR IGNORE INTO carrier_submissions
+                                           (submitted_at, carrier_name, container_id, sheet_type,
+                                            port, terminal, fc_building, flexi_id, outgate_date,
+                                            delivery_date, status, within_sla, sla_notes,
+                                            empty_return_due, appointment_date, accessorial_type,
+                                            notes, source_file, source)
+                                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                                        (_fdate.isoformat(), _carrier, _row["container_id"], _stype,
+                                         _row.get("port"), _row.get("terminal"), _row.get("fc_building"),
+                                         _row.get("flexi_id"), _row.get("outgate_date"),
+                                         _row.get("delivery_date"), _row.get("status"),
+                                         _row.get("within_sla"), _row.get("sla_notes"),
+                                         _row.get("empty_return_due"), _row.get("appointment_date"),
+                                         _row.get("accessorial_type"), _row.get("notes"),
+                                         _row.get("_src"), "web")
+                                    )
+                                    _logged += 1
+                            _wk = (_fdate - timedelta(days=_fdate.weekday())).isoformat()
+                            _conn.execute(
+                                "INSERT OR IGNORE INTO dbr_receipts (carrier, week_start, received_date, received_via, logged_at) VALUES (?,?,?,?,?)",
+                                (_carrier, _wk, _fdate.isoformat(), "portal", _logged_at)
+                            )
+                        _conn.commit()
+                        _conn.close()
+                        if S3_ENABLED:
+                            data_sync.push_db_to_s3(AWS_KEY, AWS_SECRET, AWS_REGION, S3_BUCKET)
+                        _msg = f"✅ Submitted {_logged} containers across {len(_all_parsed)} carrier(s)"
+                        st.session_state["upload_toast"] = _msg
+                        st.session_state.bulk_upload_key += 1
+                        st.rerun()
+
+        st.divider()
+
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        # Manual entry (fallback)
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        with st.expander("⌨️ Enter containers manually (fallback — use file upload when possible)"):
+            st.caption("Use this only if a carrier cannot provide a file. Paste container IDs directly.")
+            with st.form("carrier_form_manual", clear_on_submit=True):
+                _fm1, _fm2 = st.columns(2)
+                with _fm1:
+                    _m_carrier  = st.selectbox("Carrier *", ["", "ATMI", "ARVY", "HDDR", "RKNE", "TGHE"], key="man_carrier")
+                    _m_terminal = st.text_input("Terminal", placeholder="EWR, BOS, CHI…", key="man_term")
+                with _fm2:
+                    _m_status = st.selectbox("Status", [
+                        "Delivery Scheduled", "Delivered pending empty return",
+                        "Empty Return Scheduled", "TERMINATED", "On Vessel",
+                        "Customs Hold", "Other",
+                    ], key="man_status")
+                    _m_notes = st.text_input("Notes", placeholder="Delays, exceptions…", key="man_notes")
+                _m_ids_text = st.text_area("Container IDs (one per line) *", height=140, key="man_ids")
+                _m_submit   = st.form_submit_button("Submit", type="primary")
+            if _m_submit:
+                if not _m_carrier:
+                    st.error("Select a carrier.")
+                elif not _m_ids_text.strip():
+                    st.error("Paste at least one container ID.")
+                else:
+                    _mids = parse_container_list(_m_ids_text)
+                    _mn   = datetime.now(_EASTERN).isoformat()
+                    _mc   = get_db()
+                    for _cid in _mids:
+                        _mc.execute(
+                            "INSERT INTO carrier_submissions (submitted_at, carrier_name, container_id, terminal, status, notes, source) VALUES (?,?,?,?,?,?,?)",
+                            (_mn, _m_carrier, normalize_container(_cid), _m_terminal.strip() or None, _m_status, _m_notes.strip() or None, "manual")
                         )
-                    _conn.commit()
-                    _conn.close()
+                    _mwk = (datetime.now(_EASTERN).date() - timedelta(days=datetime.now(_EASTERN).date().weekday())).isoformat()
+                    _mc.execute(
+                        "INSERT OR IGNORE INTO dbr_receipts (carrier, week_start, received_date, received_via, logged_at) VALUES (?,?,?,?,?)",
+                        (_m_carrier, _mwk, datetime.now(_EASTERN).date().isoformat(), "manual", _mn)
+                    )
+                    _mc.commit(); _mc.close()
                     if S3_ENABLED:
                         data_sync.push_db_to_s3(AWS_KEY, AWS_SECRET, AWS_REGION, S3_BUCKET)
-                    _msg = f"✅ Submitted {_logged} containers across {len(_all_parsed)} carrier(s)"
-                    st.session_state["upload_toast"] = _msg
-                    st.session_state.bulk_upload_key += 1
-                    st.rerun()
+                    st.success(f"Logged {len(_mids)} containers from **{_m_carrier}**")
 
-    st.divider()
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        # Submission Log
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        st.markdown("### Submission Log")
 
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # Manual entry (fallback)
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    with st.expander("⌨️ Enter containers manually (fallback — use file upload when possible)"):
-        st.caption("Use this only if a carrier cannot provide a file. Paste container IDs directly.")
-        with st.form("carrier_form_manual", clear_on_submit=True):
-            _fm1, _fm2 = st.columns(2)
-            with _fm1:
-                _m_carrier  = st.selectbox("Carrier *", ["", "ATMI", "ARVY", "HDDR", "RKNE", "TGHE"], key="man_carrier")
-                _m_terminal = st.text_input("Terminal", placeholder="EWR, BOS, CHI…", key="man_term")
-            with _fm2:
-                _m_status = st.selectbox("Status", [
-                    "Delivery Scheduled", "Delivered pending empty return",
-                    "Empty Return Scheduled", "TERMINATED", "On Vessel",
-                    "Customs Hold", "Other",
-                ], key="man_status")
-                _m_notes = st.text_input("Notes", placeholder="Delays, exceptions…", key="man_notes")
-            _m_ids_text = st.text_area("Container IDs (one per line) *", height=140, key="man_ids")
-            _m_submit   = st.form_submit_button("Submit", type="primary")
-        if _m_submit:
-            if not _m_carrier:
-                st.error("Select a carrier.")
-            elif not _m_ids_text.strip():
-                st.error("Paste at least one container ID.")
-            else:
-                _mids = parse_container_list(_m_ids_text)
-                _mn   = datetime.now(_EASTERN).isoformat()
-                _mc   = get_db()
-                for _cid in _mids:
-                    _mc.execute(
-                        "INSERT INTO carrier_submissions (submitted_at, carrier_name, container_id, terminal, status, notes, source) VALUES (?,?,?,?,?,?,?)",
-                        (_mn, _m_carrier, normalize_container(_cid), _m_terminal.strip() or None, _m_status, _m_notes.strip() or None, "manual")
-                    )
-                _mwk = (datetime.now(_EASTERN).date() - timedelta(days=datetime.now(_EASTERN).date().weekday())).isoformat()
-                _mc.execute(
-                    "INSERT OR IGNORE INTO dbr_receipts (carrier, week_start, received_date, received_via, logged_at) VALUES (?,?,?,?,?)",
-                    (_m_carrier, _mwk, datetime.now(_EASTERN).date().isoformat(), "manual", _mn)
-                )
-                _mc.commit(); _mc.close()
-                if S3_ENABLED:
-                    data_sync.push_db_to_s3(AWS_KEY, AWS_SECRET, AWS_REGION, S3_BUCKET)
-                st.success(f"Logged {len(_mids)} containers from **{_m_carrier}**")
-
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # Submission Log
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    st.markdown("### Submission Log")
-
-    _sl_conn = get_db()
-    _log_df  = pd.read_sql(
-        """SELECT submitted_at, carrier_name, container_id, sheet_type,
-                  terminal, status, notes, source_file, source
-           FROM (
-               SELECT *, ROW_NUMBER() OVER (
-                   PARTITION BY carrier_name, container_id, sheet_type
-                   ORDER BY submitted_at DESC
-               ) AS rn
-               FROM carrier_submissions
-           ) WHERE rn = 1
-           ORDER BY submitted_at DESC""",
-        _sl_conn
-    )
-    _sl_conn.close()
-    _log_df = _apply_carrier_display(_log_df)
-
-    if _log_df.empty:
-        st.info("No submissions yet.")
-    else:
-        _sc1, _sc2, _sc3 = st.columns(3)
-        with _sc1:
-            _sf_carrier = st.multiselect("Carrier", sorted(_log_df["carrier_name"].unique()), key="sl_carrier")
-        with _sc2:
-            _sf_status  = st.multiselect("Status",  sorted(_log_df["status"].dropna().unique()), key="sl_status")
-        with _sc3:
-            _sf_source  = st.multiselect("Source",  sorted(_log_df["source"].dropna().unique()), key="sl_source")
-
-        _filt = _log_df.copy()
-        if _sf_carrier: _filt = _filt[_filt["carrier_name"].isin(_sf_carrier)]
-        if _sf_status:  _filt = _filt[_filt["status"].isin(_sf_status)]
-        if _sf_source:  _filt = _filt[_filt["source"].isin(_sf_source)]
-
-        st.dataframe(_filt, use_container_width=True, hide_index=True)
-
-        _sl_buf = io.BytesIO()
-        _filt.to_excel(_sl_buf, index=False)
-        _sl_buf.seek(0)
-        st.download_button(
-            "⬇️ Export log (.xlsx)", data=_sl_buf,
-            file_name=f"carrier_log_{date.today()}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        _sl_conn = get_db()
+        _log_df  = pd.read_sql(
+            """SELECT submitted_at, carrier_name, container_id, sheet_type,
+                      terminal, status, notes, source_file, source
+               FROM (
+                   SELECT *, ROW_NUMBER() OVER (
+                       PARTITION BY carrier_name, container_id, sheet_type
+                       ORDER BY submitted_at DESC
+                   ) AS rn
+                   FROM carrier_submissions
+               ) WHERE rn = 1
+               ORDER BY submitted_at DESC""",
+            _sl_conn
         )
+        _sl_conn.close()
+        _log_df = _apply_carrier_display(_log_df)
 
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# TAB 3 — Empty Returns Dashboard
-# ══════════════════════════════════════════════════════════════════════════════
-with tab3:
-    st.subheader("Empty Returns")
-    st.caption("🎯 **Purpose:** Shows which containers still owe a terminal return after FC delivery, ranked by urgency. Overdue returns can trigger fees — this view tells you what needs carrier follow-up today.")
-    st.caption("📋 **How to use:** Upload the DBR in the sidebar, then check Overdue and Due Soon first — those need immediate carrier follow-up.")
-
-    if not dbr_sheets:
-        st.info("Upload the DBR file in the sidebar to see empty returns data.")
-    else:
-        er_raw = dbr_sheets.get("Empty Returns", pd.DataFrame()).copy()
-        if er_raw.empty:
-            st.warning("No Empty Returns sheet found in this DBR.")
+        if _log_df.empty:
+            st.info("No submissions yet.")
         else:
-            er_raw.columns = [str(c).strip() for c in er_raw.columns]
-            er_raw["Empty Return Due Date"] = pd.to_datetime(
-                er_raw["Empty Return Due Date"], errors="coerce")
-            today = pd.Timestamp(date.today())
+            _sc1, _sc2, _sc3 = st.columns(3)
+            with _sc1:
+                _sf_carrier = st.multiselect("Carrier", sorted(_log_df["carrier_name"].unique()), key="sl_carrier")
+            with _sc2:
+                _sf_status  = st.multiselect("Status",  sorted(_log_df["status"].dropna().unique()), key="sl_status")
+            with _sc3:
+                _sf_source  = st.multiselect("Source",  sorted(_log_df["source"].dropna().unique()), key="sl_source")
 
-            # Terminated = resolved. Only open containers are tracked for risk.
-            terminated = er_raw[
-                er_raw["Status"].fillna("").str.upper() == "TERMINATED"
-            ] if "Status" in er_raw.columns else pd.DataFrame()
+            _filt = _log_df.copy()
+            if _sf_carrier: _filt = _filt[_filt["carrier_name"].isin(_sf_carrier)]
+            if _sf_status:  _filt = _filt[_filt["status"].isin(_sf_status)]
+            if _sf_source:  _filt = _filt[_filt["source"].isin(_sf_source)]
 
-            active = er_raw[
-                er_raw["Status"].fillna("").str.upper().ne("TERMINATED") &
-                er_raw["Empty Return Due Date"].notna()
-            ].copy()
-            active["Days Until Due"] = (active["Empty Return Due Date"] - today).dt.days
-            active["Alert"] = active["Days Until Due"].apply(
-                lambda d: "OVERDUE" if d < 0 else ("Due soon" if d <= 3 else "OK")
+            st.dataframe(_filt, use_container_width=True, hide_index=True)
+
+            _sl_buf = io.BytesIO()
+            _filt.to_excel(_sl_buf, index=False)
+            _sl_buf.seek(0)
+            st.download_button(
+                "⬇️ Export log (.xlsx)", data=_sl_buf,
+                file_name=f"carrier_log_{date.today()}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
 
-            overdue  = active[active["Days Until Due"] < 0]
-            due_soon = active[(active["Days Until Due"] >= 0) & (active["Days Until Due"] <= 3)]
-            on_track = active[active["Days Until Due"] > 3]
-
-            m1, m2, m3, m4, m5 = st.columns(5)
-            m1.metric("Open",         len(active))
-            m2.metric("Overdue",      len(overdue))
-            m3.metric("Due ≤ 3 days", len(due_soon))
-            m4.metric("On track",     len(on_track))
-            m5.metric("Terminated",   len(terminated), help="Return confirmed or obligation closed — no action needed")
-            st.divider()
-
-            view = st.radio(
-                "Show",
-                ["Overdue", "Due Soon (≤3 days)", "All Open"],
-                horizontal=True,
-            )
-            display = (
-                overdue  if view == "Overdue" else
-                due_soon if view == "Due Soon (≤3 days)" else
-                active
-            )
-
-            show_cols = [c for c in [
-                "Alert", "Container #", "Terminal",
-                "Empty Return Due Date", "Appointment Date",
-                "Status", "Days Until Due", "If Outside Window - Reason",
-            ] if c in display.columns]
-
-            if display.empty:
-                st.success("No containers in this category.")
-            else:
-                st.dataframe(
-                    display[show_cols].sort_values("Days Until Due", ascending=True)
-                    if "Days Until Due" in display.columns else display[show_cols],
-                    use_container_width=True, hide_index=True,
-                )
-                buf = io.BytesIO()
-                display.to_excel(buf, index=False)
-                buf.seek(0)
-                st.download_button(
-                    "Export (.xlsx)", data=buf,
-                    file_name=f"empty_returns_{date.today()}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                )
-
-            # Terminated — collapsed by default, clearly labelled as resolved
-            if not terminated.empty:
-                with st.expander(f"Terminated / Resolved ({len(terminated)} containers)", expanded=False):
-                    st.caption("These containers have had their return obligation closed. No action needed.")
-                    term_cols = [c for c in ["Container #", "Terminal", "Empty Return Due Date",
-                                              "Status", "If Outside Window - Reason"]
-                                 if c in terminated.columns]
-                    st.dataframe(terminated[term_cols] if term_cols else terminated,
-                                 use_container_width=True, hide_index=True)
-
-# ══════════════════════════════════════════════════════════════════════════════
-# TAB 4 — Carrier Data (structured view of all submissions)
-# ══════════════════════════════════════════════════════════════════════════════
-with tab4:
-    st.subheader("Carrier Data")
-    st.caption("🎯 **Purpose:** A full record of every container status submission from carriers. Use this to verify what a carrier reported, check SLA performance, or audit delivery and return activity.")
-    st.caption("📋 **How to use:** Filter by carrier or sheet type at the top, then drill into sub-tabs for Delivery, Empty Returns, Demurrage, and Accessorials.")
-
-    conn = get_db()
-    all_df = pd.read_sql(
-        """SELECT submitted_at, carrier_name, container_id, sheet_type,
-                  port, terminal, fc_building, delivery_date, status,
-                  within_sla, empty_return_due, appointment_date,
-                  accessorial_type, notes, source
-           FROM (
-               SELECT *, ROW_NUMBER() OVER (
-                   PARTITION BY carrier_name, container_id, sheet_type
-                   ORDER BY submitted_at DESC
-               ) AS rn
-               FROM carrier_submissions
-           ) WHERE rn = 1
-           ORDER BY submitted_at DESC""",
-        conn
-    )
-    conn.close()
-    all_df = _apply_carrier_display(all_df)
-
-    if all_df.empty:
-        st.info("No carrier submissions yet.")
-    else:
-        st.caption("📌 Showing **latest status per container** — duplicate weekly file entries are collapsed. Full history is retained in the database.")
-        # top filters
-        f1, f2, f3 = st.columns(3)
-        with f1:
-            f_carrier = st.multiselect("Carrier", sorted(all_df["carrier_name"].unique()), key="cd_carrier")
-        with f2:
-            f_sheet = st.multiselect("Sheet type", sorted(all_df["sheet_type"].dropna().unique()), key="cd_sheet")
-        with f3:
-            f_sla = st.multiselect("Within SLA?", sorted(all_df["within_sla"].dropna().unique()), key="cd_sla")
-
-        filt = all_df.copy()
-        if f_carrier: filt = filt[filt["carrier_name"].isin(f_carrier)]
-        if f_sheet:   filt = filt[filt["sheet_type"].isin(f_sheet)]
-        if f_sla:     filt = filt[filt["within_sla"].isin(f_sla)]
-
-        # metrics
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Total containers", len(filt))
-        m2.metric("Carriers", filt["carrier_name"].nunique())
-        sla_counts = filt["within_sla"].value_counts()
-        m3.metric("Within SLA", int(sla_counts.get("YES", 0)))
-        m4.metric("Outside SLA", int(sla_counts.get("NO", 0)))
-
-        st.divider()
-
-        # tabbed by sheet type
-        sheet_types = sorted(filt["sheet_type"].dropna().unique())
-        if sheet_types:
-            sheet_labels = {
-                "delivery":       "Delivery",
-                "delivery_ilm1":  "ILM1",
-                "delivery_ric6":  "RIC6",
-                "empty_return":   "Empty Returns",
-                "ody":            "ODY/Storage",
-                "demurrage":      "Demurrage",
-                "accessorial":    "Accessorials",
-            }
-            stabs = st.tabs([sheet_labels.get(s, s) for s in sheet_types])
-            for stab, stype in zip(stabs, sheet_types):
-                with stab:
-                    sdf = filt[filt["sheet_type"] == stype].copy()
-                    # show only non-empty columns
-                    nonempty = [c for c in sdf.columns if sdf[c].notna().any() and sdf[c].astype(str).str.strip().ne("").any()]
-                    st.dataframe(sdf[nonempty], use_container_width=True, hide_index=True)
-
-        st.divider()
-        buf = io.BytesIO()
-        with pd.ExcelWriter(buf, engine="openpyxl") as w:
-            for stype in filt["sheet_type"].dropna().unique():
-                sdf = filt[filt["sheet_type"] == stype]
-                sdf.to_excel(w, index=False, sheet_name=stype[:31])
-        buf.seek(0)
-        st.download_button("⬇️ Export all carrier data (.xlsx)", data=buf,
-            file_name=f"carrier_data_{date.today()}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# TAB 5 — Lane Cost Simulator
-# ══════════════════════════════════════════════════════════════════════════════
-with tab5:
-    st.subheader("Lane Cost Simulator")
-    st.caption("🎯 **Purpose:** Compare drayage rates across carriers by lane and model the total cost of a delivery scenario. Use this when allocating containers across carriers or evaluating cost trade-offs.")
-    st.caption("📋 **How to use:** Check the Rate Matrix for cheapest carrier per lane, then use the Scenario Builder to model cost by entering lane and container count.")
 
-    # ── Load rate + route data ────────────────────────────────────────────────
-    conn = get_db()
-    rates_df  = pd.read_sql("SELECT * FROM rate_lanes  ORDER BY port, destination, base_rate", conn)
-    routes_df = pd.read_sql(
-        "SELECT DISTINCT node_code, fc_code, node_address, dest_port, node_type, warehouse_partner, dray_bid_done "
-        "FROM route_lanes ORDER BY node_code", conn
-    )
-    conn.close()
+    with _car_data:
+        st.subheader("Carrier Data")
+        st.caption("🎯 **Purpose:** A full record of every container status submission from carriers. Use this to verify what a carrier reported, check SLA performance, or audit delivery and return activity.")
+        st.caption("📋 **How to use:** Filter by carrier or sheet type at the top, then drill into sub-tabs for Delivery, Empty Returns, Demurrage, and Accessorials.")
 
-    if rates_df.empty:
-        st.info(
-            "No rate data loaded yet. Rate cards are imported by the AGL ops team — "
-            "contact the app admin to refresh."
+        conn = get_db()
+        all_df = pd.read_sql(
+            """SELECT submitted_at, carrier_name, container_id, sheet_type,
+                      port, terminal, fc_building, delivery_date, status,
+                      within_sla, empty_return_due, appointment_date,
+                      accessorial_type, notes, source
+               FROM (
+                   SELECT *, ROW_NUMBER() OVER (
+                       PARTITION BY carrier_name, container_id, sheet_type
+                       ORDER BY submitted_at DESC
+                   ) AS rn
+                   FROM carrier_submissions
+               ) WHERE rn = 1
+               ORDER BY submitted_at DESC""",
+            conn
         )
+        conn.close()
+        all_df = _apply_carrier_display(all_df)
 
-    if not rates_df.empty:
-        # ── Build node lookups ────────────────────────────────────────────────────
-        # rate_lanes.destination matches either node_code (A100) or fc_code (ARW0)
-        fc_to_node   = routes_df.dropna(subset=["fc_code"]).set_index("fc_code")["node_code"].to_dict()
-        node_to_fc   = routes_df.dropna(subset=["fc_code"]).set_index("node_code")["fc_code"].to_dict()
-        node_to_addr = routes_df.set_index("node_code")["node_address"].to_dict()
-        node_to_type = routes_df.set_index("node_code")["node_type"].to_dict()
-
-        # normalize destination to node_code where possible
-        rates_df["node_code"] = rates_df["destination"].apply(
-            lambda d: d if str(d) in node_to_fc else fc_to_node.get(str(d), str(d))
-        )
-
-        # ── Global filters ────────────────────────────────────────────────────────
-        gf1, gf2, gf3 = st.columns(3)
-        all_ports   = sorted(rates_df["port"].dropna().unique())
-        all_sources = sorted(rates_df["rate_source"].dropna().unique())
-        all_types   = sorted(rates_df["lane_type"].dropna().unique())
-
-        with gf1:
-            g_port = st.selectbox("Port of Arrival", ["All"] + all_ports, key="g_port")
-        with gf2:
-            g_sources = st.multiselect("Rate Source", all_sources,
-                default=["robotics_2026"] if "robotics_2026" in all_sources else all_sources,
-                key="g_sources")
-        with gf3:
-            g_types = st.multiselect("Lane Type", all_types, default=all_types, key="g_types")
-
-        rfilt = rates_df.copy()
-        if g_port != "All":
-            rfilt = rfilt[rfilt["port"] == g_port]
-        if g_sources:
-            rfilt = rfilt[rfilt["rate_source"].isin(g_sources)]
-        if g_types:
-            rfilt = rfilt[rfilt["lane_type"].isin(g_types)]
-
-        if rfilt.empty:
-            st.warning("No rates for the selected filters.")
-
-        # ── Rate Matrix ────────────────────────────────────────────────────────────
-        with st.expander("Rate Matrix — all carrier options by lane", expanded=True):
-            st.caption("Green = cheapest carrier per lane  ·  Red = most expensive  ·  — = no rate on this lane")
-
-            pivot = rfilt.pivot_table(
-                index=["port", "node_code"],
-                columns="carrier_name",
-                values="base_rate",
-                aggfunc="min",
-            ).reset_index()
-            pivot.columns.name = None
-            carrier_cols = [c for c in pivot.columns if c not in ["port", "node_code"]]
-
-            pivot["FC"] = pivot["node_code"].map(node_to_fc)
-            pivot["Type"] = pivot["node_code"].map(node_to_type)
-            pivot["Facility"] = pivot["node_code"].map(
-                lambda n: (node_to_addr.get(n) or "")[:55]
-            )
-
-            if carrier_cols:
-                pivot["Cheapest"] = pivot[carrier_cols].idxmin(axis=1)
-                pivot["Low $"]  = pivot[carrier_cols].min(axis=1)
-                pivot["Spread"] = pivot[carrier_cols].max(axis=1) - pivot["Low $"]
-
-            col_order = (["port", "node_code", "FC", "Type", "Facility"]
-                         + carrier_cols
-                         + ["Cheapest", "Low $", "Spread"])
-            col_order = [c for c in col_order if c in pivot.columns]
-            disp = pivot[col_order].rename(columns={"port": "Port", "node_code": "Node"}).sort_values(["Port", "Node"])
-
-            fmt = {c: "${:,.0f}" for c in carrier_cols}
-            fmt.update({"Low $": "${:,.0f}", "Spread": "${:,.0f}"})
-
-            try:
-                styled = disp.style.format(fmt, na_rep="—")
-                if len(carrier_cols) > 1:
-                    styled = (styled
-                        .highlight_min(subset=carrier_cols, axis=1, color="#c8f7c5")
-                        .highlight_max(subset=carrier_cols, axis=1, color="#fad7d7"))
-                st.dataframe(styled, use_container_width=True, hide_index=True)
-            except Exception:
-                st.dataframe(disp, use_container_width=True, hide_index=True)
-
-        st.divider()
-
-        # ── Scenario Builder ───────────────────────────────────────────────────────
-        st.markdown("### Scenario Builder")
-        st.caption("Select port → node → carrier, enter container count, build your cost projection.")
-
-        sb_ports = sorted(rfilt["port"].dropna().unique())
-        sb1, sb2, sb3, sb4 = st.columns([1.2, 1.5, 2, 1])
-
-        with sb1:
-            sb_port = st.selectbox("Port", sb_ports, key="sb_port")
-
-        sb_nodes = sorted(rfilt[rfilt["port"] == sb_port]["node_code"].dropna().unique())
-        with sb2:
-            sb_node = st.selectbox(
-                "Node", sb_nodes, key="sb_node",
-                format_func=lambda n: f"{n}  ({node_to_fc.get(n, '?')})",
-            )
-
-        carriers_here = (
-            rfilt[(rfilt["port"] == sb_port) & (rfilt["node_code"] == sb_node)]
-            [["carrier_name", "base_rate", "lane_type"]]
-            .drop_duplicates()
-            .sort_values("base_rate")
-        )
-        c_opts = [
-            f"{r.carrier_name}  |  ${r.base_rate:,.0f}  [{r.lane_type}]"
-            for _, r in carriers_here.iterrows()
-        ]
-
-        with sb3:
-            sb_carrier_sel = st.selectbox("Carrier & Rate", c_opts if c_opts else ["No rates on this lane"], key="sb_carrier")
-        with sb4:
-            sb_count = st.number_input("Containers", min_value=1, value=10, step=1, key="sb_count")
-
-        if st.button("Add Lane to Scenario", type="primary"):
-            if c_opts and sb_carrier_sel != "No rates on this lane":
-                carrier_nm = sb_carrier_sel.split("  |  $")[0].strip()
-                rate_val   = float(sb_carrier_sel.split("$")[1].split("  ")[0].replace(",", ""))
-                fc   = node_to_fc.get(sb_node, "")
-                addr = (node_to_addr.get(sb_node) or "")[:60]
-                if "scenario_v2" not in st.session_state:
-                    st.session_state.scenario_v2 = []
-                st.session_state.scenario_v2.append({
-                    "Port":       sb_port,
-                    "Node":       sb_node,
-                    "FC":         fc,
-                    "Facility":   addr,
-                    "Carrier":    carrier_nm,
-                    "Containers": sb_count,
-                    "Rate ($)":   rate_val,
-                    "Cost ($)":   round(sb_count * rate_val, 2),
-                })
-                st.rerun()
-
-        # ── Portfolio ─────────────────────────────────────────────────────────────
-        items = st.session_state.get("scenario_v2", [])
-
-        if not items:
-            st.info("Add lanes above to build your cost scenario.")
+        if all_df.empty:
+            st.info("No carrier submissions yet.")
         else:
-            sc_df = pd.DataFrame(items)
-            total_ctr  = int(sc_df["Containers"].sum())
-            total_cost = float(sc_df["Cost ($)"].sum())
-            avg_rate   = total_cost / total_ctr if total_ctr else 0
+            st.caption("📌 Showing **latest status per container** — duplicate weekly file entries are collapsed. Full history is retained in the database.")
+            # top filters
+            f1, f2, f3 = st.columns(3)
+            with f1:
+                f_carrier = st.multiselect("Carrier", sorted(all_df["carrier_name"].unique()), key="cd_carrier")
+            with f2:
+                f_sheet = st.multiselect("Sheet type", sorted(all_df["sheet_type"].dropna().unique()), key="cd_sheet")
+            with f3:
+                f_sla = st.multiselect("Within SLA?", sorted(all_df["within_sla"].dropna().unique()), key="cd_sla")
 
-            pm1, pm2, pm3 = st.columns(3)
-            pm1.metric("Total Containers",    f"{total_ctr:,}")
-            pm2.metric("Total Projected Cost", f"${total_cost:,.0f}")
-            pm3.metric("Avg Cost / Container", f"${avg_rate:,.0f}")
+            filt = all_df.copy()
+            if f_carrier: filt = filt[filt["carrier_name"].isin(f_carrier)]
+            if f_sheet:   filt = filt[filt["sheet_type"].isin(f_sheet)]
+            if f_sla:     filt = filt[filt["within_sla"].isin(f_sla)]
 
-            edited_sc = st.data_editor(
-                sc_df,
-                column_config={
-                    "Port":       st.column_config.TextColumn("Port",     disabled=True),
-                    "Node":       st.column_config.TextColumn("Node",     disabled=True),
-                    "FC":         st.column_config.TextColumn("FC",       disabled=True),
-                    "Facility":   st.column_config.TextColumn("Facility", disabled=True),
-                    "Carrier":    st.column_config.TextColumn("Carrier",  disabled=True),
-                    "Containers": st.column_config.NumberColumn("Containers", min_value=0),
-                    "Rate ($)":   st.column_config.NumberColumn("Rate ($)",   format="$%d", disabled=True),
-                    "Cost ($)":   st.column_config.NumberColumn("Cost ($)",   format="$%d", disabled=True),
-                },
-                use_container_width=True, hide_index=True, num_rows="dynamic", key="sc_editor",
-            )
-
-            # recalc costs if containers edited
-            if not edited_sc.equals(sc_df):
-                edited_sc["Cost ($)"] = edited_sc["Containers"] * edited_sc["Rate ($)"]
-                st.session_state.scenario_v2 = edited_sc.to_dict("records")
-                sc_df = edited_sc.copy()
-                total_cost = float(sc_df["Cost ($)"].sum())
-                total_ctr  = int(sc_df["Containers"].sum())
-
-            dl_c, cl_c = st.columns([3, 1])
-            with dl_c:
-                buf = io.BytesIO()
-                sc_df.to_excel(buf, index=False)
-                buf.seek(0)
-                st.download_button("⬇️ Export scenario (.xlsx)", buf,
-                    file_name=f"dray_scenario_{date.today()}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-            with cl_c:
-                if st.button("Clear All", type="secondary", use_container_width=True):
-                    st.session_state.scenario_v2 = []
-                    st.rerun()
+            # metrics
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Total containers", len(filt))
+            m2.metric("Carriers", filt["carrier_name"].nunique())
+            sla_counts = filt["within_sla"].value_counts()
+            m3.metric("Within SLA", int(sla_counts.get("YES", 0)))
+            m4.metric("Outside SLA", int(sla_counts.get("NO", 0)))
 
             st.divider()
 
-            # ── By carrier + by port breakdown ────────────────────────────────────
-            lc, rc = st.columns(2)
+            # tabbed by sheet type
+            sheet_types = sorted(filt["sheet_type"].dropna().unique())
+            if sheet_types:
+                sheet_labels = {
+                    "delivery":       "Delivery",
+                    "delivery_ilm1":  "ILM1",
+                    "delivery_ric6":  "RIC6",
+                    "empty_return":   "Empty Returns",
+                    "ody":            "ODY/Storage",
+                    "demurrage":      "Demurrage",
+                    "accessorial":    "Accessorials",
+                }
+                stabs = st.tabs([sheet_labels.get(s, s) for s in sheet_types])
+                for stab, stype in zip(stabs, sheet_types):
+                    with stab:
+                        sdf = filt[filt["sheet_type"] == stype].copy()
+                        # show only non-empty columns
+                        nonempty = [c for c in sdf.columns if sdf[c].notna().any() and sdf[c].astype(str).str.strip().ne("").any()]
+                        st.dataframe(sdf[nonempty], use_container_width=True, hide_index=True)
 
-            with lc:
-                st.markdown("#### Cost by Carrier")
-                by_c = sc_df.groupby("Carrier").agg(
-                    Containers=("Containers", "sum"),
-                    Cost=("Cost ($)", "sum"),
-                ).reset_index()
-                by_c["% Total"] = (by_c["Cost"] / total_cost * 100).round(1) if total_cost else 0
-                by_c.columns = ["Carrier", "Containers", "Cost ($)", "% Total"]
-                st.dataframe(
-                    by_c.style.format({"Cost ($)": "${:,.0f}", "% Total": "{:.1f}%"}),
-                    use_container_width=True, hide_index=True,
-                )
-                st.bar_chart(by_c.set_index("Carrier")["Cost ($)"])
-
-            with rc:
-                st.markdown("#### Cost by Port")
-                by_p = sc_df.groupby("Port").agg(
-                    Containers=("Containers", "sum"),
-                    Cost=("Cost ($)", "sum"),
-                ).reset_index()
-                by_p["% Total"] = (by_p["Cost"] / total_cost * 100).round(1) if total_cost else 0
-                by_p.columns = ["Port", "Containers", "Cost ($)", "% Total"]
-                st.dataframe(
-                    by_p.style.format({"Cost ($)": "${:,.0f}", "% Total": "{:.1f}%"}),
-                    use_container_width=True, hide_index=True,
-                )
-                st.bar_chart(by_p.set_index("Port")["Cost ($)"])
-
-            # ── Savings vs cheapest ───────────────────────────────────────────────
             st.divider()
-            st.markdown("#### Savings vs Cheapest Available")
-
-            sav_rows = []
-            for _, row in sc_df.iterrows():
-                lane_r = rfilt[(rfilt["port"] == row["Port"]) & (rfilt["node_code"] == row["Node"])]
-                if lane_r.empty:
-                    continue
-                min_idx      = lane_r["base_rate"].idxmin()
-                min_rate     = float(lane_r.loc[min_idx, "base_rate"])
-                min_carrier  = str(lane_r.loc[min_idx, "carrier_name"])
-                current_cost = float(row["Cost ($)"])
-                cheapest     = row["Containers"] * min_rate
-                sav_rows.append({
-                    "Lane":          f"{row['Port']} → {row['Node']} ({row['FC']})",
-                    "Selected":      row["Carrier"],
-                    "Rate ($)":      row["Rate ($)"],
-                    "Cheapest":      min_carrier,
-                    "Cheapest Rate": min_rate,
-                    "Containers":    row["Containers"],
-                    "Current Cost":  current_cost,
-                    "Min Cost":      cheapest,
-                    "Savings":       current_cost - cheapest,
-                })
-
-            if sav_rows:
-                sav_df = pd.DataFrame(sav_rows)
-                total_sav = float(sav_df["Savings"].sum())
-
-                if total_sav > 1:
-                    st.info(f"Switching to cheapest available on all lanes would save **${total_sav:,.0f}**")
-                else:
-                    st.success("You're already using the cheapest available carrier on all lanes.")
-
-                st.dataframe(
-                    sav_df.style.format({
-                        "Rate ($)":      "${:,.0f}",
-                        "Cheapest Rate": "${:,.0f}",
-                        "Current Cost":  "${:,.0f}",
-                        "Min Cost":      "${:,.0f}",
-                        "Savings":       "${:,.0f}",
-                    }),
-                    use_container_width=True, hide_index=True,
-                )
+            buf = io.BytesIO()
+            with pd.ExcelWriter(buf, engine="openpyxl") as w:
+                for stype in filt["sheet_type"].dropna().unique():
+                    sdf = filt[filt["sheet_type"] == stype]
+                    sdf.to_excel(w, index=False, sheet_name=stype[:31])
+            buf.seek(0)
+            st.download_button("⬇️ Export all carrier data (.xlsx)", data=buf,
+                file_name=f"carrier_data_{date.today()}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# TAB 6 — Insights
-# ══════════════════════════════════════════════════════════════════════════════
+# TAB 6 — Insights (Overview + Empty Returns + Lane Costs)
+# ─────────────────────────────────────────────────────────────────────────────
+
 with tab6:
-    st.subheader("Weekly Insights")
-    st.caption("🎯 **Purpose:** Your weekly operations briefing — auto-generated from all loaded data sources. Start here to see what needs attention before you open anything else.")
-    st.caption("📋 **How to use:** Upload the DBR and supplemental reports in the sidebar — sections activate automatically. Start with Detention & Demurrage Risk.")
+    _ins_overview, _ins_empty, _ins_lanes = st.tabs([
+        "📈 Overview", "📦 Empty Returns", "💰 Lane Costs"
+    ])
 
-    today_ts = pd.Timestamp(date.today())
+    with _ins_overview:
+        st.subheader("Weekly Insights")
+        st.caption("🎯 **Purpose:** Your weekly operations briefing — auto-generated from all loaded data sources. Start here to see what needs attention before you open anything else.")
+        st.caption("📋 **How to use:** Upload the DBR and supplemental reports in the sidebar — sections activate automatically. Start with Detention & Demurrage Risk.")
 
-    def _risk_flag(d):
-        if pd.isna(d): return "—"
-        if d < 0:   return f"{abs(int(d))}d overdue"
-        if d == 0:  return "Due today"
-        if d <= 3:  return f"{int(d)}d"
-        return f"{int(d)}d ok"
+        today_ts = pd.Timestamp(date.today())
 
-    # ── load supplemental data ────────────────────────────────────────────────
-    conn = get_db()
-    ss_df = pd.read_sql("SELECT * FROM shipment_status  ORDER BY imported_at DESC", conn)
-    il_df = pd.read_sql("SELECT * FROM inbound_loads    ORDER BY imported_at DESC", conn)
-    sub_df = pd.read_sql(
-        "SELECT submitted_at, carrier_name, container_id, sheet_type, "
-        "terminal, fc_building, status, within_sla, source FROM carrier_submissions "
-        "WHERE carrier_name IS NOT NULL AND carrier_name != '' ORDER BY submitted_at DESC",
-        conn,
-    )
-    conn.close()
+        def _risk_flag(d):
+            if pd.isna(d): return "—"
+            if d < 0:   return f"{abs(int(d))}d overdue"
+            if d == 0:  return "Due today"
+            if d <= 3:  return f"{int(d)}d"
+            return f"{int(d)}d ok"
 
-    # normalise date columns
-    for col in ["last_free_detention", "last_free_demurrage", "eta_discharge",
-                "gateout_terminal", "eta_final", "actual_arrival_final", "empty_return_time"]:
-        if col in il_df.columns:
-            il_df[col] = pd.to_datetime(il_df[col], errors="coerce")
+        # ── load supplemental data ────────────────────────────────────────────────
+        conn = get_db()
+        ss_df = pd.read_sql("SELECT * FROM shipment_status  ORDER BY imported_at DESC", conn)
+        il_df = pd.read_sql("SELECT * FROM inbound_loads    ORDER BY imported_at DESC", conn)
+        sub_df = pd.read_sql(
+            "SELECT submitted_at, carrier_name, container_id, sheet_type, "
+            "terminal, fc_building, status, within_sla, source FROM carrier_submissions "
+            "WHERE carrier_name IS NOT NULL AND carrier_name != '' ORDER BY submitted_at DESC",
+            conn,
+        )
+        conn.close()
 
-    for col in ["discharge_eta", "final_dest_eta", "container_available",
-                "container_out", "empty_return", "delivered"]:
-        if col in ss_df.columns:
-            ss_df[col] = pd.to_datetime(ss_df[col], errors="coerce")
+        # normalise date columns
+        for col in ["last_free_detention", "last_free_demurrage", "eta_discharge",
+                    "gateout_terminal", "eta_final", "actual_arrival_final", "empty_return_time"]:
+            if col in il_df.columns:
+                il_df[col] = pd.to_datetime(il_df[col], errors="coerce")
 
-    if not sub_df.empty:
-        sub_df["submitted_at"] = pd.to_datetime(sub_df["submitted_at"], errors="coerce")
+        for col in ["discharge_eta", "final_dest_eta", "container_available",
+                    "container_out", "empty_return", "delivered"]:
+            if col in ss_df.columns:
+                ss_df[col] = pd.to_datetime(ss_df[col], errors="coerce")
 
-    has_il = not il_df.empty
-    has_ss = not ss_df.empty
+        if not sub_df.empty:
+            sub_df["submitted_at"] = pd.to_datetime(sub_df["submitted_at"], errors="coerce")
 
-    # ══════════════════════════════════════════════════════════════════════
-    # SECTION 1 — DBR Snapshot
-    # ══════════════════════════════════════════════════════════════════════
-    st.markdown("### DBR Snapshot")
-    if not dbr_sheets:
-        st.info("Load a DBR in the sidebar to activate this section.")
-    else:
-        _del = dbr_sheets.get("Delivery Appointments", pd.DataFrame())
-        _er  = dbr_sheets.get("Empty Returns",         pd.DataFrame())
-        _vsl = dbr_sheets.get("On Vessel",             pd.DataFrame())
-        _dem = dbr_sheets.get("Demurrage",             pd.DataFrame())
+        has_il = not il_df.empty
+        has_ss = not ss_df.empty
 
-        overdue_ct = due_soon_ct = 0
-        if not _er.empty and "Empty Return Due Date" in _er.columns:
-            er_c = _er.copy()
-            er_c["_erd"]  = pd.to_datetime(er_c["Empty Return Due Date"], errors="coerce")
-            er_c["_days"] = (er_c["_erd"] - today_ts).dt.days
-            er_act = er_c if "Status" not in er_c.columns else \
-                     er_c[er_c["Status"].fillna("").str.upper().ne("TERMINATED")]
-            overdue_ct  = int((er_act["_days"] < 0).sum())
-            due_soon_ct = int(((er_act["_days"] >= 0) & (er_act["_days"] <= 3)).sum())
+        # ══════════════════════════════════════════════════════════════════════
+        # SECTION 1 — DBR Snapshot
+        # ══════════════════════════════════════════════════════════════════════
+        st.markdown("### DBR Snapshot")
+        if not dbr_sheets:
+            st.info("Load a DBR in the sidebar to activate this section.")
+        else:
+            _del = dbr_sheets.get("Delivery Appointments", pd.DataFrame())
+            _er  = dbr_sheets.get("Empty Returns",         pd.DataFrame())
+            _vsl = dbr_sheets.get("On Vessel",             pd.DataFrame())
+            _dem = dbr_sheets.get("Demurrage",             pd.DataFrame())
 
-        c1,c2,c3,c4,c5,c6 = st.columns(6)
-        c1.metric("Delivery Appts",    len(_del))
-        c2.metric("Empty Returns",     len(_er))
-        c3.metric("On Vessel",         len(_vsl))
-        c4.metric("Demurrage",         len(_dem))
-        c5.metric("ER Overdue",     overdue_ct)
-        c6.metric("ER Due ≤3 days", due_soon_ct)
+            overdue_ct = due_soon_ct = 0
+            if not _er.empty and "Empty Return Due Date" in _er.columns:
+                er_c = _er.copy()
+                er_c["_erd"]  = pd.to_datetime(er_c["Empty Return Due Date"], errors="coerce")
+                er_c["_days"] = (er_c["_erd"] - today_ts).dt.days
+                er_act = er_c if "Status" not in er_c.columns else \
+                         er_c[er_c["Status"].fillna("").str.upper().ne("TERMINATED")]
+                overdue_ct  = int((er_act["_days"] < 0).sum())
+                due_soon_ct = int(((er_act["_days"] >= 0) & (er_act["_days"] <= 3)).sum())
 
-        # LFD risk
-        if not _del.empty and "LFD" in _del.columns:
-            lfd = _del.copy()
-            lfd["_lfd"]  = pd.to_datetime(lfd["LFD"], errors="coerce")
-            lfd["Days to LFD"] = (lfd["_lfd"] - today_ts).dt.days
-            risk = lfd[lfd["Days to LFD"].notna() & (lfd["Days to LFD"] <= 5)].copy()
-            if not risk.empty:
-                risk["Alert"] = risk["Days to LFD"].apply(_risk_flag)
-                show = [c for c in ["Alert","Container #","Terminal ","FC/Building","Status","LFD","Days to LFD"] if c in risk.columns]
-                st.divider()
-                st.markdown(f"#### LFD Risk — {len(risk)} containers within 5 days")
-                st.dataframe(risk[show].sort_values("Days to LFD"), use_container_width=True, hide_index=True)
+            c1,c2,c3,c4,c5,c6 = st.columns(6)
+            c1.metric("Delivery Appts",    len(_del))
+            c2.metric("Empty Returns",     len(_er))
+            c3.metric("On Vessel",         len(_vsl))
+            c4.metric("Demurrage",         len(_dem))
+            c5.metric("ER Overdue",     overdue_ct)
+            c6.metric("ER Due ≤3 days", due_soon_ct)
 
-        # Status + terminal breakdown
-        if not _del.empty:
-            s_col, t_col_name = st.columns(2)
-            if "Status" in _del.columns:
-                with s_col:
-                    st.markdown("#### Delivery Status")
-                    vc = _del["Status"].fillna("Unknown").value_counts().reset_index()
-                    vc.columns = ["Status","Count"]
-                    st.dataframe(vc, use_container_width=True, hide_index=True)
-            term_col = "Terminal " if "Terminal " in _del.columns else ("Terminal" if "Terminal" in _del.columns else None)
-            if term_col:
-                with t_col_name:
-                    st.markdown("#### By Terminal")
-                    tc = _del[term_col].fillna("Unknown").value_counts().head(10).reset_index()
-                    tc.columns = ["Terminal","Count"]
-                    st.bar_chart(tc.set_index("Terminal")["Count"])
+            # LFD risk
+            if not _del.empty and "LFD" in _del.columns:
+                lfd = _del.copy()
+                lfd["_lfd"]  = pd.to_datetime(lfd["LFD"], errors="coerce")
+                lfd["Days to LFD"] = (lfd["_lfd"] - today_ts).dt.days
+                risk = lfd[lfd["Days to LFD"].notna() & (lfd["Days to LFD"] <= 5)].copy()
+                if not risk.empty:
+                    risk["Alert"] = risk["Days to LFD"].apply(_risk_flag)
+                    show = [c for c in ["Alert","Container #","Terminal ","FC/Building","Status","LFD","Days to LFD"] if c in risk.columns]
+                    st.divider()
+                    st.markdown(f"#### LFD Risk — {len(risk)} containers within 5 days")
+                    st.dataframe(risk[show].sort_values("Days to LFD"), use_container_width=True, hide_index=True)
 
-    # ══════════════════════════════════════════════════════════════════════
-    # SECTION 2 — Detention & Demurrage Risk (from Inbound Loads)
-    # ══════════════════════════════════════════════════════════════════════
-    st.divider()
-    st.markdown("### Detention & Demurrage Risk")
+            # Status + terminal breakdown
+            if not _del.empty:
+                s_col, t_col_name = st.columns(2)
+                if "Status" in _del.columns:
+                    with s_col:
+                        st.markdown("#### Delivery Status")
+                        vc = _del["Status"].fillna("Unknown").value_counts().reset_index()
+                        vc.columns = ["Status","Count"]
+                        st.dataframe(vc, use_container_width=True, hide_index=True)
+                term_col = "Terminal " if "Terminal " in _del.columns else ("Terminal" if "Terminal" in _del.columns else None)
+                if term_col:
+                    with t_col_name:
+                        st.markdown("#### By Terminal")
+                        tc = _del[term_col].fillna("Unknown").value_counts().head(10).reset_index()
+                        tc.columns = ["Terminal","Count"]
+                        st.bar_chart(tc.set_index("Terminal")["Count"])
 
-    if not has_il:
-        st.info("Upload the **Inbound Loads Report** in the sidebar to activate detention/demurrage tracking.")
-    else:
-        # detention = clock starts when container available at terminal;
-        #             container not yet gated out; last_free_detention approaching
-        det = il_df.copy()
-        det["days_to_det"] = (det["last_free_detention"] - today_ts).dt.days
-        det["days_to_dem"] = (det["last_free_demurrage"] - today_ts).dt.days
+        # ══════════════════════════════════════════════════════════════════════
+        # SECTION 2 — Detention & Demurrage Risk (from Inbound Loads)
+        # ══════════════════════════════════════════════════════════════════════
+        st.divider()
+        st.markdown("### Detention & Demurrage Risk")
 
-        # active detention risk: has free-time deadline, not yet gated out
-        det_risk = det[
-            det["last_free_detention"].notna() &
-            (det["gateout_terminal"].isna() | (det["gateout_terminal"] > today_ts)) &
-            (det["days_to_det"] <= 7)
-        ].copy()
+        if not has_il:
+            st.info("Upload the **Inbound Loads Report** in the sidebar to activate detention/demurrage tracking.")
+        else:
+            # detention = clock starts when container available at terminal;
+            #             container not yet gated out; last_free_detention approaching
+            det = il_df.copy()
+            det["days_to_det"] = (det["last_free_detention"] - today_ts).dt.days
+            det["days_to_dem"] = (det["last_free_demurrage"] - today_ts).dt.days
 
-        dem_risk = det[
-            det["last_free_demurrage"].notna() &
-            (det["actual_arrival_discharge"].isna() | det["gateout_terminal"].isna()) &
-            (det["days_to_dem"] <= 7)
-        ].copy()
-
-        d1, d2, d3, d4 = st.columns(4)
-        det_overdue = int((det["days_to_det"].dropna() < 0).sum())
-        dem_overdue = int((det["days_to_dem"].dropna() < 0).sum())
-        d1.metric("Detention Overdue",  det_overdue)
-        d2.metric("Detention ≤7 days",  max(0, len(det_risk) - det_overdue))
-        d3.metric("Demurrage Overdue",  dem_overdue)
-        d4.metric("Demurrage ≤7 days",  max(0, len(dem_risk) - dem_overdue))
-
-        if not det_risk.empty or not dem_risk.empty:
-            drisk_tab, ddem_tab = st.tabs(["Detention Risk", "Demurrage Risk"])
-
-            with drisk_tab:
-                if det_risk.empty:
-                    st.success("No detention risk in next 7 days.")
-                else:
-                    det_risk["Alert"] = det_risk["days_to_det"].apply(_risk_flag)
-                    show_d = [c for c in ["Alert","container_id","supplier","destination_fc",
-                                          "dest_port","last_free_detention","days_to_det",
-                                          "eta_discharge","gateout_terminal"]
-                              if c in det_risk.columns]
-                    st.dataframe(
-                        det_risk[show_d].sort_values("days_to_det"),
-                        use_container_width=True, hide_index=True
-                    )
-
-            with ddem_tab:
-                if dem_risk.empty:
-                    st.success("No demurrage risk in next 7 days.")
-                else:
-                    dem_risk["Alert"] = dem_risk["days_to_dem"].apply(_risk_flag)
-                    show_m = [c for c in ["Alert","container_id","supplier","destination_fc",
-                                          "dest_port","last_free_demurrage","days_to_dem",
-                                          "eta_discharge","actual_arrival_discharge"]
-                              if c in dem_risk.columns]
-                    st.dataframe(
-                        dem_risk[show_m].sort_values("days_to_dem"),
-                        use_container_width=True, hide_index=True
-                    )
-
-    # ══════════════════════════════════════════════════════════════════════
-    # SECTION 3 — In-Transit Pipeline (from Shipment Status)
-    # ══════════════════════════════════════════════════════════════════════
-    st.divider()
-    st.markdown("### In-Transit Pipeline")
-
-    if not has_ss:
-        st.info("Upload the **Import Shipment Status** report in the sidebar to activate pipeline tracking.")
-    else:
-        # active = not yet delivered
-        active_ss = ss_df[ss_df["delivered"].isna()].copy() if "delivered" in ss_df.columns else ss_df.copy()
-
-        p1,p2,p3,p4 = st.columns(4)
-        p1.metric("Total Active Containers",  len(active_ss))
-        p2.metric("Unique FCs",     active_ss["fc"].nunique() if "fc" in active_ss.columns else 0)
-        p3.metric("Unique Vessels", active_ss["vessel_name"].nunique() if "vessel_name" in active_ss.columns else 0)
-        p4.metric("Unique Carriers",active_ss["carrier_code"].nunique() if "carrier_code" in active_ss.columns else 0)
-
-        col_pip1, col_pip2 = st.columns(2)
-
-        with col_pip1:
-            st.markdown("#### By Status")
-            if "current_status" in active_ss.columns:
-                sc = active_ss["current_status"].fillna("Unknown").value_counts().reset_index()
-                sc.columns = ["Status","Containers"]
-                st.dataframe(sc, use_container_width=True, hide_index=True)
-
-        with col_pip2:
-            st.markdown("#### By Destination FC")
-            if "fc" in active_ss.columns:
-                fc_c = active_ss["fc"].fillna("Unknown").value_counts().head(12).reset_index()
-                fc_c.columns = ["FC","Containers"]
-                st.bar_chart(fc_c.set_index("FC")["Containers"])
-
-        # ETA table: upcoming arrivals in next 30 days
-        if "discharge_eta" in active_ss.columns:
-            soon = active_ss[
-                active_ss["discharge_eta"].notna() &
-                (active_ss["discharge_eta"] >= today_ts) &
-                (active_ss["discharge_eta"] <= today_ts + pd.Timedelta(days=30))
+            # active detention risk: has free-time deadline, not yet gated out
+            det_risk = det[
+                det["last_free_detention"].notna() &
+                (det["gateout_terminal"].isna() | (det["gateout_terminal"] > today_ts)) &
+                (det["days_to_det"] <= 7)
             ].copy()
-            if not soon.empty:
-                soon["Days to ETA"] = (soon["discharge_eta"] - today_ts).dt.days
-                st.divider()
-                st.markdown(f"#### Arriving at Port — Next 30 Days ({len(soon)} containers)")
-                show_s = [c for c in ["container_no","vendor_name","fc","vessel_name",
-                                      "discharge_city","discharge_eta","Days to ETA","current_status"]
-                          if c in soon.columns]
-                st.dataframe(
-                    soon[show_s].sort_values("Days to ETA"),
-                    use_container_width=True, hide_index=True
+
+            dem_risk = det[
+                det["last_free_demurrage"].notna() &
+                (det["actual_arrival_discharge"].isna() | det["gateout_terminal"].isna()) &
+                (det["days_to_dem"] <= 7)
+            ].copy()
+
+            d1, d2, d3, d4 = st.columns(4)
+            det_overdue = int((det["days_to_det"].dropna() < 0).sum())
+            dem_overdue = int((det["days_to_dem"].dropna() < 0).sum())
+            d1.metric("Detention Overdue",  det_overdue)
+            d2.metric("Detention ≤7 days",  max(0, len(det_risk) - det_overdue))
+            d3.metric("Demurrage Overdue",  dem_overdue)
+            d4.metric("Demurrage ≤7 days",  max(0, len(dem_risk) - dem_overdue))
+
+            if not det_risk.empty or not dem_risk.empty:
+                drisk_tab, ddem_tab = st.tabs(["Detention Risk", "Demurrage Risk"])
+
+                with drisk_tab:
+                    if det_risk.empty:
+                        st.success("No detention risk in next 7 days.")
+                    else:
+                        det_risk["Alert"] = det_risk["days_to_det"].apply(_risk_flag)
+                        show_d = [c for c in ["Alert","container_id","supplier","destination_fc",
+                                              "dest_port","last_free_detention","days_to_det",
+                                              "eta_discharge","gateout_terminal"]
+                                  if c in det_risk.columns]
+                        st.dataframe(
+                            det_risk[show_d].sort_values("days_to_det"),
+                            use_container_width=True, hide_index=True
+                        )
+
+                with ddem_tab:
+                    if dem_risk.empty:
+                        st.success("No demurrage risk in next 7 days.")
+                    else:
+                        dem_risk["Alert"] = dem_risk["days_to_dem"].apply(_risk_flag)
+                        show_m = [c for c in ["Alert","container_id","supplier","destination_fc",
+                                              "dest_port","last_free_demurrage","days_to_dem",
+                                              "eta_discharge","actual_arrival_discharge"]
+                                  if c in dem_risk.columns]
+                        st.dataframe(
+                            dem_risk[show_m].sort_values("days_to_dem"),
+                            use_container_width=True, hide_index=True
+                        )
+
+        # ══════════════════════════════════════════════════════════════════════
+        # SECTION 3 — In-Transit Pipeline (from Shipment Status)
+        # ══════════════════════════════════════════════════════════════════════
+        st.divider()
+        st.markdown("### In-Transit Pipeline")
+
+        if not has_ss:
+            st.info("Upload the **Import Shipment Status** report in the sidebar to activate pipeline tracking.")
+        else:
+            # active = not yet delivered
+            active_ss = ss_df[ss_df["delivered"].isna()].copy() if "delivered" in ss_df.columns else ss_df.copy()
+
+            p1,p2,p3,p4 = st.columns(4)
+            p1.metric("Total Active Containers",  len(active_ss))
+            p2.metric("Unique FCs",     active_ss["fc"].nunique() if "fc" in active_ss.columns else 0)
+            p3.metric("Unique Vessels", active_ss["vessel_name"].nunique() if "vessel_name" in active_ss.columns else 0)
+            p4.metric("Unique Carriers",active_ss["carrier_code"].nunique() if "carrier_code" in active_ss.columns else 0)
+
+            col_pip1, col_pip2 = st.columns(2)
+
+            with col_pip1:
+                st.markdown("#### By Status")
+                if "current_status" in active_ss.columns:
+                    sc = active_ss["current_status"].fillna("Unknown").value_counts().reset_index()
+                    sc.columns = ["Status","Containers"]
+                    st.dataframe(sc, use_container_width=True, hide_index=True)
+
+            with col_pip2:
+                st.markdown("#### By Destination FC")
+                if "fc" in active_ss.columns:
+                    fc_c = active_ss["fc"].fillna("Unknown").value_counts().head(12).reset_index()
+                    fc_c.columns = ["FC","Containers"]
+                    st.bar_chart(fc_c.set_index("FC")["Containers"])
+
+            # ETA table: upcoming arrivals in next 30 days
+            if "discharge_eta" in active_ss.columns:
+                soon = active_ss[
+                    active_ss["discharge_eta"].notna() &
+                    (active_ss["discharge_eta"] >= today_ts) &
+                    (active_ss["discharge_eta"] <= today_ts + pd.Timedelta(days=30))
+                ].copy()
+                if not soon.empty:
+                    soon["Days to ETA"] = (soon["discharge_eta"] - today_ts).dt.days
+                    st.divider()
+                    st.markdown(f"#### Arriving at Port — Next 30 Days ({len(soon)} containers)")
+                    show_s = [c for c in ["container_no","vendor_name","fc","vessel_name",
+                                          "discharge_city","discharge_eta","Days to ETA","current_status"]
+                              if c in soon.columns]
+                    st.dataframe(
+                        soon[show_s].sort_values("Days to ETA"),
+                        use_container_width=True, hide_index=True
+                    )
+
+        # ══════════════════════════════════════════════════════════════════════
+        # SECTION 4 — Carrier Intelligence
+        # ══════════════════════════════════════════════════════════════════════
+        st.divider()
+        st.markdown("### Carrier Intelligence")
+
+        if sub_df.empty:
+            st.info("No carrier submissions yet — insights will appear as data comes in.")
+        else:
+            s1,s2,s3,s4 = st.columns(4)
+            s1.metric("Total Submissions", len(sub_df))
+            s2.metric("Unique Carriers",   sub_df["carrier_name"].nunique())
+            s3.metric("Unique Containers", sub_df["container_id"].nunique())
+            last_s = sub_df["submitted_at"].max()
+            s4.metric("Last Submission", last_s.strftime("%b %d %H:%M") if pd.notna(last_s) else "—")
+
+            ci1, ci2 = st.columns(2)
+            with ci1:
+                st.markdown("#### Submission Volume")
+                vol = sub_df.groupby("carrier_name").size().sort_values(ascending=False).reset_index()
+                vol.columns = ["Carrier","Submissions"]
+                st.bar_chart(vol.set_index("Carrier")["Submissions"])
+
+            with ci2:
+                if "within_sla" in sub_df.columns and sub_df["within_sla"].notna().any():
+                    st.markdown("#### SLA Rate by Carrier")
+                    sla = sub_df.dropna(subset=["within_sla"]).copy()
+                    sla["within_sla"] = sla["within_sla"].str.upper().str.strip()
+                    sp = sla.groupby(["carrier_name","within_sla"]).size().unstack(fill_value=0).reset_index()
+                    for c in ["YES","NO"]:
+                        if c not in sp.columns: sp[c] = 0
+                    sp["Total"] = sp["YES"] + sp["NO"]
+                    sp["SLA %"] = (sp["YES"] / sp["Total"].replace(0,1) * 100).round(1)
+                    sp = sp.rename(columns={"carrier_name":"Carrier","YES":"Within SLA","NO":"Outside SLA"})
+                    sp = sp[["Carrier","Within SLA","Outside SLA","Total","SLA %"]].sort_values("SLA %",ascending=False)
+                    try:
+                        st.dataframe(
+                            sp.style.format({"SLA %":"{:.1f}%"})
+                              .background_gradient(subset=["SLA %"],cmap="RdYlGn",vmin=0,vmax=100),
+                            use_container_width=True, hide_index=True
+                        )
+                    except Exception:
+                        st.dataframe(sp, use_container_width=True, hide_index=True)
+
+            # freshness
+            fresh = (sub_df.groupby("carrier_name")["submitted_at"].max()
+                     .reset_index().rename(columns={"carrier_name":"Carrier","submitted_at":"Last Submitted"})
+                     .sort_values("Last Submitted",ascending=False))
+            # Strip tz-awareness before arithmetic — submitted_at may be naive or tz-aware
+            _ls_naive = fresh["Last Submitted"].apply(
+                lambda x: x.tz_localize(None) if pd.notna(x) and getattr(x, "tzinfo", None) is not None else x
+            )
+            fresh["Days Since"] = (today_ts - _ls_naive.dt.normalize()).dt.days
+            fresh["Alert"] = fresh["Days Since"].apply(
+                lambda d: "Stale (7+ days)" if d>=7 else ("4-6 days" if d>=4 else "Recent")
+            )
+            fresh["Last Submitted"] = fresh["Last Submitted"].dt.strftime("%b %d %H:%M")
+            st.markdown("#### Submission Freshness")
+            st.dataframe(fresh, use_container_width=True, hide_index=True)
+
+        # ══════════════════════════════════════════════════════════════════════
+        # SECTION 5 — Action Items
+        # ══════════════════════════════════════════════════════════════════════
+        st.divider()
+        st.markdown("### Action Items")
+        st.caption("Priority flags auto-generated from all loaded data sources.")
+
+        actions = []
+
+        # From DBR
+        if dbr_sheets:
+            if overdue_ct > 0:
+                actions.append(("Critical", f"{overdue_ct} container(s) with overdue empty returns — DBR",
+                                "Go to Empty Returns tab for details."))
+            if due_soon_ct > 0:
+                actions.append(("Urgent", f"{due_soon_ct} container(s) with empty return due ≤3 days — DBR",
+                                "Schedule appointments immediately."))
+            if not _dem.empty:
+                actions.append(("Critical", f"{len(_dem)} container(s) currently in demurrage — DBR",
+                                "Costs accruing daily. Expedite gateout."))
+            if dbr_sheets and not _del.empty and "LFD" in _del.columns:
+                _lfd_chk = _del.copy()
+                _lfd_chk["_lfd"]  = pd.to_datetime(_lfd_chk["LFD"], errors="coerce")
+                _lfd_chk["_days"] = (_lfd_chk["_lfd"] - today_ts).dt.days
+                lfd_r = _lfd_chk[_lfd_chk["_days"].notna() & (_lfd_chk["_days"] <= 2)]
+                if not lfd_r.empty:
+                    actions.append(("Critical", f"{len(lfd_r)} container(s) with LFD within 2 days — DBR",
+                                    "Expedite or notify carrier."))
+
+        # From Inbound Loads
+        if has_il:
+            if det_overdue > 0:
+                actions.append(("Critical", f"{det_overdue} container(s) past detention free time — Inbound Loads",
+                                "Detention fees accruing. Contact dray carrier immediately."))
+            if dem_overdue > 0:
+                actions.append(("Critical", f"{dem_overdue} container(s) past demurrage free time — Inbound Loads",
+                                "Demurrage fees accruing. Contact ocean carrier / terminal."))
+            det_warn = len(det_risk) - det_overdue
+            if det_warn > 0:
+                actions.append(("Urgent", f"{det_warn} container(s) with detention deadline within 7 days",
+                                "Schedule dray pickup before free time expires."))
+
+        # From Carrier Submissions
+        if not sub_df.empty and "fresh" in dir():
+            stale = fresh[fresh["Days Since"] >= 7] if "Days Since" in fresh.columns else pd.DataFrame()
+            if not stale.empty:
+                carriers_stale = ", ".join(stale["Carrier"].tolist())
+                actions.append(("Attention", f"{len(stale)} carrier(s) with no submission in 7+ days",
+                                f"Follow up: {carriers_stale}"))
+
+        if not actions:
+            st.success("No open action items across all loaded data sources.")
+        else:
+            priority_order = {"Critical": 0, "Urgent": 1, "Attention": 2}
+            actions.sort(key=lambda x: priority_order.get(x[0], 9))
+            for priority, title, detail in actions:
+                with st.container(border=True):
+                    pr_col, txt_col = st.columns([1, 5])
+                    pr_col.markdown(f"**{priority}**")
+                    txt_col.markdown(f"**{title}**  \n{detail}")
+
+
+
+
+    with _ins_empty:
+        st.subheader("Empty Returns")
+        st.caption("🎯 **Purpose:** Shows which containers still owe a terminal return after FC delivery, ranked by urgency. Overdue returns can trigger fees — this view tells you what needs carrier follow-up today.")
+        st.caption("📋 **How to use:** Upload the DBR in the sidebar, then check Overdue and Due Soon first — those need immediate carrier follow-up.")
+
+        if not dbr_sheets:
+            st.info("Upload the DBR file in the sidebar to see empty returns data.")
+        else:
+            er_raw = dbr_sheets.get("Empty Returns", pd.DataFrame()).copy()
+            if er_raw.empty:
+                st.warning("No Empty Returns sheet found in this DBR.")
+            else:
+                er_raw.columns = [str(c).strip() for c in er_raw.columns]
+                er_raw["Empty Return Due Date"] = pd.to_datetime(
+                    er_raw["Empty Return Due Date"], errors="coerce")
+                today = pd.Timestamp(date.today())
+
+                # Terminated = resolved. Only open containers are tracked for risk.
+                terminated = er_raw[
+                    er_raw["Status"].fillna("").str.upper() == "TERMINATED"
+                ] if "Status" in er_raw.columns else pd.DataFrame()
+
+                active = er_raw[
+                    er_raw["Status"].fillna("").str.upper().ne("TERMINATED") &
+                    er_raw["Empty Return Due Date"].notna()
+                ].copy()
+                active["Days Until Due"] = (active["Empty Return Due Date"] - today).dt.days
+                active["Alert"] = active["Days Until Due"].apply(
+                    lambda d: "OVERDUE" if d < 0 else ("Due soon" if d <= 3 else "OK")
                 )
 
-    # ══════════════════════════════════════════════════════════════════════
-    # SECTION 4 — Carrier Intelligence
-    # ══════════════════════════════════════════════════════════════════════
-    st.divider()
-    st.markdown("### Carrier Intelligence")
+                overdue  = active[active["Days Until Due"] < 0]
+                due_soon = active[(active["Days Until Due"] >= 0) & (active["Days Until Due"] <= 3)]
+                on_track = active[active["Days Until Due"] > 3]
 
-    if sub_df.empty:
-        st.info("No carrier submissions yet — insights will appear as data comes in.")
-    else:
-        s1,s2,s3,s4 = st.columns(4)
-        s1.metric("Total Submissions", len(sub_df))
-        s2.metric("Unique Carriers",   sub_df["carrier_name"].nunique())
-        s3.metric("Unique Containers", sub_df["container_id"].nunique())
-        last_s = sub_df["submitted_at"].max()
-        s4.metric("Last Submission", last_s.strftime("%b %d %H:%M") if pd.notna(last_s) else "—")
+                m1, m2, m3, m4, m5 = st.columns(5)
+                m1.metric("Open",         len(active))
+                m2.metric("Overdue",      len(overdue))
+                m3.metric("Due ≤ 3 days", len(due_soon))
+                m4.metric("On track",     len(on_track))
+                m5.metric("Terminated",   len(terminated), help="Return confirmed or obligation closed — no action needed")
+                st.divider()
 
-        ci1, ci2 = st.columns(2)
-        with ci1:
-            st.markdown("#### Submission Volume")
-            vol = sub_df.groupby("carrier_name").size().sort_values(ascending=False).reset_index()
-            vol.columns = ["Carrier","Submissions"]
-            st.bar_chart(vol.set_index("Carrier")["Submissions"])
+                view = st.radio(
+                    "Show",
+                    ["Overdue", "Due Soon (≤3 days)", "All Open"],
+                    horizontal=True,
+                )
+                display = (
+                    overdue  if view == "Overdue" else
+                    due_soon if view == "Due Soon (≤3 days)" else
+                    active
+                )
 
-        with ci2:
-            if "within_sla" in sub_df.columns and sub_df["within_sla"].notna().any():
-                st.markdown("#### SLA Rate by Carrier")
-                sla = sub_df.dropna(subset=["within_sla"]).copy()
-                sla["within_sla"] = sla["within_sla"].str.upper().str.strip()
-                sp = sla.groupby(["carrier_name","within_sla"]).size().unstack(fill_value=0).reset_index()
-                for c in ["YES","NO"]:
-                    if c not in sp.columns: sp[c] = 0
-                sp["Total"] = sp["YES"] + sp["NO"]
-                sp["SLA %"] = (sp["YES"] / sp["Total"].replace(0,1) * 100).round(1)
-                sp = sp.rename(columns={"carrier_name":"Carrier","YES":"Within SLA","NO":"Outside SLA"})
-                sp = sp[["Carrier","Within SLA","Outside SLA","Total","SLA %"]].sort_values("SLA %",ascending=False)
-                try:
+                show_cols = [c for c in [
+                    "Alert", "Container #", "Terminal",
+                    "Empty Return Due Date", "Appointment Date",
+                    "Status", "Days Until Due", "If Outside Window - Reason",
+                ] if c in display.columns]
+
+                if display.empty:
+                    st.success("No containers in this category.")
+                else:
                     st.dataframe(
-                        sp.style.format({"SLA %":"{:.1f}%"})
-                          .background_gradient(subset=["SLA %"],cmap="RdYlGn",vmin=0,vmax=100),
-                        use_container_width=True, hide_index=True
+                        display[show_cols].sort_values("Days Until Due", ascending=True)
+                        if "Days Until Due" in display.columns else display[show_cols],
+                        use_container_width=True, hide_index=True,
                     )
+                    buf = io.BytesIO()
+                    display.to_excel(buf, index=False)
+                    buf.seek(0)
+                    st.download_button(
+                        "Export (.xlsx)", data=buf,
+                        file_name=f"empty_returns_{date.today()}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    )
+
+                # Terminated — collapsed by default, clearly labelled as resolved
+                if not terminated.empty:
+                    with st.expander(f"Terminated / Resolved ({len(terminated)} containers)", expanded=False):
+                        st.caption("These containers have had their return obligation closed. No action needed.")
+                        term_cols = [c for c in ["Container #", "Terminal", "Empty Return Due Date",
+                                                  "Status", "If Outside Window - Reason"]
+                                     if c in terminated.columns]
+                        st.dataframe(terminated[term_cols] if term_cols else terminated,
+                                     use_container_width=True, hide_index=True)
+
+
+    with _ins_lanes:
+        st.subheader("Lane Cost Simulator")
+        st.caption("🎯 **Purpose:** Compare drayage rates across carriers by lane and model the total cost of a delivery scenario. Use this when allocating containers across carriers or evaluating cost trade-offs.")
+        st.caption("📋 **How to use:** Check the Rate Matrix for cheapest carrier per lane, then use the Scenario Builder to model cost by entering lane and container count.")
+
+        # ── Load rate + route data ────────────────────────────────────────────────
+        conn = get_db()
+        rates_df  = pd.read_sql("SELECT * FROM rate_lanes  ORDER BY port, destination, base_rate", conn)
+        routes_df = pd.read_sql(
+            "SELECT DISTINCT node_code, fc_code, node_address, dest_port, node_type, warehouse_partner, dray_bid_done "
+            "FROM route_lanes ORDER BY node_code", conn
+        )
+        conn.close()
+
+        if rates_df.empty:
+            st.info(
+                "No rate data loaded yet. Rate cards are imported by the AGL ops team — "
+                "contact the app admin to refresh."
+            )
+
+        if not rates_df.empty:
+            # ── Build node lookups ────────────────────────────────────────────────────
+            # rate_lanes.destination matches either node_code (A100) or fc_code (ARW0)
+            fc_to_node   = routes_df.dropna(subset=["fc_code"]).set_index("fc_code")["node_code"].to_dict()
+            node_to_fc   = routes_df.dropna(subset=["fc_code"]).set_index("node_code")["fc_code"].to_dict()
+            node_to_addr = routes_df.set_index("node_code")["node_address"].to_dict()
+            node_to_type = routes_df.set_index("node_code")["node_type"].to_dict()
+
+            # normalize destination to node_code where possible
+            rates_df["node_code"] = rates_df["destination"].apply(
+                lambda d: d if str(d) in node_to_fc else fc_to_node.get(str(d), str(d))
+            )
+
+            # ── Global filters ────────────────────────────────────────────────────────
+            gf1, gf2, gf3 = st.columns(3)
+            all_ports   = sorted(rates_df["port"].dropna().unique())
+            all_sources = sorted(rates_df["rate_source"].dropna().unique())
+            all_types   = sorted(rates_df["lane_type"].dropna().unique())
+
+            with gf1:
+                g_port = st.selectbox("Port of Arrival", ["All"] + all_ports, key="g_port")
+            with gf2:
+                g_sources = st.multiselect("Rate Source", all_sources,
+                    default=["robotics_2026"] if "robotics_2026" in all_sources else all_sources,
+                    key="g_sources")
+            with gf3:
+                g_types = st.multiselect("Lane Type", all_types, default=all_types, key="g_types")
+
+            rfilt = rates_df.copy()
+            if g_port != "All":
+                rfilt = rfilt[rfilt["port"] == g_port]
+            if g_sources:
+                rfilt = rfilt[rfilt["rate_source"].isin(g_sources)]
+            if g_types:
+                rfilt = rfilt[rfilt["lane_type"].isin(g_types)]
+
+            if rfilt.empty:
+                st.warning("No rates for the selected filters.")
+
+            # ── Rate Matrix ────────────────────────────────────────────────────────────
+            with st.expander("Rate Matrix — all carrier options by lane", expanded=True):
+                st.caption("Green = cheapest carrier per lane  ·  Red = most expensive  ·  — = no rate on this lane")
+
+                pivot = rfilt.pivot_table(
+                    index=["port", "node_code"],
+                    columns="carrier_name",
+                    values="base_rate",
+                    aggfunc="min",
+                ).reset_index()
+                pivot.columns.name = None
+                carrier_cols = [c for c in pivot.columns if c not in ["port", "node_code"]]
+
+                pivot["FC"] = pivot["node_code"].map(node_to_fc)
+                pivot["Type"] = pivot["node_code"].map(node_to_type)
+                pivot["Facility"] = pivot["node_code"].map(
+                    lambda n: (node_to_addr.get(n) or "")[:55]
+                )
+
+                if carrier_cols:
+                    pivot["Cheapest"] = pivot[carrier_cols].idxmin(axis=1)
+                    pivot["Low $"]  = pivot[carrier_cols].min(axis=1)
+                    pivot["Spread"] = pivot[carrier_cols].max(axis=1) - pivot["Low $"]
+
+                col_order = (["port", "node_code", "FC", "Type", "Facility"]
+                             + carrier_cols
+                             + ["Cheapest", "Low $", "Spread"])
+                col_order = [c for c in col_order if c in pivot.columns]
+                disp = pivot[col_order].rename(columns={"port": "Port", "node_code": "Node"}).sort_values(["Port", "Node"])
+
+                fmt = {c: "${:,.0f}" for c in carrier_cols}
+                fmt.update({"Low $": "${:,.0f}", "Spread": "${:,.0f}"})
+
+                try:
+                    styled = disp.style.format(fmt, na_rep="—")
+                    if len(carrier_cols) > 1:
+                        styled = (styled
+                            .highlight_min(subset=carrier_cols, axis=1, color="#c8f7c5")
+                            .highlight_max(subset=carrier_cols, axis=1, color="#fad7d7"))
+                    st.dataframe(styled, use_container_width=True, hide_index=True)
                 except Exception:
-                    st.dataframe(sp, use_container_width=True, hide_index=True)
+                    st.dataframe(disp, use_container_width=True, hide_index=True)
 
-        # freshness
-        fresh = (sub_df.groupby("carrier_name")["submitted_at"].max()
-                 .reset_index().rename(columns={"carrier_name":"Carrier","submitted_at":"Last Submitted"})
-                 .sort_values("Last Submitted",ascending=False))
-        # Strip tz-awareness before arithmetic — submitted_at may be naive or tz-aware
-        _ls_naive = fresh["Last Submitted"].apply(
-            lambda x: x.tz_localize(None) if pd.notna(x) and getattr(x, "tzinfo", None) is not None else x
-        )
-        fresh["Days Since"] = (today_ts - _ls_naive.dt.normalize()).dt.days
-        fresh["Alert"] = fresh["Days Since"].apply(
-            lambda d: "Stale (7+ days)" if d>=7 else ("4-6 days" if d>=4 else "Recent")
-        )
-        fresh["Last Submitted"] = fresh["Last Submitted"].dt.strftime("%b %d %H:%M")
-        st.markdown("#### Submission Freshness")
-        st.dataframe(fresh, use_container_width=True, hide_index=True)
+            st.divider()
 
-    # ══════════════════════════════════════════════════════════════════════
-    # SECTION 5 — Action Items
-    # ══════════════════════════════════════════════════════════════════════
-    st.divider()
-    st.markdown("### Action Items")
-    st.caption("Priority flags auto-generated from all loaded data sources.")
+            # ── Scenario Builder ───────────────────────────────────────────────────────
+            st.markdown("### Scenario Builder")
+            st.caption("Select port → node → carrier, enter container count, build your cost projection.")
 
-    actions = []
+            sb_ports = sorted(rfilt["port"].dropna().unique())
+            sb1, sb2, sb3, sb4 = st.columns([1.2, 1.5, 2, 1])
 
-    # From DBR
-    if dbr_sheets:
-        if overdue_ct > 0:
-            actions.append(("Critical", f"{overdue_ct} container(s) with overdue empty returns — DBR",
-                            "Go to Empty Returns tab for details."))
-        if due_soon_ct > 0:
-            actions.append(("Urgent", f"{due_soon_ct} container(s) with empty return due ≤3 days — DBR",
-                            "Schedule appointments immediately."))
-        if not _dem.empty:
-            actions.append(("Critical", f"{len(_dem)} container(s) currently in demurrage — DBR",
-                            "Costs accruing daily. Expedite gateout."))
-        if dbr_sheets and not _del.empty and "LFD" in _del.columns:
-            _lfd_chk = _del.copy()
-            _lfd_chk["_lfd"]  = pd.to_datetime(_lfd_chk["LFD"], errors="coerce")
-            _lfd_chk["_days"] = (_lfd_chk["_lfd"] - today_ts).dt.days
-            lfd_r = _lfd_chk[_lfd_chk["_days"].notna() & (_lfd_chk["_days"] <= 2)]
-            if not lfd_r.empty:
-                actions.append(("Critical", f"{len(lfd_r)} container(s) with LFD within 2 days — DBR",
-                                "Expedite or notify carrier."))
+            with sb1:
+                sb_port = st.selectbox("Port", sb_ports, key="sb_port")
 
-    # From Inbound Loads
-    if has_il:
-        if det_overdue > 0:
-            actions.append(("Critical", f"{det_overdue} container(s) past detention free time — Inbound Loads",
-                            "Detention fees accruing. Contact dray carrier immediately."))
-        if dem_overdue > 0:
-            actions.append(("Critical", f"{dem_overdue} container(s) past demurrage free time — Inbound Loads",
-                            "Demurrage fees accruing. Contact ocean carrier / terminal."))
-        det_warn = len(det_risk) - det_overdue
-        if det_warn > 0:
-            actions.append(("Urgent", f"{det_warn} container(s) with detention deadline within 7 days",
-                            "Schedule dray pickup before free time expires."))
+            sb_nodes = sorted(rfilt[rfilt["port"] == sb_port]["node_code"].dropna().unique())
+            with sb2:
+                sb_node = st.selectbox(
+                    "Node", sb_nodes, key="sb_node",
+                    format_func=lambda n: f"{n}  ({node_to_fc.get(n, '?')})",
+                )
 
-    # From Carrier Submissions
-    if not sub_df.empty and "fresh" in dir():
-        stale = fresh[fresh["Days Since"] >= 7] if "Days Since" in fresh.columns else pd.DataFrame()
-        if not stale.empty:
-            carriers_stale = ", ".join(stale["Carrier"].tolist())
-            actions.append(("Attention", f"{len(stale)} carrier(s) with no submission in 7+ days",
-                            f"Follow up: {carriers_stale}"))
+            carriers_here = (
+                rfilt[(rfilt["port"] == sb_port) & (rfilt["node_code"] == sb_node)]
+                [["carrier_name", "base_rate", "lane_type"]]
+                .drop_duplicates()
+                .sort_values("base_rate")
+            )
+            c_opts = [
+                f"{r.carrier_name}  |  ${r.base_rate:,.0f}  [{r.lane_type}]"
+                for _, r in carriers_here.iterrows()
+            ]
 
-    if not actions:
-        st.success("No open action items across all loaded data sources.")
-    else:
-        priority_order = {"Critical": 0, "Urgent": 1, "Attention": 2}
-        actions.sort(key=lambda x: priority_order.get(x[0], 9))
-        for priority, title, detail in actions:
-            with st.container(border=True):
-                pr_col, txt_col = st.columns([1, 5])
-                pr_col.markdown(f"**{priority}**")
-                txt_col.markdown(f"**{title}**  \n{detail}")
+            with sb3:
+                sb_carrier_sel = st.selectbox("Carrier & Rate", c_opts if c_opts else ["No rates on this lane"], key="sb_carrier")
+            with sb4:
+                sb_count = st.number_input("Containers", min_value=1, value=10, step=1, key="sb_count")
+
+            if st.button("Add Lane to Scenario", type="primary"):
+                if c_opts and sb_carrier_sel != "No rates on this lane":
+                    carrier_nm = sb_carrier_sel.split("  |  $")[0].strip()
+                    rate_val   = float(sb_carrier_sel.split("$")[1].split("  ")[0].replace(",", ""))
+                    fc   = node_to_fc.get(sb_node, "")
+                    addr = (node_to_addr.get(sb_node) or "")[:60]
+                    if "scenario_v2" not in st.session_state:
+                        st.session_state.scenario_v2 = []
+                    st.session_state.scenario_v2.append({
+                        "Port":       sb_port,
+                        "Node":       sb_node,
+                        "FC":         fc,
+                        "Facility":   addr,
+                        "Carrier":    carrier_nm,
+                        "Containers": sb_count,
+                        "Rate ($)":   rate_val,
+                        "Cost ($)":   round(sb_count * rate_val, 2),
+                    })
+                    st.rerun()
+
+            # ── Portfolio ─────────────────────────────────────────────────────────────
+            items = st.session_state.get("scenario_v2", [])
+
+            if not items:
+                st.info("Add lanes above to build your cost scenario.")
+            else:
+                sc_df = pd.DataFrame(items)
+                total_ctr  = int(sc_df["Containers"].sum())
+                total_cost = float(sc_df["Cost ($)"].sum())
+                avg_rate   = total_cost / total_ctr if total_ctr else 0
+
+                pm1, pm2, pm3 = st.columns(3)
+                pm1.metric("Total Containers",    f"{total_ctr:,}")
+                pm2.metric("Total Projected Cost", f"${total_cost:,.0f}")
+                pm3.metric("Avg Cost / Container", f"${avg_rate:,.0f}")
+
+                edited_sc = st.data_editor(
+                    sc_df,
+                    column_config={
+                        "Port":       st.column_config.TextColumn("Port",     disabled=True),
+                        "Node":       st.column_config.TextColumn("Node",     disabled=True),
+                        "FC":         st.column_config.TextColumn("FC",       disabled=True),
+                        "Facility":   st.column_config.TextColumn("Facility", disabled=True),
+                        "Carrier":    st.column_config.TextColumn("Carrier",  disabled=True),
+                        "Containers": st.column_config.NumberColumn("Containers", min_value=0),
+                        "Rate ($)":   st.column_config.NumberColumn("Rate ($)",   format="$%d", disabled=True),
+                        "Cost ($)":   st.column_config.NumberColumn("Cost ($)",   format="$%d", disabled=True),
+                    },
+                    use_container_width=True, hide_index=True, num_rows="dynamic", key="sc_editor",
+                )
+
+                # recalc costs if containers edited
+                if not edited_sc.equals(sc_df):
+                    edited_sc["Cost ($)"] = edited_sc["Containers"] * edited_sc["Rate ($)"]
+                    st.session_state.scenario_v2 = edited_sc.to_dict("records")
+                    sc_df = edited_sc.copy()
+                    total_cost = float(sc_df["Cost ($)"].sum())
+                    total_ctr  = int(sc_df["Containers"].sum())
+
+                dl_c, cl_c = st.columns([3, 1])
+                with dl_c:
+                    buf = io.BytesIO()
+                    sc_df.to_excel(buf, index=False)
+                    buf.seek(0)
+                    st.download_button("⬇️ Export scenario (.xlsx)", buf,
+                        file_name=f"dray_scenario_{date.today()}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                with cl_c:
+                    if st.button("Clear All", type="secondary", use_container_width=True):
+                        st.session_state.scenario_v2 = []
+                        st.rerun()
+
+                st.divider()
+
+                # ── By carrier + by port breakdown ────────────────────────────────────
+                lc, rc = st.columns(2)
+
+                with lc:
+                    st.markdown("#### Cost by Carrier")
+                    by_c = sc_df.groupby("Carrier").agg(
+                        Containers=("Containers", "sum"),
+                        Cost=("Cost ($)", "sum"),
+                    ).reset_index()
+                    by_c["% Total"] = (by_c["Cost"] / total_cost * 100).round(1) if total_cost else 0
+                    by_c.columns = ["Carrier", "Containers", "Cost ($)", "% Total"]
+                    st.dataframe(
+                        by_c.style.format({"Cost ($)": "${:,.0f}", "% Total": "{:.1f}%"}),
+                        use_container_width=True, hide_index=True,
+                    )
+                    st.bar_chart(by_c.set_index("Carrier")["Cost ($)"])
+
+                with rc:
+                    st.markdown("#### Cost by Port")
+                    by_p = sc_df.groupby("Port").agg(
+                        Containers=("Containers", "sum"),
+                        Cost=("Cost ($)", "sum"),
+                    ).reset_index()
+                    by_p["% Total"] = (by_p["Cost"] / total_cost * 100).round(1) if total_cost else 0
+                    by_p.columns = ["Port", "Containers", "Cost ($)", "% Total"]
+                    st.dataframe(
+                        by_p.style.format({"Cost ($)": "${:,.0f}", "% Total": "{:.1f}%"}),
+                        use_container_width=True, hide_index=True,
+                    )
+                    st.bar_chart(by_p.set_index("Port")["Cost ($)"])
+
+                # ── Savings vs cheapest ───────────────────────────────────────────────
+                st.divider()
+                st.markdown("#### Savings vs Cheapest Available")
+
+                sav_rows = []
+                for _, row in sc_df.iterrows():
+                    lane_r = rfilt[(rfilt["port"] == row["Port"]) & (rfilt["node_code"] == row["Node"])]
+                    if lane_r.empty:
+                        continue
+                    min_idx      = lane_r["base_rate"].idxmin()
+                    min_rate     = float(lane_r.loc[min_idx, "base_rate"])
+                    min_carrier  = str(lane_r.loc[min_idx, "carrier_name"])
+                    current_cost = float(row["Cost ($)"])
+                    cheapest     = row["Containers"] * min_rate
+                    sav_rows.append({
+                        "Lane":          f"{row['Port']} → {row['Node']} ({row['FC']})",
+                        "Selected":      row["Carrier"],
+                        "Rate ($)":      row["Rate ($)"],
+                        "Cheapest":      min_carrier,
+                        "Cheapest Rate": min_rate,
+                        "Containers":    row["Containers"],
+                        "Current Cost":  current_cost,
+                        "Min Cost":      cheapest,
+                        "Savings":       current_cost - cheapest,
+                    })
+
+                if sav_rows:
+                    sav_df = pd.DataFrame(sav_rows)
+                    total_sav = float(sav_df["Savings"].sum())
+
+                    if total_sav > 1:
+                        st.info(f"Switching to cheapest available on all lanes would save **${total_sav:,.0f}**")
+                    else:
+                        st.success("You're already using the cheapest available carrier on all lanes.")
+
+                    st.dataframe(
+                        sav_df.style.format({
+                            "Rate ($)":      "${:,.0f}",
+                            "Cheapest Rate": "${:,.0f}",
+                            "Current Cost":  "${:,.0f}",
+                            "Min Cost":      "${:,.0f}",
+                            "Savings":       "${:,.0f}",
+                        }),
+                        use_container_width=True, hide_index=True,
+                    )
 
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+
 # TAB 7 — Planning / Scheduler (v2)
 # ══════════════════════════════════════════════════════════════════════════════
 
