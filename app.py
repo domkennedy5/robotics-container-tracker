@@ -1018,7 +1018,7 @@ with tab2:
     _conn_rd = get_db()
     _rec_df  = pd.read_sql(
         "SELECT carrier, received_date FROM dbr_receipts WHERE week_start = ?",
-        _conn_rd, params=[_wk_start.isoformat()]
+        _conn_rd, params=(_wk_start.isoformat(),)
     )
     _conn_rd.close()
 
@@ -4484,7 +4484,7 @@ HUDD LAX  : RE: DBR Bridges Report - HUDD - [DATE]  (Desirae/Ailua)""", language
                 if len(_hdr) == 2:
                     q += " AND (appt_date >= ? AND appt_date <= ?)"; p += [str(_hdr[0]), str(_hdr[1])]
                 q += " ORDER BY appt_date DESC LIMIT 300"
-                hdf = pd.read_sql_query(q, conn, params=p); conn.close()
+                hdf = pd.read_sql_query(q, conn, params=tuple(p)); conn.close()
                 if hdf.empty:
                     st.info("No results.")
                 else:

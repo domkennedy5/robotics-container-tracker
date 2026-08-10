@@ -115,7 +115,7 @@ _plan_df = pd.read_sql(
        FROM delivery_plan
        WHERE carrier=? AND week_start=? AND status != 'PENDING'
        ORDER BY appt_date, slot_num""",
-    conn, params=[_scac, _ws.isoformat()]
+    conn, params=(_scac, _ws.isoformat())
 )
 conn.close()
 
