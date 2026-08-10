@@ -2808,7 +2808,7 @@ def _generate_level_load_schedule(
             "scac":         scac,
             "site_code":    site_code,
             "product_type": product_type,
-            "qty":          1190,
+            "qty":          1,
             "notes":        "",
             "status":       "SCHEDULED",
         })
@@ -3002,6 +3002,7 @@ def _plan_row_table(df: pd.DataFrame, cols: list) -> pd.DataFrame:
             "Qty":         r.qty or "",
             "Notes":       r.notes or "",
             "Status":      _STATUS_BADGE.get(r.status, r.status),
+            "Confirmed":   "✅" if getattr(r, "carrier_confirmed", 0) else "—",
         }
         rows.append({c: all_cols[c] for c in cols if c in all_cols})
     return pd.DataFrame(rows) if rows else pd.DataFrame(columns=cols)
@@ -3059,7 +3060,7 @@ def _status_editor(df: pd.DataFrame, key_prefix: str):
             _cur_stat = str(sel_row.get("status") or "SCHEDULED")
             _st_idx = _PLAN_STATUSES.index(_cur_stat) if _cur_stat in _PLAN_STATUSES else 0
             new_stat  = st.selectbox("Status", _PLAN_STATUSES, index=_st_idx, key=f"{key_prefix}_stat")
-            _cur_qty  = int(sel_row.get("qty") or 1190)
+            _cur_qty  = int(sel_row.get("qty") or 1)
             new_qty   = st.number_input("Qty", value=_cur_qty, step=10, min_value=0, key=f"{key_prefix}_qty")
             new_notes = st.text_input("Notes", value=str(sel_row.get("notes") or ""), key=f"{key_prefix}_notes")
             del_flag  = st.checkbox("Delete this entry", key=f"{key_prefix}_del")
@@ -3273,18 +3274,25 @@ def _srf_auto_forecast(conn, current_week: int, year: int, n_weeks: int = 6, his
     # Fallback: aggregate delivery_plan by ISO week
     if len(rows) < 3:
         dp_rows = conn.execute(
-            "SELECT CAST(strftime('%W', week_start) AS INTEGER) as wk, COUNT(*) as cnt "
+            "SELECT week_start, COUNT(*) as cnt "
             "FROM delivery_plan "
             "WHERE week_start IS NOT NULL AND week_start != '' "
-            "GROUP BY wk ORDER BY wk DESC LIMIT ?",
+            "GROUP BY week_start ORDER BY week_start DESC LIMIT ?",
             (history,)
         ).fetchall()
-        rows = [(int(r[0]), int(r[1])) for r in dp_rows if r[0] is not None]
+        rows = []
+        for _rdp in dp_rows:
+            if _rdp[0]:
+                try:
+                    _iso = date.fromisoformat(str(_rdp[0])).isocalendar()[1]
+                    rows.append((_iso, int(_rdp[1])))
+                except Exception:
+                    pass
         method = "delivery_plan"
 
     # Default -- not enough history anywhere
     if len(rows) < 2:
-        baseline = 40
+        baseline = 65
         fcast = {(current_week + i) % 53 or 53: baseline for i in range(1, n_weeks + 1)}
         return {"forecast": fcast, "method": "default",
                 "wma_baseline": baseline, "trend_pct": 0.0,
@@ -3332,206 +3340,6 @@ with tab7:
     st.caption("🎯 **Purpose:** Build, manage, and distribute the weekly container delivery plan across all sites and carriers.")
 
     # ══════════════════════════════════════════════════════════════════════════
-    # SRF — SHORT RANGE FORECAST & CAPACITY COMPLIANCE
-    # Contract: LSP must maintain capacity for ≥120% of weekly forecasted volume.
-    # Amazon must notify LSP ≥2 weeks in advance of required capacity increases.
-    # ══════════════════════════════════════════════════════════════════════════
-    with st.expander("📦 Short Range Forecast (SRF) — Capacity Requirements", expanded=True):
-        _srf_conn = get_db()
-        _today_srf = date.today()
-        _iso_wk    = int(_today_srf.strftime("%V"))
-        _iso_yr    = _today_srf.isocalendar()[0]
-
-        st.markdown("**6-Week SRF — Auto-Generated Volume Forecast**")
-        st.caption(
-            "Projected volumes are calculated from historical weekly data using a weighted "
-            "moving average (WMA). Recent weeks are weighted higher. Trend is applied when "
-            "slope exceeds 3%/week. Override individual weeks below if needed."
-        )
-
-        # ── Auto-forecast ─────────────────────────────────────────────────────
-        _forecast_data = _srf_auto_forecast(_srf_conn, _iso_wk, _iso_yr)
-        _fc            = _forecast_data["forecast"]          # {week: projected_vol}
-        _fc_method     = _forecast_data["method"]
-        _fc_wma        = _forecast_data["wma_baseline"]
-        _fc_trend      = _forecast_data["trend_pct"]
-        _fc_vols       = _forecast_data.get("vols", [])
-        _fc_hist       = _forecast_data.get("history", [])
-
-        # Trend label
-        if abs(_fc_trend) < 2:
-            _trend_label = "Stable ➡️"
-        elif _fc_trend > 0:
-            _trend_label = f"Growing 📈 +{_fc_trend}%/wk"
-        else:
-            _trend_label = f"Declining 📉 {_fc_trend}%/wk"
-
-        _met1, _met2, _met3 = st.columns(3)
-        with _met1:
-            st.metric("WMA Baseline", f"{_fc_wma} containers",
-                      help="Weighted moving average of recent weekly volume — higher weight to newer weeks")
-        with _met2:
-            st.metric("Volume Trend", _trend_label,
-                      help="Linear regression slope over history window")
-        with _met3:
-            _hist_src = f"{len(_fc_vols)} wks · {_fc_method}"
-            st.metric("Data Source", _hist_src,
-                      help="wbr_results preferred; falls back to delivery_plan aggregates")
-
-        # Forecast table (read-only)
-        _srf_weeks = [(_iso_wk + i) % 53 or 53 for i in range(1, 7)]
-        import pandas as _pd_fc
-        _fc_rows = []
-        for _fw in _srf_weeks:
-            _proj = _fc.get(_fw, _fc_wma)
-            _cap  = _srf_required_capacity(_proj)
-            _fc_rows.append({
-                "Week":                   f"W{_fw}",
-                "Projected Volume":       _proj,
-                "Req. Capacity (×1.20)":  _cap,
-                "Trend":                  _trend_label,
-            })
-        st.dataframe(_pd_fc.DataFrame(_fc_rows), use_container_width=True, hide_index=True)
-
-        # History sparkline (if data available)
-        if _fc_vols:
-            _hist_df = _pd_fc.DataFrame({
-                "Week": [f"W{r[0]}" for r in _fc_hist],
-                "Volume": _fc_vols,
-            })
-            st.caption(f"📊 Historical volume used for forecast ({_fc_method})")
-            st.line_chart(_hist_df.set_index("Week")["Volume"], height=120, use_container_width=True)
-
-        # Override expander — optional manual adjustments
-        with st.expander("✏️ Override forecast (for known demand spikes or planned events)", expanded=False):
-            st.caption("Set a week to any value > 0 to override the auto-projected volume. Leave at 0 to keep auto.")
-            _override_cols = st.columns(6)
-            _overrides = {}
-            for _ci, _fw in enumerate(_srf_weeks):
-                with _override_cols[_ci]:
-                    _overrides[_fw] = st.number_input(
-                        f"W{_fw}", min_value=0, max_value=999,
-                        value=0, step=1, key=f"srf_override_{_fw}"
-                    )
-
-        # Merge: override wins if non-zero; otherwise use auto forecast
-        _final_forecast = {
-            _fw: (_overrides[_fw] if _overrides.get(_fw, 0) > 0 else _fc.get(_fw, _fc_wma))
-            for _fw in _srf_weeks
-        }
-
-        if st.button("💾 Save SRF Submission", type="primary", key="srf_save"):
-            _srf_save_submission(_srf_conn, _iso_wk, _iso_yr, _final_forecast)
-            _override_count = sum(1 for fw in _srf_weeks if _overrides.get(fw, 0) > 0)
-            _note = f" ({_override_count} week(s) manually overridden)" if _override_count else ""
-            st.success(
-                f"✅ SRF W{_iso_wk} saved — {sum(_final_forecast.values())} total containers "
-                f"across W{_srf_weeks[0]}–W{_srf_weeks[-1]}{_note}"
-            )
-            st.rerun()
-
-        # ── Display current SRF with capacity calcs + notice flags ──────────
-        _srf_current = _srf_get_latest(_srf_conn, _iso_yr)
-        if _srf_current:
-            _sub_wk = next(iter(_srf_current.values()))["submission_week"]
-            _srf_prior_data = _srf_get_prior(_srf_conn, _iso_yr, _sub_wk + 1)
-            _flagged = _srf_compute_notice_flags(_srf_current, _srf_prior_data, _iso_wk)
-
-            # Notice alerts — shown above the table
-            _urgent = [(fw, r) for fw, r in _flagged.items()
-                       if r["notice_status"] in ("URGENT", "DUE_NOW") and not r["notice_sent"]]
-            _scheduled = [(fw, r) for fw, r in _flagged.items()
-                          if r["notice_status"] == "SCHEDULED" and not r["notice_sent"]]
-
-            for _fw, _r in _urgent:
-                _window_label = "⚠️ WITHIN NOTICE WINDOW" if _r["notice_status"] == "DUE_NOW" else "🚨 PAST NOTICE DEADLINE"
-                st.error(
-                    f"**W{_fw} Capacity Increase — {_window_label}**  \n"
-                    f"Forecast increased {_r['prior_vol']}→{_r['vol']} containers "
-                    f"(+{_r['delta']}, +{_r['delta_pct']}%). "
-                    f"Required capacity: **{_r['cap']} moves**. "
-                    f"Notify LSP immediately."
-                )
-                if st.button(f"✉️ Mark W{_fw} Notice Sent", key=f"srf_notice_{_fw}"):
-                    _srf_mark_notice_sent(_srf_conn, _sub_wk, _iso_yr, _fw)
-                    st.rerun()
-
-            for _fw, _r in _scheduled:
-                _due_wk = _r.get("notice_due_week", _fw - 2)
-                st.warning(
-                    f"**W{_fw} Capacity Increase Detected** — Notice due by W{_due_wk}.  \n"
-                    f"Forecast: {_r['prior_vol']}→{_r['vol']} (+{_r['delta_pct']}%). "
-                    f"Required capacity: {_r['cap']} moves."
-                )
-                if st.button(f"✉️ Mark W{_fw} Notice Sent", key=f"srf_notice_sched_{_fw}"):
-                    _srf_mark_notice_sent(_srf_conn, _sub_wk, _iso_yr, _fw)
-                    st.rerun()
-
-            # SRF summary table
-            _tbl_rows = []
-            for _fw in sorted(_flagged.keys()):
-                _r = _flagged[_fw]
-                _prior_disp = str(_r["prior_vol"]) if _r["prior_vol"] is not None else "—"
-                _delta_disp = (f"+{_r['delta']} (+{_r['delta_pct']}%)" if _r["delta"] > 0
-                               else ("—" if _r["delta"] == 0 else str(_r["delta"])))
-                _status_map = {
-                    "OK":        "✅ No change",
-                    "SENT":      f"✅ Notice sent {_r.get('notice_sent_at','')[:10]}",
-                    "SCHEDULED": f"📅 Notice due W{_r.get('notice_due_week', _fw-2)}",
-                    "DUE_NOW":   "⚠️ Notice due NOW",
-                    "URGENT":    "🚨 Past deadline",
-                }
-                _tbl_rows.append({
-                    "Week":              f"W{_fw}",
-                    "Forecast (vol)":    _r["vol"],
-                    "Prior Forecast":    _prior_disp,
-                    "WoW Change":        _delta_disp,
-                    "Req. Capacity (+20%)": _r["cap"],
-                    "Notice Status":     _status_map.get(_r["notice_status"], _r["notice_status"]),
-                })
-
-            import pandas as _pd_srf
-            _srf_df = _pd_srf.DataFrame(_tbl_rows)
-            st.dataframe(_srf_df, use_container_width=True, hide_index=True)
-            st.caption(f"SRF submitted for W{_sub_wk}. Req. capacity = ceil(forecast × 1.20). "
-                       "Amazon must notify LSP ≥2 weeks in advance of capacity increases.")
-
-            # Draft notice language
-            _noticeable = [(_fw, _r) for _fw, _r in _flagged.items()
-                           if _r["delta"] > 0 and not _r["notice_sent"]]
-            if _noticeable:
-                with st.expander("📝 Draft LSP Capacity Notice", expanded=False):
-                    _notice_lines = [
-                        f"Subject: Amazon Robotics — Capacity Increase Notice (W{', W'.join(str(fw) for fw,_ in _noticeable)})",
-                        "",
-                        "Team,",
-                        "",
-                        "Per our contracted SRF obligations, Amazon is providing advance notice of "
-                        "anticipated volume increases requiring additional carrier capacity:",
-                        "",
-                    ]
-                    for _fw, _r in _noticeable:
-                        _notice_lines.append(
-                            f"  • Week W{_fw}: Forecasted volume increased to {_r['vol']} containers "
-                            f"(+{_r['delta']} from prior forecast of {_r['prior_vol']}). "
-                            f"Required carrier capacity: {_r['cap']} moves (120% of forecast)."
-                        )
-                    _notice_lines += [
-                        "",
-                        "Please confirm capacity availability and any constraints by end of week.",
-                        "",
-                        "Thank you,",
-                        "Amazon Global Logistics — Robotics Dray",
-                    ]
-                    st.text_area("Draft notice (edit before sending)",
-                                 value="\n".join(_notice_lines), height=220,
-                                 key="srf_notice_draft")
-        else:
-            st.info("No SRF saved yet for this cycle. Review the auto-generated forecast above and click **Save SRF Submission** to lock it in.")
-
-        _srf_conn.close()
-    st.markdown("---")
-
     # ── SOP header callout ────────────────────────────────────────────────────
     with st.expander("📋 Weekly Planning SOP — Quick Reference", expanded=False):
         _sop_c1, _sop_c2 = st.columns(2)
@@ -3579,6 +3387,23 @@ HUDD LAX  : RE: DBR Bridges Report - HUDD - [DATE]  (Desirae/Ailua)""", language
     with _wc2: st.metric("Total loads", len(_pdf_act))
     with _wc3: st.metric("Sites", _pdf_act["site_code"].nunique() if not _pdf_act.empty else 0)
     with _wc4: st.metric("Pending", len(_pdf[_pdf["status"]=="PENDING"]))
+
+    # ── week summary banner ──────────────────────────────────────────────────
+    _iso_wk_cur = _ws.isocalendar()[1]
+    if not _pdf_act.empty:
+        _bsc = _pdf_act.groupby("site_code")["id"].count()
+        _bsc_str = "  ·  ".join(f"{s}: **{c}**" for s, c in sorted(_bsc.items()))
+        st.info(
+            f"**W{_iso_wk_cur} ({_ws.strftime('%b %d')})** — "
+            f"{len(_pdf_act)} loads  ·  {_bsc_str}",
+            icon="📋"
+        )
+    else:
+        st.info(
+            f"**W{_iso_wk_cur} ({_ws.strftime('%b %d')})** — No loads scheduled yet.",
+            icon="📋"
+        )
+
 
 
     # ── receiving day selector (persisted per week) ───────────────────────────
@@ -3663,9 +3488,9 @@ HUDD LAX  : RE: DBR Bridges Report - HUDD - [DATE]  (Desirae/Ailua)""", language
 
     st.divider()
 
-    _tp1, _tp2, _tp3, _tp4, _tp5, _tp6, _tp7, _tp8 = st.tabs([
+    _tp1, _tp2, _tp3, _tp4, _tp5, _tp6, _tp7, _tp8, _tp9 = st.tabs([
         "Plan Builder", "All Sites", "By Site",
-        "Carrier View", "WoW / History", "Config", "Import History", "SOP Guide",
+        "Carrier View", "WoW / History", "📋 SRF", "Config", "Import History", "SOP Guide",
     ])
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -3695,6 +3520,38 @@ HUDD LAX  : RE: DBR Bridges Report - HUDD - [DATE]  (Desirae/Ailua)""", language
             f"{_cap_d}/day  \u00b7  {_cap_s}/Sat  \u00b7  {_cap_w_str}"
             f"Last appt {_lat} (weekday) / {_las} (Sat)  \u00b7  Saturday morning-only"
         )
+
+        # ── SRF gap indicator ────────────────────────────────────────────────
+        _srf_conn_pb = get_db()
+        _srf_wk_pb   = _ws.isocalendar()[1]
+        _srf_yr_pb   = _ws.isocalendar()[0]
+        _srf_target_pb = None
+        try:
+            _srf_row_pb = _srf_conn_pb.execute(
+                "SELECT forecasts_json FROM srf_submissions "
+                "WHERE year=? ORDER BY submission_week DESC LIMIT 1",
+                (_srf_yr_pb,)
+            ).fetchone()
+            if _srf_row_pb:
+                import json as _json_pb
+                _srf_fc_pb = _json_pb.loads(_srf_row_pb[0])
+                _srf_target_pb = (
+                    _srf_fc_pb.get(str(_srf_wk_pb))
+                    or _srf_fc_pb.get(_srf_wk_pb)
+                )
+        except Exception:
+            pass
+        finally:
+            _srf_conn_pb.close()
+        if _srf_target_pb:
+            _planned_pb = len(_pdf_act)
+            _gap_pb     = _srf_target_pb - _planned_pb
+            _gap_icon   = "✅" if _gap_pb <= 0 else "⚠️"
+            _gap_txt    = "On target" if _gap_pb <= 0 else f"{_gap_pb} below target"
+            st.caption(
+                f"{_gap_icon} **SRF W{_srf_wk_pb}:** {_srf_target_pb} forecasted  ·  "
+                f"{_planned_pb} planned  ·  {_gap_txt}"
+            )
 
         # Step 1: Parse stakeholder request
         with st.expander("Step 1 \u2014 Paste Stakeholder Request", expanded=True):
@@ -3946,7 +3803,7 @@ HUDD LAX  : RE: DBR Bridges Report - HUDD - [DATE]  (Desirae/Ailua)""", language
                             _add_plan_entry(
                                 _ws, _row["date"], _row["appt_time"], _row["slot_num"],
                                 _row["container"], _row["scac"], _row["site_code"],
-                                _row["product_type"], 1190,
+                                _row["product_type"], 1,
                                 f"Auto-scheduled ({_row['source']})", "SCHEDULED"
                             )
                             _as_added += 1
@@ -3987,7 +3844,7 @@ HUDD LAX  : RE: DBR Bridges Report - HUDD - [DATE]  (Desirae/Ailua)""", language
                 with sa2:
                     _s_cid     = st.text_input("Container #", placeholder="TCNU3773041", key="s_cid")
                     _s_product = st.selectbox("Product Type", _mat_opts, index=_mat_opts.index(_default_mat) if _default_mat in _mat_opts else 0, key="s_product")
-                    _s_qty     = st.number_input("Qty (units)", value=1190, step=10, min_value=0, key="s_qty")
+                    _s_qty     = st.number_input("Qty (units)", value=1, step=1, min_value=0, key="s_qty")
                 with sa3:
                     _s_date = st.date_input("Delivery Date", value=_today, key="s_date")
                     _scm_r  = _scm[(_scm["site_code"]==_s_site)&(_scm["scac"]==_s_scac)]
@@ -4052,7 +3909,7 @@ HUDD LAX  : RE: DBR Bridges Report - HUDD - [DATE]  (Desirae/Ailua)""", language
                                 _def_t2 = _scm_r2["priority_time"].iloc[0] if not _scm_r2.empty and pd.notna(_scm_r2["priority_time"].iloc[0]) else "8:30 AM"
                                 _sn2 = dict(_PLAN_SLOTS).get(_def_t2, 2)
                                 _add_plan_entry(_plan_week_start(day), day, _def_t2, _sn2,
-                                                cid, b_sc, b_si, _b_product, 1190, "", _b_status)
+                                                cid, b_sc, b_si, _b_product, 1, "", _b_status)
                                 added += 1
                         else:
                             for cid, b_sc, b_si in raw_cids:
@@ -4063,7 +3920,7 @@ HUDD LAX  : RE: DBR Bridges Report - HUDD - [DATE]  (Desirae/Ailua)""", language
                                 _at2 = _def_t2 if _b_status != "PENDING" else "TBD"
                                 _add_plan_entry(_plan_week_start(_b_date), _ad2, _at2,
                                                 _sn2 if _b_status != "PENDING" else 99,
-                                                cid, b_sc, b_si, _b_product, 1190, "", _b_status)
+                                                cid, b_sc, b_si, _b_product, 1, "", _b_status)
                                 added += 1
                         msg = f"Added {added} container(s)."
                         if skipped: msg += f" Skipped {len(skipped)} line(s)."
@@ -4105,7 +3962,7 @@ HUDD LAX  : RE: DBR Bridges Report - HUDD - [DATE]  (Desirae/Ailua)""", language
                                 _ov["container"], _ov.get("scac",""),
                                 _ov.get("site_code", _pb_site),
                                 _ov.get("product_type",""),
-                                1190, "Overflow from prior week", "PENDING"
+                                1, "Overflow from prior week", "PENDING"
                             )
                             _ov_pushed += 1
                         st.session_state.pop("pb_overflow", None)
@@ -4132,7 +3989,7 @@ HUDD LAX  : RE: DBR Bridges Report - HUDD - [DATE]  (Desirae/Ailua)""", language
             for mi, (sc, cnt) in enumerate(sorted(_sc_cnt.items())):
                 with _mc[mi % len(_mc)]: st.metric(sc, int(cnt))
             st.divider()
-            COLS = ["Day","Time","Site","Container #","Carrier","Product","Qty","Notes","Status"]
+            COLS = ["Day","Time","Site","Container #","Carrier","Product","Qty","Notes","Status","Confirmed"]
             st.dataframe(_plan_row_table(_act.sort_values(["appt_date","site_code","slot_num"]), COLS),
                          use_container_width=True, hide_index=True)
             _pend = _pdf[_pdf["status"]=="PENDING"]
@@ -4169,7 +4026,7 @@ HUDD LAX  : RE: DBR Bridges Report - HUDD - [DATE]  (Desirae/Ailua)""", language
                         f"<b style='color:{clr}'>{sc}</b><br/><span style='font-size:22px'>{cnt}</span></div>",
                         unsafe_allow_html=True)
             st.divider()
-            COLS = ["Day","Time","Container #","Carrier","Product","Qty","Notes","Status"]
+            COLS = ["Day","Time","Container #","Carrier","Product","Qty","Notes","Status","Confirmed"]
             st.dataframe(_plan_row_table(_sact.sort_values(["appt_date","slot_num"]), COLS),
                          use_container_width=True, hide_index=True)
             _sp = _sdf[_sdf["status"]=="PENDING"]
@@ -4499,7 +4356,212 @@ HUDD LAX  : RE: DBR Bridges Report - HUDD - [DATE]  (Desirae/Ailua)""", language
     # ══════════════════════════════════════════════════════════════════════════
     # CONFIG
     # ══════════════════════════════════════════════════════════════════════════
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # SRF — SHORT RANGE FORECAST
+    # ═══════════════════════════════════════════════════════════════════════
     with _tp6:
+        # Contract: LSP must maintain capacity for ≥120% of weekly forecasted volume.
+        # Amazon must notify LSP ≥2 weeks in advance of capacity increases.
+        st.caption(
+            f"▶ SRF anchored at **W{_ws.isocalendar()[1]}** — "
+            f"week of {_ws.strftime('%b %d, %Y')}. "
+            "Use the week selector above to change."
+        )
+        _srf_conn = get_db()
+        _iso_wk    = _ws.isocalendar()[1]
+        _iso_yr    = _ws.isocalendar()[0]
+
+        st.markdown("**6-Week SRF — Auto-Generated Volume Forecast**")
+        st.caption(
+            "Projected volumes are calculated from historical weekly data using a weighted "
+            "moving average (WMA). Recent weeks are weighted higher. Trend is applied when "
+            "slope exceeds 3%/week. Override individual weeks below if needed."
+        )
+
+        # ── Auto-forecast ─────────────────────────────────────────────────────
+        _forecast_data = _srf_auto_forecast(_srf_conn, _iso_wk, _iso_yr)
+        _fc            = _forecast_data["forecast"]          # {week: projected_vol}
+        _fc_method     = _forecast_data["method"]
+        _fc_wma        = _forecast_data["wma_baseline"]
+        _fc_trend      = _forecast_data["trend_pct"]
+        _fc_vols       = _forecast_data.get("vols", [])
+        _fc_hist       = _forecast_data.get("history", [])
+
+        # Trend label
+        if abs(_fc_trend) < 2:
+            _trend_label = "Stable ➡️"
+        elif _fc_trend > 0:
+            _trend_label = f"Growing 📈 +{_fc_trend}%/wk"
+        else:
+            _trend_label = f"Declining 📉 {_fc_trend}%/wk"
+
+        _met1, _met2, _met3 = st.columns(3)
+        with _met1:
+            st.metric("WMA Baseline", f"{_fc_wma} containers",
+                      help="Weighted moving average of recent weekly volume — higher weight to newer weeks")
+        with _met2:
+            st.metric("Volume Trend", _trend_label,
+                      help="Linear regression slope over history window")
+        with _met3:
+            _hist_src = f"{len(_fc_vols)} wks · {_fc_method}"
+            st.metric("Data Source", _hist_src,
+                      help="wbr_results preferred; falls back to delivery_plan aggregates")
+
+        # Forecast table (read-only)
+        _srf_weeks = [(_iso_wk + i) % 53 or 53 for i in range(1, 7)]
+        import pandas as _pd_fc
+        _fc_rows = []
+        for _fw in _srf_weeks:
+            _proj = _fc.get(_fw, _fc_wma)
+            _cap  = _srf_required_capacity(_proj)
+            _fc_rows.append({
+                "Week":                   f"W{_fw}",
+                "Projected Volume":       _proj,
+                "Req. Capacity (×1.20)":  _cap,
+                "Trend":                  _trend_label,
+            })
+        st.dataframe(_pd_fc.DataFrame(_fc_rows), use_container_width=True, hide_index=True)
+
+        # History sparkline (if data available)
+        if _fc_vols:
+            _hist_df = _pd_fc.DataFrame({
+                "Week": [f"W{r[0]}" for r in _fc_hist],
+                "Volume": _fc_vols,
+            })
+            st.caption(f"📊 Historical volume used for forecast ({_fc_method})")
+            st.line_chart(_hist_df.set_index("Week")["Volume"], height=120, use_container_width=True)
+
+        # Override expander — optional manual adjustments
+        with st.expander("✏️ Override forecast (for known demand spikes or planned events)", expanded=False):
+            st.caption("Set a week to any value > 0 to override the auto-projected volume. Leave at 0 to keep auto.")
+            _override_cols = st.columns(6)
+            _overrides = {}
+            for _ci, _fw in enumerate(_srf_weeks):
+                with _override_cols[_ci]:
+                    _overrides[_fw] = st.number_input(
+                        f"W{_fw}", min_value=0, max_value=999,
+                        value=0, step=1, key=f"srf_override_{_fw}"
+                    )
+
+        # Merge: override wins if non-zero; otherwise use auto forecast
+        _final_forecast = {
+            _fw: (_overrides[_fw] if _overrides.get(_fw, 0) > 0 else _fc.get(_fw, _fc_wma))
+            for _fw in _srf_weeks
+        }
+
+        if st.button("💾 Save SRF Submission", type="primary", key="srf_save"):
+            _srf_save_submission(_srf_conn, _iso_wk, _iso_yr, _final_forecast)
+            _override_count = sum(1 for fw in _srf_weeks if _overrides.get(fw, 0) > 0)
+            _note = f" ({_override_count} week(s) manually overridden)" if _override_count else ""
+            st.success(
+                f"✅ SRF W{_iso_wk} saved — {sum(_final_forecast.values())} total containers "
+                f"across W{_srf_weeks[0]}–W{_srf_weeks[-1]}{_note}"
+            )
+            st.rerun()
+
+        # ── Display current SRF with capacity calcs + notice flags ──────────
+        _srf_current = _srf_get_latest(_srf_conn, _iso_yr)
+        if _srf_current:
+            _sub_wk = next(iter(_srf_current.values()))["submission_week"]
+            _srf_prior_data = _srf_get_prior(_srf_conn, _iso_yr, _sub_wk + 1)
+            _flagged = _srf_compute_notice_flags(_srf_current, _srf_prior_data, _iso_wk)
+
+            # Notice alerts — shown above the table
+            _urgent = [(fw, r) for fw, r in _flagged.items()
+                       if r["notice_status"] in ("URGENT", "DUE_NOW") and not r["notice_sent"]]
+            _scheduled = [(fw, r) for fw, r in _flagged.items()
+                          if r["notice_status"] == "SCHEDULED" and not r["notice_sent"]]
+
+            for _fw, _r in _urgent:
+                _window_label = "⚠️ WITHIN NOTICE WINDOW" if _r["notice_status"] == "DUE_NOW" else "🚨 PAST NOTICE DEADLINE"
+                st.error(
+                    f"**W{_fw} Capacity Increase — {_window_label}**  \n"
+                    f"Forecast increased {_r['prior_vol']}→{_r['vol']} containers "
+                    f"(+{_r['delta']}, +{_r['delta_pct']}%). "
+                    f"Required capacity: **{_r['cap']} moves**. "
+                    f"Notify LSP immediately."
+                )
+                if st.button(f"✉️ Mark W{_fw} Notice Sent", key=f"srf_notice_{_fw}"):
+                    _srf_mark_notice_sent(_srf_conn, _sub_wk, _iso_yr, _fw)
+                    st.rerun()
+
+            for _fw, _r in _scheduled:
+                _due_wk = _r.get("notice_due_week", _fw - 2)
+                st.warning(
+                    f"**W{_fw} Capacity Increase Detected** — Notice due by W{_due_wk}.  \n"
+                    f"Forecast: {_r['prior_vol']}→{_r['vol']} (+{_r['delta_pct']}%). "
+                    f"Required capacity: {_r['cap']} moves."
+                )
+                if st.button(f"✉️ Mark W{_fw} Notice Sent", key=f"srf_notice_sched_{_fw}"):
+                    _srf_mark_notice_sent(_srf_conn, _sub_wk, _iso_yr, _fw)
+                    st.rerun()
+
+            # SRF summary table
+            _tbl_rows = []
+            for _fw in sorted(_flagged.keys()):
+                _r = _flagged[_fw]
+                _prior_disp = str(_r["prior_vol"]) if _r["prior_vol"] is not None else "—"
+                _delta_disp = (f"+{_r['delta']} (+{_r['delta_pct']}%)" if _r["delta"] > 0
+                               else ("—" if _r["delta"] == 0 else str(_r["delta"])))
+                _status_map = {
+                    "OK":        "✅ No change",
+                    "SENT":      f"✅ Notice sent {_r.get('notice_sent_at','')[:10]}",
+                    "SCHEDULED": f"📅 Notice due W{_r.get('notice_due_week', _fw-2)}",
+                    "DUE_NOW":   "⚠️ Notice due NOW",
+                    "URGENT":    "🚨 Past deadline",
+                }
+                _tbl_rows.append({
+                    "Week":              f"W{_fw}",
+                    "Forecast (vol)":    _r["vol"],
+                    "Prior Forecast":    _prior_disp,
+                    "WoW Change":        _delta_disp,
+                    "Req. Capacity (+20%)": _r["cap"],
+                    "Notice Status":     _status_map.get(_r["notice_status"], _r["notice_status"]),
+                })
+
+            import pandas as _pd_srf
+            _srf_df = _pd_srf.DataFrame(_tbl_rows)
+            st.dataframe(_srf_df, use_container_width=True, hide_index=True)
+            st.caption(f"SRF submitted for W{_sub_wk}. Req. capacity = ceil(forecast × 1.20). "
+                       "Amazon must notify LSP ≥2 weeks in advance of capacity increases.")
+
+            # Draft notice language
+            _noticeable = [(_fw, _r) for _fw, _r in _flagged.items()
+                           if _r["delta"] > 0 and not _r["notice_sent"]]
+            if _noticeable:
+                with st.expander("📝 Draft LSP Capacity Notice", expanded=False):
+                    _notice_lines = [
+                        f"Subject: Amazon Robotics — Capacity Increase Notice (W{', W'.join(str(fw) for fw,_ in _noticeable)})",
+                        "",
+                        "Team,",
+                        "",
+                        "Per our contracted SRF obligations, Amazon is providing advance notice of "
+                        "anticipated volume increases requiring additional carrier capacity:",
+                        "",
+                    ]
+                    for _fw, _r in _noticeable:
+                        _notice_lines.append(
+                            f"  • Week W{_fw}: Forecasted volume increased to {_r['vol']} containers "
+                            f"(+{_r['delta']} from prior forecast of {_r['prior_vol']}). "
+                            f"Required carrier capacity: {_r['cap']} moves (120% of forecast)."
+                        )
+                    _notice_lines += [
+                        "",
+                        "Please confirm capacity availability and any constraints by end of week.",
+                        "",
+                        "Thank you,",
+                        "Amazon Global Logistics — Robotics Dray",
+                    ]
+                    st.text_area("Draft notice (edit before sending)",
+                                 value="\n".join(_notice_lines), height=220,
+                                 key="srf_notice_draft")
+        else:
+            st.info("No SRF saved yet for this cycle. Review the auto-generated forecast above and click **Save SRF Submission** to lock it in.")
+
+        _srf_conn.close()
+
+    with _tp7:
         _cfg1, _cfg2, _cfg3 = st.tabs(["Sites", "Carriers", "Site–Carrier Map"])
 
         with _cfg1:
@@ -4599,7 +4661,7 @@ HUDD LAX  : RE: DBR Bridges Report - HUDD - [DATE]  (Desirae/Ailua)""", language
     # ══════════════════════════════════════════════════════════════════════════
     # IMPORT HISTORY
     # ══════════════════════════════════════════════════════════════════════════
-    with _tp7:
+    with _tp8:
         st.subheader("Import Historical Delivery Data")
         st.caption(
             "Upload the **ToteASERs Robotics DBR Tracker.xlsx** (downloaded from SharePoint) "
@@ -4710,7 +4772,7 @@ HUDD LAX  : RE: DBR Bridges Report - HUDD - [DATE]  (Desirae/Ailua)""", language
     # ══════════════════════════════════════════════════════════════════════════
     # SOP GUIDE
     # ══════════════════════════════════════════════════════════════════════════
-    with _tp8:
+    with _tp9:
         st.markdown("### Weekly Delivery Planning SOP")
         st.caption("Amazon Robotics Dray Program — AGL · Owner: Dominique Kennedy (kennewdo) · Every Friday · Deadline: 3 PM ET / 2 PM CT")
 
