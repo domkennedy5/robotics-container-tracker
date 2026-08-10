@@ -6480,8 +6480,6 @@ with tab9:
                     xaxis=_XAXIS, showlegend=True,
                     legend=dict(orientation="h", y=-0.2),
                     **{k:v for k,v in _CS.items() if k != "showlegend"},
-                    plot_bgcolor="rgba(0,0,0,0)",
-                    paper_bgcolor="rgba(0,0,0,0)",
                 )
                 st.plotly_chart(_fc, use_container_width=True)
                 st.dataframe(
