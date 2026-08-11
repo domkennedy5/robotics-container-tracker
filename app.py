@@ -478,6 +478,23 @@ def migrate_db():
         conn.execute("ALTER TABLE carrier_contacts ADD COLUMN portal_password TEXT")
     except Exception:
         pass  # column already exists
+
+    # ── carrier_contacts: seed the 5 known carriers (INSERT OR IGNORE — never overwrites) ──
+    _seed_carriers = [
+        ("ATMI", "Cargomatic",      "Tyler Domingues", None),
+        ("ARVY", "Road One",        "Tyler Spangler",  None),
+        ("HDDR", "Hudd Distribution","Sandji Ruffin",  None),
+        ("RKNE", "Rocking E",       "Mark Brennan",    None),
+        ("TGHE", "TGH Equipment",   None,              None),
+    ]
+    for _sc, _dn, _cn, _em in _seed_carriers:
+        try:
+            conn.execute(
+                "INSERT OR IGNORE INTO carrier_contacts (scac, display_name, contact_name, email) VALUES (?,?,?,?)",
+                (_sc, _dn, _cn, _em)
+            )
+        except Exception:
+            pass
     conn.commit()
 
     # ── wbr_results: auto-seed historical W19–W28 if not present ──────────────
