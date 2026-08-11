@@ -6924,7 +6924,7 @@ with tabDBR:
             st.success("No containers past their scheduled FC delivery date.")
         else:
             _late_df["Days Late"] = _late_df["fc_sched"].apply(
-                lambda s: (_today_dbr - date.fromisoformat(s)).days if s else None)
+                lambda s: (_today_dbr - date.fromisoformat(str(s)[:10])).days if s else None)
             _ld = _late_df[["container_id","carrier","fc_dest","fc_sched","Days Late","status","notes"]].copy()
             _ld.columns = ["Container","Carrier","FC","FC Sched","Days Late","Status","Notes"]
             _ld = _ld.sort_values("Days Late", ascending=False)
@@ -6945,7 +6945,7 @@ with tabDBR:
             st.success("No containers awaiting empty return.")
         else:
             _aw_df["Days at FC"] = _aw_df["fc_actual"].apply(
-                lambda s: (_today_dbr - date.fromisoformat(s)).days if s else None)
+                lambda s: (_today_dbr - date.fromisoformat(str(s)[:10])).days if s else None)
             _ad = _aw_df[["container_id","carrier","fc_dest","fc_actual","Days at FC","notes"]].copy()
             _ad.columns = ["Container","Carrier","FC","FC Actual Del","Days at FC","Notes"]
             _ad = _ad.sort_values("Days at FC", ascending=False)
