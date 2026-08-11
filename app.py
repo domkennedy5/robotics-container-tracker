@@ -856,16 +856,88 @@ with st.sidebar:
         _data_updated = "—"
 
     st.markdown(
-        f"🕐 {_primary_line}  \n"
+        f"{_primary_line}  \n"
         f"<span style=\'font-size:0.78em;color:#888\'>{_ref_line}{_local_note}</span>",
         unsafe_allow_html=True
     )
-    st.caption(f"📦 Data last updated: {_data_updated}")
+    st.caption(f"Data last updated: {_data_updated}")
     st.caption("Container Tracker v1.2" + (" · S3 sync active" if S3_ENABLED else ""))
+
+# ── Global styles ─────────────────────────────────────────────────────────────
+st.markdown("""
+<style>
+/* Layout */
+.main .block-container { padding-top: 1.25rem; padding-bottom: 2rem; }
+
+/* Metric cards */
+[data-testid="stMetric"] {
+    background: #F9FAFB;
+    border: 1px solid #E5E7EB;
+    border-radius: 8px;
+    padding: 1rem 1.25rem;
+}
+[data-testid="stMetricLabel"] > div {
+    color: #6B7280;
+    font-size: 0.72rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+[data-testid="stMetricValue"] > div {
+    color: #111827;
+    font-size: 1.7rem;
+    font-weight: 700;
+}
+
+/* Tab bar */
+[data-testid="stTabs"] [role="tablist"] {
+    gap: 0.25rem;
+    border-bottom: 2px solid #E5E7EB;
+}
+[data-testid="stTabs"] button[role="tab"] {
+    font-size: 0.83rem;
+    font-weight: 500;
+    color: #6B7280;
+    padding: 0.45rem 0.85rem;
+    border-radius: 6px 6px 0 0;
+}
+[data-testid="stTabs"] button[role="tab"][aria-selected="true"] {
+    color: #1D4ED8;
+    font-weight: 600;
+    border-bottom: 2px solid #1D4ED8;
+}
+
+/* Typography */
+h1 { font-size: 1.35rem !important; font-weight: 800 !important; color: #111827 !important; }
+h2 { font-size: 1.2rem  !important; font-weight: 700 !important; color: #111827 !important; margin-bottom: 0.2rem !important; }
+h3 { font-size: 1.0rem  !important; font-weight: 600 !important; color: #1F2937 !important; margin-top: 1.2rem !important; margin-bottom: 0.15rem !important; }
+h4 { font-size: 0.9rem  !important; font-weight: 600 !important; color: #374151 !important; margin-top: 0.9rem !important; margin-bottom: 0.15rem !important; }
+
+/* Dividers */
+hr { border-color: #E5E7EB !important; margin: 0.85rem 0 !important; }
+
+/* Captions */
+[data-testid="stCaptionContainer"] p { color: #6B7280; font-size: 0.8rem; }
+
+/* Alert boxes */
+[data-testid="stAlert"] { border-radius: 6px; }
+
+/* Sidebar */
+[data-testid="stSidebar"] { background: #F9FAFB; border-right: 1px solid #E5E7EB; }
+[data-testid="stSidebar"] h2,
+[data-testid="stSidebar"] h3 {
+    font-size: 0.75rem !important;
+    font-weight: 700 !important;
+    text-transform: uppercase !important;
+    letter-spacing: 0.07em !important;
+    color: #374151 !important;
+}
+</style>
+""", unsafe_allow_html=True)
 
 # ── tabs ───────────────────────────────────────────────────────────────────────
 st.title("Robotics Container Tracker")
-tab9, tab7, tab6, tab1, tabC, tabDBR, tab10 = st.tabs(["WBR", "Planning", "Insights", "Container Lookup", "Carriers", "📋 DBR Dashboard", "Inbound Forecast"])
+tab9, tab7, tab6, tab1, tabC, tabDBR, tab10 = st.tabs(["WBR", "Planning", "Insights", "Container Lookup", "Carriers", "DBR Dashboard", "Inbound Forecast"])
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -873,8 +945,8 @@ tab9, tab7, tab6, tab1, tabC, tabDBR, tab10 = st.tabs(["WBR", "Planning", "Insig
 # ══════════════════════════════════════════════════════════════════════════════
 with tab1:
     st.subheader("Container Lookup")
-    st.caption("🎯 **Purpose:** Find the current status of any container across all DBR sheets. Paste a list of IDs and get instant results — no manual spreadsheet searching required.")
-    st.caption("📋 **How to use:** Upload the DBR in the sidebar, paste container IDs (one per line) into the box, then click Search.")
+    st.caption("**Purpose:** Find the current status of any container across all DBR sheets. Paste a list of IDs and get instant results — no manual spreadsheet searching required.")
+    st.caption("**How to use:** Upload the DBR in the sidebar, paste container IDs (one per line) into the box, then click Search.")
 
     col_a, col_b = st.columns([2, 1])
     with col_a:
@@ -1017,17 +1089,17 @@ with tab1:
 # ─────────────────────────────────────────────────────────────────────────────
 
 with tabC:
-    _car_submit, _car_data = st.tabs(["📥 Submit", "📊 Data"])
+    _car_submit, _car_data = st.tabs(["Submit", "Data"])
 
     with _car_submit:
         st.subheader("Carrier Submission Portal")
-        st.caption("🎯 **Purpose:** The single intake point for all carrier status updates. Carriers upload their weekly template here so you have one place to review submissions instead of managing files across email.")
-        st.caption("📋 **How to use:** Upload a completed AGL Carrier Template and click Confirm & Submit, or share the vendor portal link with carriers to submit directly.")
+        st.caption("**Purpose:** The single intake point for all carrier status updates. Carriers upload their weekly template here so you have one place to review submissions instead of managing files across email.")
+        st.caption("**How to use:** Upload a completed AGL Carrier Template and click Confirm & Submit, or share the vendor portal link with carriers to submit directly.")
 
         _vp_col, _tmpl_col = st.columns([3, 1])
         with _vp_col:
             st.info(
-                f"**🔗 Share this link with your carriers:**  \n"
+                f"**Share this link with your carriers:**  \n"
                 f"[{VENDOR_PORTAL_URL}]({VENDOR_PORTAL_URL})  \n"
                 "Carriers submit directly through this portal — no manual upload needed on your end."
             )
@@ -1048,7 +1120,7 @@ with tabC:
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # DBR Receipt Tracker
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        st.markdown("### 📋 DBR Receipt Tracker")
+        st.markdown("### DBR Receipt Tracker")
         st.caption("Track whether each carrier has submitted their weekly DBR. Use the week selector to navigate; missing submissions are flagged automatically.")
 
         _today_rd  = datetime.now(_EASTERN).date()
@@ -1125,7 +1197,7 @@ with tabC:
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # Bulk DBR File Upload
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        st.markdown("### 📤 Submit DBR Files")
+        st.markdown("### Submit DBR Files")
         st.caption("Upload one or more files in one shot — mix carriers, mix weeks. Carrier and file date are auto-detected from the filename; override either if needed.")
 
         def _detect_carrier_from_name(fname: str) -> str:
@@ -1437,8 +1509,8 @@ with tabC:
 
     with _car_data:
         st.subheader("Carrier Data")
-        st.caption("🎯 **Purpose:** A full record of every container status submission from carriers. Use this to verify what a carrier reported, check SLA performance, or audit delivery and return activity.")
-        st.caption("📋 **How to use:** Filter by carrier or sheet type at the top, then drill into sub-tabs for Delivery, Empty Returns, Demurrage, and Accessorials.")
+        st.caption("**Purpose:** A full record of every container status submission from carriers. Use this to verify what a carrier reported, check SLA performance, or audit delivery and return activity.")
+        st.caption("**How to use:** Filter by carrier or sheet type at the top, then drill into sub-tabs for Delivery, Empty Returns, Demurrage, and Accessorials.")
 
         conn = get_db()
         all_df = pd.read_sql(
@@ -1525,13 +1597,13 @@ with tabC:
 
 with tab6:
     _ins_overview, _ins_empty, _ins_lanes = st.tabs([
-        "📈 Overview", "📦 Empty Returns", "💰 Lane Costs"
+        "Overview", "Empty Returns", "Lane Costs"
     ])
 
     with _ins_overview:
         st.subheader("Weekly Insights")
-        st.caption("🎯 **Purpose:** Your weekly operations briefing — auto-generated from all loaded data sources. Start here to see what needs attention before you open anything else.")
-        st.caption("📋 **How to use:** Upload the DBR and supplemental reports in the sidebar — sections activate automatically. Start with Detention & Demurrage Risk.")
+        st.caption("**Purpose:** Your weekly operations briefing — auto-generated from all loaded data sources. Start here to see what needs attention before you open anything else.")
+        st.caption("**How to use:** Upload the DBR and supplemental reports in the sidebar — sections activate automatically. Start with Detention & Demurrage Risk.")
 
         today_ts = pd.Timestamp(date.today())
 
@@ -1877,8 +1949,8 @@ with tab6:
 
     with _ins_empty:
         st.subheader("Empty Returns")
-        st.caption("🎯 **Purpose:** Shows which containers still owe a terminal return after FC delivery, ranked by urgency. Overdue returns can trigger fees — this view tells you what needs carrier follow-up today.")
-        st.caption("📋 **How to use:** Upload the DBR in the sidebar, then check Overdue and Due Soon first — those need immediate carrier follow-up.")
+        st.caption("**Purpose:** Shows which containers still owe a terminal return after FC delivery, ranked by urgency. Overdue returns can trigger fees — this view tells you what needs carrier follow-up today.")
+        st.caption("**How to use:** Upload the DBR in the sidebar, then check Overdue and Due Soon first — those need immediate carrier follow-up.")
 
         if not dbr_sheets:
             st.info("Upload the DBR file in the sidebar to see empty returns data.")
@@ -1965,8 +2037,8 @@ with tab6:
 
     with _ins_lanes:
         st.subheader("Lane Cost Simulator")
-        st.caption("🎯 **Purpose:** Compare drayage rates across carriers by lane and model the total cost of a delivery scenario. Use this when allocating containers across carriers or evaluating cost trade-offs.")
-        st.caption("📋 **How to use:** Check the Rate Matrix for cheapest carrier per lane, then use the Scenario Builder to model cost by entering lane and container count.")
+        st.caption("**Purpose:** Compare drayage rates across carriers by lane and model the total cost of a delivery scenario. Use this when allocating containers across carriers or evaluating cost trade-offs.")
+        st.caption("**How to use:** Check the Rate Matrix for cheapest carrier per lane, then use the Scenario Builder to model cost by entering lane and container count.")
 
         # ── Load rate + route data ────────────────────────────────────────────────
         conn = get_db()
@@ -3431,7 +3503,7 @@ def _srf_auto_forecast(conn, current_week: int, year: int, n_weeks: int = 6, his
 
 with tab7:
     st.subheader("Delivery Plan Scheduler")
-    st.caption("🎯 **Purpose:** Build, manage, and distribute the weekly container delivery plan across all sites and carriers.")
+    st.caption("**Purpose:** Build, manage, and distribute the weekly container delivery plan across all sites and carriers.")
 
     # ══════════════════════════════════════════════════════════════════════════
     # ── SOP header callout ────────────────────────────────────────────────────
@@ -3584,7 +3656,7 @@ HUDD LAX  : RE: DBR Bridges Report - HUDD - [DATE]  (Desirae/Ailua)""", language
 
     _tp1, _tp2, _tp3, _tp4, _tp5, _tp6, _tp7, _tp8, _tp9 = st.tabs([
         "Plan Builder", "All Sites", "By Site",
-        "Carrier View", "WoW / History", "📋 SRF", "Config", "Import History", "SOP Guide",
+        "Carrier View", "WoW / History", "SRF", "Config", "Import History", "SOP Guide",
     ])
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -4216,7 +4288,7 @@ HUDD LAX  : RE: DBR Bridges Report - HUDD - [DATE]  (Desirae/Ailua)""", language
         _cdf2 = _get_carriers_df()
 
         # ── Carrier link panel ────────────────────────────────────────────────
-        st.markdown("### 🔗 Carrier Links")
+        st.markdown("### Carrier Links")
         st.caption(
             "Each carrier has a unique, token-gated link to their delivery schedule. "
             "Share the link after verifying the data in the admin preview below. "
@@ -4265,7 +4337,7 @@ HUDD LAX  : RE: DBR Bridges Report - HUDD - [DATE]  (Desirae/Ailua)""", language
         st.divider()
 
         # ── Admin preview (view as carrier) ───────────────────────────────────
-        st.markdown("### 👁️ Admin Preview — View as Carrier")
+        st.markdown("### Admin Preview — View as Carrier")
         st.caption(
             "Select a carrier to see exactly what they will see at their link. "
             "Verify data before sending. Confirmation status shows once carriers have responded."
@@ -5077,7 +5149,7 @@ Replan as needed throughout the delivery week when any of these occur:
 
 with tab9:
     _wbr_sum, _wbr_trends, _wbr_build, _wbr_hist = st.tabs([
-        "📊 Summary", "📈 Trends", "⚙️ Build", "📋 History"
+        "Summary", "Trends", "Build", "History"
     ])
 
     with _wbr_build:
@@ -5119,7 +5191,7 @@ with tab9:
         elif _dsm2 <= 2:
             st.warning(f"🟡 **WBR W{_wbr_wnum}** was due **{_last_mon2.strftime('%b %d')}** — submit ASAP if not yet sent · Next WBR W{_wbr_wnum+1} due {_next_mon2.strftime('%b %d')}")
         else:
-            st.info(f"📅 **WBR W{_wbr_wnum}** was due {_last_mon2.strftime('%b %d')} · Next WBR **W{_wbr_wnum+1}** due **{_next_mon2.strftime('%A, %b %d')}** — {(_next_mon2 - _wbr_today2).days} days away")
+            st.info(f"**WBR W{_wbr_wnum}** was due {_last_mon2.strftime('%b %d')} · Next WBR **W{_wbr_wnum+1}** due **{_next_mon2.strftime('%A, %b %d')}** — {(_next_mon2 - _wbr_today2).days} days away")
 
         st.caption(f"Reporting week: **W{_wbr_wnum}** · {_wbr_sun_str} to {_wbr_sat_str} (Sun–Sat)")
 
@@ -6766,12 +6838,12 @@ with tabDBR:
     st.divider()
 
     _dt1, _dt2, _dt3, _dt4, _dt5, _dt6 = st.tabs([
-        "\U0001f4ca Overview",
-        "\U0001f4c5 Today / Upcoming",
-        "\U0001f6a8 Late / At Risk",
-        "\U0001f4e6 Empty Returns",
-        "\U0001f69b By Carrier",
-        "\U0001f4e5 Import Historical",
+        "Overview",
+        "Today / Upcoming",
+        "Late / At Risk",
+        "Empty Returns",
+        "By Carrier",
+        "Import",
     ])
 
     # ── 1: OVERVIEW ──────────────────────────────────────────────────────────
