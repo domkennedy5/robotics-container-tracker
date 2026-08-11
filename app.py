@@ -5131,8 +5131,25 @@ with tab9:
         _wbr_sun_nice = _wbr_sun.strftime("%b %d")
         _wbr_sat_nice = _wbr_sat.strftime("%b %d, %Y")
 
-        # Due date banner — anchored to last Monday (submission day)
-        if _dsm2 == 0:
+        # Due date banner — check DB first; if WBR already generated this week, show submitted state
+        _wbr_chk_conn = get_db()
+        _wbr_submitted_row = _wbr_chk_conn.execute(
+            "SELECT generated_at FROM wbr_results "
+            "WHERE year=? AND week_num=? AND generated_at != 'seed' "
+            "ORDER BY generated_at DESC LIMIT 1",
+            (_wbr_today2.year, _wbr_wnum)
+        ).fetchone()
+        _wbr_chk_conn.close()
+
+        if _wbr_submitted_row:
+            _gen_ts = _wbr_submitted_row[0]
+            try:
+                _gen_dt = datetime.fromisoformat(_gen_ts).astimezone(_EASTERN)
+                _gen_nice = _gen_dt.strftime("%b %d at %I:%M %p ET").lstrip("0")
+            except Exception:
+                _gen_nice = _gen_ts[:16]
+            st.success(f"✅ **WBR W{_wbr_wnum} submitted** — generated {_gen_nice} · Next WBR **W{_wbr_wnum+1}** due **{_next_mon2.strftime('%b %d')}**")
+        elif _dsm2 == 0:
             st.error(f"🔴 **WBR W{_wbr_wnum} is DUE TODAY** by 2:00 PM CT ({_ct_to_mst(14)} MST) — submit to `doc+destops-36@fusion.amazon.dev`")
         elif _dsm2 <= 2:
             st.warning(f"🟡 **WBR W{_wbr_wnum}** was due **{_last_mon2.strftime('%b %d')}** — submit ASAP if not yet sent · Next WBR W{_wbr_wnum+1} due {_next_mon2.strftime('%b %d')}")
