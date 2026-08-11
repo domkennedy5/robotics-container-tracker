@@ -1086,7 +1086,9 @@ with tabC:
             "SELECT carrier, received_date FROM dbr_receipts WHERE week_start = ?",
             _conn_rd, params=(_wk_start.isoformat(),)
         )
+        _car_cc_df = pd.read_sql("SELECT scac, contact_name, email FROM carrier_contacts", _conn_rd)
         _conn_rd.close()
+        _car_cc_map = {r["scac"]: r for _, r in _car_cc_df.iterrows()} if not _car_cc_df.empty else {}
 
         _rec_map = {}
         for _, _r in _rec_df.iterrows():
@@ -1127,16 +1129,43 @@ with tabC:
         if _missing_carriers and _wk_start <= _today_rd:
             st.warning(f"**{len(_missing_carriers)} carrier(s) missing this week:** {', '.join(_missing_carriers)}")
             for _mc in _missing_carriers:
-                with st.expander(f"📧 Follow-up message — {_mc}"):
-                    _tmpl = (
-                        f"Hi {_mc} Team,\n\n"
-                        f"We haven\u2019t received your container status DBR for the week of "
-                        f"{_wk_start.strftime('%B %d, %Y').lstrip('0')}. Could you please submit your weekly "
-                        f"update at your earliest convenience?\n\n"
-                        f"You can submit via the AGL carrier portal: {VENDOR_PORTAL_URL}\n\n"
+                _cc_info  = _car_cc_map.get(_mc, {})
+                _em_val   = _cc_info.get("email") or ""
+                _cn_val   = _cc_info.get("contact_name") or (_mc + " Team")
+                with st.expander(f"Send reminder — {_mc}"):
+                    _dl_c = _today_rd.strftime("%B %d, %Y").lstrip("0")
+                    _body_c = (
+                        f"Hi {_cn_val},\n\n"
+                        f"We have not received your container status DBR for the week of "
+                        f"{_wk_start.strftime('%B %d, %Y').lstrip('0')}.\n"
+                        f"Could you please submit your update at your earliest convenience?\n\n"
+                        f"Submit via the AGL carrier portal:\n{VENDOR_PORTAL_URL}\n\n"
                         f"Thank you,\nAGL Robotics Logistics"
                     )
-                    st.code(_tmpl.replace("\n", "\n"), language=None)
+                    _draft_c  = st.text_area("Email draft", _body_c, height=180, key="c_draft_" + _mc)
+                    _to_c     = st.text_input("To", value=_em_val, placeholder="carrier@example.com", key="c_to_" + _mc)
+                    _cs1, _cs2 = st.columns([1, 3])
+                    _do_send_c = _cs1.button("Send", type="primary", disabled=not bool(_to_c.strip()), key="c_send_" + _mc)
+                    if not _to_c.strip():
+                        _cs2.caption("Add carrier email in DBR Dashboard > By Carrier to enable.")
+                    if _do_send_c and _to_c.strip():
+                        try:
+                            import boto3 as _b3c
+                            _ses_c = _b3c.client("ses",
+                                aws_access_key_id=AWS_KEY,
+                                aws_secret_access_key=AWS_SECRET,
+                                region_name=(AWS_REGION or "us-east-1"))
+                            _ses_c.send_email(
+                                Source="agl-robotics-no-reply@amazon.com",
+                                Destination={"ToAddresses": [_to_c.strip()]},
+                                Message={
+                                    "Subject": {"Data": "[AGL] DBR Reminder — Week of " + _wk_start.strftime("%b %d")},
+                                    "Body":    {"Text": {"Data": _draft_c}},
+                                },
+                            )
+                            st.success("Reminder sent to " + _to_c.strip())
+                        except Exception as _se_c:
+                            st.error("Send failed: " + str(_se_c))
 
         st.divider()
 
@@ -1546,6 +1575,76 @@ with tabC:
             st.download_button("⬇️ Export all carrier data (.xlsx)", data=buf,
                 file_name=f"carrier_data_{date.today()}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+        st.divider()
+        with st.expander("Backfill Historical Container Data", expanded=False):
+            st.caption(
+                "Import a historical DBR Tracker Excel (master format) to populate the container lifecycle view. "
+                "Existing records are updated non-destructively — only blank fields are filled in."
+            )
+            if "cd_backfill_key" not in st.session_state:
+                st.session_state.cd_backfill_key = 0
+            if st.session_state.get("cd_backfill_result"):
+                _bfr = st.session_state.cd_backfill_result
+                st.success(
+                    "\u2705  Import complete — "
+                    "**" + str(_bfr["new"]) + "** new  \u00b7  **" + str(_bfr["updated"]) + "** updated  \u00b7  "
+                    + ", ".join(_bfr["files"])
+                )
+                if st.button("\u2714\ufe0f  Clear", key="cd_bf_ack"):
+                    del st.session_state["cd_backfill_result"]
+                    st.session_state.cd_backfill_key += 1
+                    st.rerun()
+            else:
+                _bf_files = st.file_uploader(
+                    "Upload DBR Tracker Excel file(s)",
+                    type=["xlsx"],
+                    accept_multiple_files=True,
+                    key="cd_bf_up_" + str(st.session_state.cd_backfill_key),
+                )
+                if _bf_files:
+                    _bf_rows, _bf_errs, _bf_names = [], [], []
+                    for _bf in _bf_files:
+                        _bfb = _bf.read()
+                        with st.spinner("Parsing " + _bf.name + "..."):
+                            _bfr2, _bfe2 = _parse_dbr_tracker(_bfb)
+                        _bf_rows.extend(_bfr2); _bf_errs.extend(_bfe2); _bf_names.append(_bf.name)
+                    if _bf_errs:
+                        with st.expander(str(len(_bf_errs)) + " parse warnings"):
+                            for _e in _bf_errs: st.caption(_e)
+                    if _bf_rows:
+                        st.info("Ready to import **" + str(len(_bf_rows)) + "** containers from **" + str(len(_bf_files)) + "** file(s).")
+                        if st.button("Import All", type="primary", key="cd_bf_go"):
+                            _bfc  = get_db()
+                            _bfin = _bfup = 0
+                            _bfts = datetime.now(_PHX).isoformat()
+                            for _r in _bf_rows:
+                                _cid = _r.get("container_id")
+                                if not _cid: continue
+                                _ex = _bfc.execute("SELECT id FROM inbound_containers WHERE container_id=?", (_cid,)).fetchone()
+                                if _ex:
+                                    _bfc.execute(
+                                        "UPDATE inbound_containers SET carrier=COALESCE(carrier,?),"
+                                        "fc_dest=COALESCE(fc_dest,?),fc_sched=COALESCE(fc_sched,?),"
+                                        "status=?,notes=COALESCE(notes,?),last_updated=? WHERE container_id=?",
+                                        (_r.get("carrier"),_r.get("site_code"),_r.get("appt_date"),
+                                         _r.get("status","pending"),_r.get("notes"),_bfts,_cid)
+                                    ); _bfup += 1
+                                else:
+                                    _bfc.execute(
+                                        "INSERT OR IGNORE INTO inbound_containers"
+                                        "(container_id,carrier,fc_dest,fc_sched,status,notes,last_updated,source_file)"
+                                        " VALUES (?,?,?,?,?,?,?,?)",
+                                        (_cid,_r.get("carrier"),_r.get("site_code"),_r.get("appt_date"),
+                                         _r.get("status","pending"),_r.get("notes"),_bfts,"; ".join(_bf_names))
+                                    ); _bfin += 1
+                            _bfc.commit(); _bfc.close()
+                            if S3_ENABLED:
+                                data_sync.push_db_to_s3(AWS_KEY, AWS_SECRET, AWS_REGION, S3_BUCKET)
+                            st.session_state["cd_backfill_result"] = {"new":_bfin,"updated":_bfup,"files":_bf_names}
+                            st.rerun()
+                    else:
+                        st.warning("No containers found. Ensure the file has a Delivery Plan sheet.")
 
 
 
@@ -6811,113 +6910,12 @@ with tabDBR:
 
     st.divider()
 
-    _dt1, _dt2, _dt3, _dt4, _dt5, _dt6 = st.tabs([
-        "Overview",
+    _dt2, _dt3, _dt4, _dt5 = st.tabs([
         "Today / Upcoming",
         "Late / At Risk",
         "Empty Returns",
         "By Carrier",
-        "Import",
     ])
-
-    # ── 1: OVERVIEW ──────────────────────────────────────────────────────────
-    with _dt1:
-        st.markdown("#### Carrier Submission Compliance \u2014 Last 30 Days")
-        st.caption("OK = DBR received. MISS = not received. Future and weekends are blank.")
-
-        _TRACKED = list(_cc_all["scac"]) if not _cc_all.empty else ["ATMI", "ARVY", "HDDR", "RKNE", "TGHE"]
-        _wkdays  = [_today_dbr - timedelta(days=i) for i in range(29, -1, -1) if (_today_dbr - timedelta(days=i)).weekday() < 5]
-
-        _rcpt_map = {}
-        for _, _rr in _rcpt_all.iterrows():
-            _rcpt_map.setdefault(_rr["carrier"], set()).add(_rr["received_date"])
-
-        _comp_rows = []
-        for _sc in _TRACKED:
-            _rw = {"Carrier": _sc}
-            _miss_c = 0
-            for _d in _wkdays:
-                _lbl = _d.strftime("%m/%d").lstrip("0")
-                if _d > _today_dbr:
-                    _rw[_lbl] = "\u2014"
-                elif _d.isoformat() in _rcpt_map.get(_sc, set()):
-                    _rw[_lbl] = "\u2705"
-                else:
-                    _rw[_lbl] = "\u26a0\ufe0f"
-                    _miss_c += 1
-            _rw["Missing"] = _miss_c
-            _comp_rows.append(_rw)
-
-        _comp_df  = pd.DataFrame(_comp_rows)
-        _rcnt_10  = _wkdays[-10:]
-        _rcols    = ["Carrier"] + [d.strftime("%m/%d").lstrip("0") for d in _rcnt_10] + ["Missing"]
-        _rcols    = [c for c in _rcols if c in _comp_df.columns]
-        st.dataframe(_comp_df[_rcols], use_container_width=True, hide_index=True)
-
-        _missing_today = [sc for sc in _TRACKED if _today_dbr.isoformat() not in _rcpt_map.get(sc, set())]
-        _today_lbl     = _today_dbr.strftime("%b %d")
-        if _missing_today:
-            st.warning("Not yet received today (" + _today_lbl + "): " + ", ".join(_missing_today))
-        else:
-            st.success("All tracked carriers have submitted for today (" + _today_lbl + ").")
-
-        st.divider()
-        st.markdown("#### Reminder Emails")
-        st.caption("Add carrier emails in the By Carrier tab, then use Send Reminder to draft and approve before sending.")
-
-        if _missing_today:
-            for _mc in _missing_today:
-                _cc_r    = _cc_all[_cc_all["scac"] == _mc]
-                _em_val  = _cc_r["email"].iloc[0] if (not _cc_r.empty and _cc_r["email"].iloc[0]) else None
-                _cn_val  = _cc_r["contact_name"].iloc[0] if (not _cc_r.empty and _cc_r["contact_name"].iloc[0]) else _mc + " Team"
-                _el      = "\U0001f4e7 " + _mc + " \u2014 " + ("email on file" if _em_val else "no email on file")
-                with st.expander(_el):
-                    _dl = _today_dbr.strftime("%B %d, %Y")
-                    _vp_url = "https://robotics-container-tracker-7uf88f7ez9tga3k44phfjm.streamlit.app/vendor_upload"
-                    _body_lines = [
-                        "Hi " + _cn_val + ",",
-                        "",
-                        "We have not received your daily container status DBR for today (" + _dl + ").",
-                        "Could you please submit your update at your earliest convenience?",
-                        "",
-                        "Submit via the AGL carrier portal:",
-                        _vp_url,
-                        "",
-                        "Thank you,",
-                        "AGL Robotics Logistics",
-                    ]
-                    _draft_txt  = "\n".join(_body_lines)
-                    _draft_edit = st.text_area("Email draft", _draft_txt, height=200,
-                                               key="dbr_draft_" + _mc)
-                    _to_addr = st.text_input("To", value=(_em_val or ""),
-                                              placeholder="carrier@example.com",
-                                              key="dbr_to_" + _mc)
-                    _s1, _s2 = st.columns([1, 3])
-                    _do_send = _s1.button("Send Reminder", type="primary",
-                                          disabled=not bool(_to_addr.strip()),
-                                          key="dbr_send_" + _mc)
-                    if not _to_addr.strip():
-                        _s2.caption("Add an email address to enable send.")
-                    if _do_send and _to_addr.strip():
-                        try:
-                            import boto3 as _b3
-                            _ses = _b3.client("ses",
-                                aws_access_key_id=AWS_KEY,
-                                aws_secret_access_key=AWS_SECRET,
-                                region_name=(AWS_REGION or "us-east-1"))
-                            _ses.send_email(
-                                Source="agl-robotics-no-reply@amazon.com",
-                                Destination={"ToAddresses": [_to_addr.strip()]},
-                                Message={
-                                    "Subject": {"Data": "[AGL] Daily DBR Reminder \u2014 " + _today_lbl},
-                                    "Body":    {"Text": {"Data": _draft_edit}},
-                                },
-                            )
-                            st.success("Reminder sent to " + _to_addr.strip())
-                        except Exception as _se:
-                            st.error("Send failed: " + str(_se))
-        else:
-            st.info("No missing submissions today.")
 
     # ── 2: TODAY / UPCOMING ──────────────────────────────────────────────────
     with _dt2:
@@ -7124,199 +7122,3 @@ with tabDBR:
             else:
                 st.info("No contact record for " + _sel_c + ". Will be created on next DBR submission.")
 
-    # ── 6: IMPORT HISTORICAL ─────────────────────────────────────────────────
-    with _dt6:
-        st.markdown("#### Import Historical DBR Data")
-        st.caption("Upload the master DBR Tracker Excel (peer format) or individual carrier daily DBR files. "
-                   "Existing records are updated non-destructively — only blank fields are filled in.")
-
-        # ── Uploader key counters: incrementing the key resets the widget ─────
-        if "dt6_uploader_key" not in st.session_state:
-            st.session_state.dt6_uploader_key = 0
-
-        # ── Acknowledge-and-clear banner ──────────────────────────────────────
-        # Shown instead of uploaders until user dismisses it.
-        if st.session_state.get("dt6_import_result"):
-            _res = st.session_state.dt6_import_result
-            _files_lbl = ", ".join(_res.get("files", []))
-            st.success(
-                "\u2705  **Import successful.**\n\n"
-                "**" + str(_res["new"]) + "** new containers added  \u00b7  "
-                "**" + str(_res["updated"]) + "** existing records updated  \n"
-                "Files: " + _files_lbl
-            )
-            st.info("Your data has been captured and stored. Click below to clear the upload area and start a new import.")
-            if st.button("\u2714\ufe0f  Acknowledge & Clear", type="primary", key="dt6_ack"):
-                del st.session_state["dt6_import_result"]
-                st.session_state.dt6_uploader_key += 1
-                st.rerun()
-        else:
-            # ── Mode selector ─────────────────────────────────────────────────
-            _imp_mode = st.radio(
-                "File type",
-                ["DBR Tracker Excel (master format)", "Individual carrier DBR file(s)"],
-                horizontal=True, key="dt6_mode",
-            )
-
-            if _imp_mode == "DBR Tracker Excel (master format)":
-                # Multi-file: accept any number of master-format Excel files
-                _mfs = st.file_uploader(
-                    "Upload DBR Tracker Excel file(s)",
-                    type=["xlsx"],
-                    accept_multiple_files=True,
-                    key="dt6_master_" + str(st.session_state.dt6_uploader_key),
-                    help="Must contain a Delivery Plan sheet. Drop multiple versions at once.",
-                )
-                if _mfs:
-                    # Parse all files, accumulate rows
-                    _all_mr, _all_me, _src_names = [], [], []
-                    for _mf in _mfs:
-                        _mb = _mf.read()
-                        with st.spinner("Parsing " + _mf.name + "..."):
-                            _mr, _me = _parse_dbr_tracker(_mb)
-                        _all_mr.extend(_mr)
-                        _all_me.extend(_me)
-                        _src_names.append(_mf.name)
-
-                    if _all_me:
-                        with st.expander(str(len(_all_me)) + " parse warnings"):
-                            for _em in _all_me: st.caption(_em)
-
-                    if _all_mr:
-                        st.info(
-                            "Ready to import **" + str(len(_all_mr)) + " containers** "
-                            "from **" + str(len(_mfs)) + " file(s)**."
-                        )
-                        if st.button("Import All", type="primary", key="dt6_master_go"):
-                            _ic6 = get_db()
-                            _in6 = _up6 = 0
-                            _n6  = datetime.now(_PHX).isoformat()
-                            for _r6 in _all_mr:
-                                _cid6 = _r6.get("container_id")
-                                if not _cid6: continue
-                                _ex6 = _ic6.execute(
-                                    "SELECT id FROM inbound_containers WHERE container_id=?", (_cid6,)
-                                ).fetchone()
-                                if _ex6:
-                                    _ic6.execute(
-                                        "UPDATE inbound_containers SET carrier=COALESCE(carrier,?),"
-                                        "fc_dest=COALESCE(fc_dest,?),fc_sched=COALESCE(fc_sched,?),"
-                                        "status=?,notes=COALESCE(notes,?),last_updated=? WHERE container_id=?",
-                                        (_r6.get("carrier"), _r6.get("site_code"), _r6.get("appt_date"),
-                                         _r6.get("status", "pending"), _r6.get("notes"), _n6, _cid6)
-                                    )
-                                    _up6 += 1
-                                else:
-                                    _ic6.execute(
-                                        "INSERT OR IGNORE INTO inbound_containers"
-                                        "(container_id,carrier,fc_dest,fc_sched,status,notes,last_updated,source_file)"
-                                        " VALUES (?,?,?,?,?,?,?,?)",
-                                        (_cid6, _r6.get("carrier"), _r6.get("site_code"), _r6.get("appt_date"),
-                                         _r6.get("status", "pending"), _r6.get("notes"), _n6, "; ".join(_src_names))
-                                    )
-                                    _in6 += 1
-                            _ic6.commit(); _ic6.close()
-                            if S3_ENABLED:
-                                data_sync.push_db_to_s3(AWS_KEY, AWS_SECRET, AWS_REGION, S3_BUCKET)
-                            st.session_state["dt6_import_result"] = {
-                                "new": _in6, "updated": _up6, "files": _src_names
-                            }
-                            st.rerun()
-                    else:
-                        st.warning("No importable containers found. Check that the files have a Delivery Plan sheet.")
-
-            else:  # Individual carrier files
-                _cfs = st.file_uploader(
-                    "Upload carrier DBR file(s)",
-                    type=["xlsx", "csv"],
-                    accept_multiple_files=True,
-                    key="dt6_carrier_" + str(st.session_state.dt6_uploader_key),
-                )
-                if _cfs:
-                    _IOPTS = ["", "ATMI", "ARVY", "HDDR", "RKNE", "TGHE"]
-                    _imap  = {}
-                    st.caption("Confirm carrier and date for each file:")
-                    for _ii6, _uf6 in enumerate(_cfs):
-                        _dc6 = next((sc for sc in ["ATMI","ARVY","RKNE","TGHE"] if sc in _uf6.name.upper()),
-                                    "HDDR" if ("HUDD" in _uf6.name.upper() or "HDDR" in _uf6.name.upper()) else "")
-                        _a6, _b6, _c6 = st.columns([4, 1, 2])
-                        with _a6: st.markdown("&nbsp;&nbsp;\U0001f4c4 `" + _uf6.name + "`")
-                        with _b6:
-                            _ic6_c = st.selectbox(
-                                "Carrier", _IOPTS,
-                                index=_IOPTS.index(_dc6) if _dc6 in _IOPTS else 0,
-                                key="dt6_c_" + str(_ii6), label_visibility="collapsed",
-                            )
-                        with _c6:
-                            _ic6_d = st.date_input(
-                                "Date", value=_today_dbr,
-                                key="dt6_d_" + str(_ii6), label_visibility="collapsed",
-                            )
-                        _imap[_ii6] = (_uf6, _ic6_c, _ic6_d)
-
-                    _unass6 = [v[0].name for v in _imap.values() if not v[1]]
-                    if _unass6:
-                        st.warning("Assign carrier for: " + ", ".join(_unass6))
-                    else:
-                        if st.button("Import All Files", type="primary", key="dt6_car_go"):
-                            _ic6b = get_db()
-                            _in6b = _up6b = 0
-                            _n6b  = datetime.now(_PHX).isoformat()
-                            _DT6  = {"delivery","delivery_ilm1","delivery_ric6","delivery_dbm6"}
-                            _FM6  = {"delivery_ilm1":"ILM1","delivery_ric6":"RIC6","delivery_dbm6":"DBM6"}
-                            _src6 = []
-                            for _ii6b, (_uf6b, _cc6, _cd6) in _imap.items():
-                                try:
-                                    _p6 = parse_carrier_template(_uf6b.read(), _uf6b.name)
-                                except Exception as _pe6:
-                                    st.warning(_uf6b.name + ": " + str(_pe6)); continue
-                                if not _p6:
-                                    st.warning(_uf6b.name + ": no data found"); continue
-                                _src6.append(_uf6b.name)
-                                for _st6, _rws6 in _p6.items():
-                                    if _st6 not in _DT6: continue
-                                    for _rw6 in _rws6:
-                                        _cid6b = _rw6.get("container_id")
-                                        if not _cid6b: continue
-                                        _hd6 = bool(_rw6.get("delivery_date"))
-                                        _ho6 = bool(_rw6.get("outgate_date"))
-                                        if _hd6:   _ss6, _fa6 = "delivered", str(_rw6["delivery_date"])
-                                        elif _ho6: _ss6, _fa6 = "at_yard", None
-                                        else:      _ss6, _fa6 = "pending", None
-                                        _fd6  = _FM6.get(_st6) or _rw6.get("fc_building")
-                                        _ex6b = _ic6b.execute(
-                                            "SELECT id FROM inbound_containers WHERE container_id=?", (_cid6b,)
-                                        ).fetchone()
-                                        if _ex6b:
-                                            _ic6b.execute(
-                                                "UPDATE inbound_containers SET carrier=COALESCE(carrier,?),"
-                                                "port_region=COALESCE(port_region,?),fc_dest=COALESCE(fc_dest,?),"
-                                                "yard_actual=COALESCE(yard_actual,?),fc_actual=COALESCE(fc_actual,?),"
-                                                "status=?,notes=COALESCE(notes,?),last_updated=? WHERE container_id=?",
-                                                (_cc6, _rw6.get("port"), _fd6, _rw6.get("outgate_date"),
-                                                 _fa6, _ss6, _rw6.get("notes"), _n6b, _cid6b)
-                                            ); _up6b += 1
-                                        else:
-                                            _ic6b.execute(
-                                                "INSERT OR IGNORE INTO inbound_containers"
-                                                "(container_id,carrier,port_region,fc_dest,"
-                                                "yard_actual,fc_actual,status,notes,last_updated,source_file)"
-                                                " VALUES (?,?,?,?,?,?,?,?,?,?)",
-                                                (_cid6b, _cc6, _rw6.get("port"), _fd6,
-                                                 _rw6.get("outgate_date"), _fa6, _ss6,
-                                                 _rw6.get("notes"), _n6b, _uf6b.name)
-                                            ); _in6b += 1
-                                _wk6 = (_cd6 - timedelta(days=_cd6.weekday())).isoformat()
-                                _ic6b.execute(
-                                    "INSERT OR IGNORE INTO dbr_receipts"
-                                    "(carrier,week_start,received_date,received_via,file_name,logged_at)"
-                                    " VALUES (?,?,?,?,?,?)",
-                                    (_cc6, _wk6, _cd6.isoformat(), "import", _uf6b.name, _n6b)
-                                )
-                            _ic6b.commit(); _ic6b.close()
-                            if S3_ENABLED:
-                                data_sync.push_db_to_s3(AWS_KEY, AWS_SECRET, AWS_REGION, S3_BUCKET)
-                            st.session_state["dt6_import_result"] = {
-                                "new": _in6b, "updated": _up6b, "files": _src6
-                            }
-                            st.rerun()
