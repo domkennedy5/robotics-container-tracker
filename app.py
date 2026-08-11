@@ -1278,6 +1278,24 @@ with tabC:
                             for _fi, (_uf, _carrier, _fdate) in _file_carrier_map.items():
                                 if _carrier:
                                     _carrier_file_dates.setdefault(_carrier, _fdate)
+                            # ── Step 1: Log dbr_receipts for ALL assigned files ─────────────
+                            # Use today (upload date) as received_date — not the file's data date.
+                            # This ensures receipts always land in the current week regardless of
+                            # what date is in the filename. One receipt per carrier per week.
+                            _today_recv = datetime.now(_EASTERN).date()
+                            _wk_recv    = (_today_recv - timedelta(days=_today_recv.weekday())).isoformat()
+                            _rcpt_logged = set()
+                            for _fi2, (_uf2, _c2, _fd2) in _file_carrier_map.items():
+                                if _c2 and _c2 not in _rcpt_logged:
+                                    _conn.execute(
+                                        "INSERT OR IGNORE INTO dbr_receipts"
+                                        " (carrier, week_start, received_date, received_via, file_name, logged_at)"
+                                        " VALUES (?,?,?,?,?,?)",
+                                        (_c2, _wk_recv, _today_recv.isoformat(), "web", _uf2.name, _logged_at),
+                                    )
+                                    _rcpt_logged.add(_c2)
+
+                            # ── Step 2: Log container data for successfully parsed files ────
                             for _carrier, _sheets in _all_parsed.items():
                                 _fdate = _carrier_file_dates.get(_carrier, datetime.now(_EASTERN).date())
                                 for _stype, _rows in _sheets.items():
@@ -1338,13 +1356,6 @@ with tabC:
                                                     " WHERE container_id=?",
                                                     (_rd, _logged_at, _row["container_id"]),
                                                 )
-                                _wk = (_fdate - timedelta(days=_fdate.weekday())).isoformat()
-                                _conn.execute(
-                                    "INSERT OR IGNORE INTO dbr_receipts"
-                                    " (carrier, week_start, received_date, received_via, logged_at)"
-                                    " VALUES (?,?,?,?,?)",
-                                    (_carrier, _wk, _fdate.isoformat(), "portal", _logged_at),
-                                )
                             _conn.commit()
                             _conn.close()
                             if S3_ENABLED:
