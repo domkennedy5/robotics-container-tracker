@@ -3,12 +3,13 @@ import streamlit as st
 import pandas as pd
 import sqlite3
 import os
+import hashlib
 from datetime import datetime, date, timedelta
 from zoneinfo import ZoneInfo
 
 st.set_page_config(
     page_title="AGL Carrier Submission Portal",
-    page_icon="\U0001f4e6",
+    page_icon="📦",
     layout="centered",
     initial_sidebar_state="collapsed",
 )
@@ -22,7 +23,6 @@ section[data-testid="stSidebar"] { display: none; }
 </style>
 """, unsafe_allow_html=True)
 
-_PORTAL_PASSWORD = "ARcarrier"
 _PHX = ZoneInfo("America/Phoenix")
 
 BASE_DIR = os.getcwd()
@@ -55,32 +55,52 @@ def get_db():
     conn.row_factory = sqlite3.Row
     return conn
 
-# ── Password gate ─────────────────────────────────────────────────────────────
+# ── Per-carrier password gate ─────────────────────────────────────────────────
+# Each carrier has a unique password stored as sha256 in carrier_contacts.portal_password.
+# On login the hash is matched and the SCAC auto-populates — no manual SCAC entry.
 if not st.session_state.get("portal_auth"):
-    st.markdown("## \U0001f4e6 AGL Robotics \u2014 Carrier Portal")
+    st.markdown("## 📦 AGL Robotics — Carrier Portal")
     st.markdown("Enter the portal password provided by your AGL point of contact.")
     _pw = st.text_input("Password", type="password", key="portal_pw_field")
     if st.button("Enter", type="primary"):
-        if _pw == _PORTAL_PASSWORD:
-            st.session_state.portal_auth = True
-            st.rerun()
+        if _pw.strip():
+            _hashed = hashlib.sha256(_pw.strip().encode()).hexdigest()
+            _aconn = get_db()
+            _row = _aconn.execute(
+                "SELECT scac, display_name, contact_name FROM carrier_contacts "
+                "WHERE portal_password = ? LIMIT 1",
+                (_hashed,),
+            ).fetchone()
+            _aconn.close()
+            if _row:
+                st.session_state.portal_auth         = True
+                st.session_state.portal_scac         = _row["scac"]
+                st.session_state.portal_display_name = _row["display_name"] or _row["scac"]
+                st.session_state.portal_contact_name = _row["contact_name"] or ""
+                st.rerun()
+            else:
+                st.error("Incorrect password. Contact your AGL point of contact if you need access.")
         else:
-            st.error("Incorrect password. Contact your AGL point of contact if you need access.")
+            st.error("Please enter a password.")
     st.stop()
 
 # ── Authenticated ─────────────────────────────────────────────────────────────
-st.markdown("## \U0001f4e6 AGL Robotics \u2014 Carrier Submission Portal")
+_portal_scac    = st.session_state.portal_scac
+_portal_display = st.session_state.portal_display_name
+
+st.markdown("## 📦 AGL Robotics — Carrier Submission Portal")
 st.markdown("Submit your daily container status update to the AGL team.")
+st.info("🏷️  Logged in as **" + _portal_display + "** (" + _portal_scac + ")")
 st.divider()
 
 # Step 1 — Template
-st.markdown("### Step 1 \u2014 Download the template (if needed)")
+st.markdown("### Step 1 — Download the template (if needed)")
 st.markdown("Use the AGL Carrier Template to ensure your data is parsed correctly.")
 tmpl_path = os.path.join(BASE_DIR, "agl_carrier_template.xlsx")
 if os.path.exists(tmpl_path):
     with open(tmpl_path, "rb") as _f:
         st.download_button(
-            "\u2b07\ufe0f Download AGL Carrier Template (.xlsx)",
+            "⬇️ Download AGL Carrier Template (.xlsx)",
             data=_f.read(),
             file_name="AGL_Carrier_Template.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -88,7 +108,7 @@ if os.path.exists(tmpl_path):
             use_container_width=True,
         )
 else:
-    st.info("Template not on file \u2014 contact your AGL point of contact.")
+    st.info("Template not on file — contact your AGL point of contact.")
 
 st.divider()
 
@@ -101,13 +121,13 @@ if st.session_state.get("vp_submit_result"):
     _res = st.session_state.vp_submit_result
     _fnames = ", ".join(_res.get("files", []))
     st.success(
-        "\u2705  **Submission received.**\n\n"
+        "✅  **Submission received.**\n\n"
         "**" + str(_res["count"]) + "** container records logged from **" + _res["scac"] + "**  \n"
-        "Submitted by " + _res["submitter"] + " \u2014 " + _res["timestamp"] + "  \n"
+        "Submitted by " + _res["submitter"] + " — " + _res["timestamp"] + "  \n"
         "Files: " + _fnames
     )
     st.info("Your data has been captured and stored. The AGL team will review your submission.")
-    if st.button("\u2714\ufe0f  Acknowledge & Clear", type="primary", use_container_width=True, key="vp_ack"):
+    if st.button("✔️  Acknowledge & Clear", type="primary", use_container_width=True, key="vp_ack"):
         del st.session_state["vp_submit_result"]
         st.session_state.vp_uploader_key += 1
         # Clear cached file bytes
@@ -115,24 +135,8 @@ if st.session_state.get("vp_submit_result"):
             del st.session_state[k]
         st.rerun()
 else:
-    # Step 2 — Carrier details + upload
-    st.markdown("### Step 2 \u2014 Enter your carrier details and upload your DBR file(s)")
-
-    _col1, _col2 = st.columns(2)
-    with _col1:
-        scac_raw = st.text_input(
-            "Your SCAC Code *",
-            placeholder="e.g. ATMI, ARVY, AOYV, HDDR\u2026",
-            help="Enter your 4-letter Standard Carrier Alpha Code exactly as assigned.",
-            key="vp_scac",
-        )
-        scac_code = scac_raw.strip().upper() if scac_raw.strip() else ""
-    with _col2:
-        submitter = st.text_input(
-            "Your Name *",
-            placeholder="e.g. Jane Smith",
-            key="vp_submitter",
-        )
+    # Step 2 — Upload
+    st.markdown("### Step 2 — Upload your DBR file(s)")
 
     file_date = st.date_input(
         "Date this data reflects *",
@@ -150,12 +154,7 @@ else:
     )
 
     # ── Validation ────────────────────────────────────────────────────────────
-    _ready = bool(carrier_files) and bool(scac_code) and bool(submitter.strip())
-
-    if carrier_files and not scac_code:
-        st.warning("Enter your SCAC code before submitting.")
-    if carrier_files and not submitter.strip():
-        st.warning("Enter your name before submitting.")
+    _ready = bool(carrier_files)
 
     if _ready:
         # Cache bytes per file so re-renders don't exhaust the file objects
@@ -166,7 +165,7 @@ else:
             if _ck not in st.session_state:
                 st.session_state[_ck] = _cf.read()
             _raw = st.session_state[_ck]
-            with st.spinner("Reading " + _cf.name + "\u2026"):
+            with st.spinner("Reading " + _cf.name + "…"):
                 try:
                     _p = parse_carrier_template(_raw, _cf.name)
                     if _p:
@@ -192,19 +191,19 @@ else:
             _total = sum(len(v) for v in _all_parsed.values())
             _n_files = len(carrier_files)
             st.success(
-                "\u2705 Found **" + str(_total) + " containers** across **" + str(len(_all_parsed)) + " sheet(s)** "
+                "✅ Found **" + str(_total) + " containers** across **" + str(len(_all_parsed)) + " sheet(s)** "
                 "from **" + str(_n_files) + " file(s)**. Review below, then confirm."
             )
 
             _sheet_labels = {
-                "delivery":      "\U0001f4e6 Delivery",
-                "delivery_ilm1": "\U0001f3ed ILM1",
-                "delivery_ric6": "\U0001f3ed RIC6",
-                "delivery_dbm6": "\U0001f3ed DBM6",
-                "empty_return":  "\U0001f501 Empty Returns",
-                "ody":           "\U0001f3d7\ufe0f Storage/ODY",
-                "demurrage":     "\u26a0\ufe0f Demurrage",
-                "accessorial":   "\U0001f4b0 Accessorials",
+                "delivery":      "📦 Delivery",
+                "delivery_ilm1": "🏭 ILM1",
+                "delivery_ric6": "🏭 RIC6",
+                "delivery_dbm6": "🏭 DBM6",
+                "empty_return":  "🔁 Empty Returns",
+                "ody":           "🏗️ Storage/ODY",
+                "demurrage":     "⚠️ Demurrage",
+                "accessorial":   "💰 Accessorials",
             }
             _ptabs = st.tabs([_sheet_labels.get(k, k) for k in _all_parsed.keys()])
             for _ptab, (_stype, _rows) in zip(_ptabs, _all_parsed.items()):
@@ -214,7 +213,7 @@ else:
 
             st.divider()
 
-            if st.button("\u2705 Confirm & Submit", type="primary", use_container_width=True, key="vp_submit_btn"):
+            if st.button("✅ Confirm & Submit", type="primary", use_container_width=True, key="vp_submit_btn"):
                 _now     = datetime.now(_PHX).isoformat()
                 _today   = file_date.isoformat()
                 _wk      = (file_date - timedelta(days=file_date.weekday())).isoformat()
@@ -222,6 +221,8 @@ else:
                 _count   = 0
                 _DEL_T   = {"delivery","delivery_ilm1","delivery_ric6","delivery_dbm6"}
                 _FC_MAP  = {"delivery_ilm1":"ILM1","delivery_ric6":"RIC6","delivery_dbm6":"DBM6"}
+                scac_code   = _portal_scac
+                submitter   = _portal_display
 
                 try:
                     for _stype, _rows in _all_parsed.items():
@@ -296,7 +297,7 @@ else:
 
                 except Exception as _e:
                     _conn.rollback()
-                    st.error("Submission failed \u2014 please try again or contact AGL. (" + str(_e) + ")")
+                    st.error("Submission failed — please try again or contact AGL. (" + str(_e) + ")")
                     st.stop()
                 finally:
                     _conn.close()
@@ -307,11 +308,11 @@ else:
                     st.session_state["vp_submit_result"] = {
                         "count":     _count,
                         "scac":      scac_code,
-                        "submitter": submitter.strip(),
+                        "submitter": submitter,
                         "timestamp": datetime.now(_PHX).strftime("%B %d, %Y %H:%M MST"),
                         "files":     [cf.name for cf in carrier_files],
                     }
                     st.rerun()
 
 st.divider()
-st.caption("AGL Robotics Logistics \u00b7 Questions? Contact your AGL point of contact.")
+st.caption("AGL Robotics Logistics · Questions? Contact your AGL point of contact.")

@@ -473,6 +473,11 @@ def migrate_db():
             conn.execute(_new_tbl)
         except Exception:
             pass
+    # ── carrier_contacts: portal_password column (Option A per-carrier auth) ──
+    try:
+        conn.execute("ALTER TABLE carrier_contacts ADD COLUMN portal_password TEXT")
+    except Exception:
+        pass  # column already exists
     conn.commit()
 
     # ── wbr_results: auto-seed historical W19–W28 if not present ──────────────
@@ -7041,6 +7046,35 @@ with tabDBR:
                         data_sync.push_db_to_s3(AWS_KEY, AWS_SECRET, AWS_REGION, S3_BUCKET)
                     st.success("Saved.")
                     st.rerun()
+
+                # ── Portal Password ───────────────────────────────────────────────
+                st.divider()
+                st.markdown("#### Portal Password")
+                st.caption(
+                    "Set this carrier\'s unique login password for the vendor submission portal. "
+                    "The password is stored as a one-way hash — it cannot be recovered, only reset."
+                )
+                with st.form("dt5_pw_form_" + _sel_c):
+                    _pw1 = st.text_input("New password", type="password", key="dt5_pw1")
+                    _pw2 = st.text_input("Confirm password", type="password", key="dt5_pw2")
+                    _pw_save = st.form_submit_button("Set Password", type="primary")
+                if _pw_save:
+                    if not _pw1:
+                        st.warning("Password cannot be empty.")
+                    elif _pw1 != _pw2:
+                        st.error("Passwords do not match.")
+                    else:
+                        import hashlib
+                        _hashed = hashlib.sha256(_pw1.encode()).hexdigest()
+                        _pw_conn = get_db()
+                        _pw_conn.execute(
+                            "UPDATE carrier_contacts SET portal_password=?, updated_at=datetime(\'now\') WHERE scac=?",
+                            (_hashed, _sel_c)
+                        )
+                        _pw_conn.commit(); _pw_conn.close()
+                        if S3_ENABLED:
+                            data_sync.push_db_to_s3(AWS_KEY, AWS_SECRET, AWS_REGION, S3_BUCKET)
+                        st.success("Portal password set for " + _sel_c + ".")
             else:
                 st.info("No contact record for " + _sel_c + ". Will be created on next DBR submission.")
 
