@@ -1146,142 +1146,192 @@ with tabC:
 
         _CARRIER_OPTS = ["", "ATMI", "ARVY", "HDDR", "RKNE", "TGHE"]
 
-        # Key counter resets the file uploader widget after a successful submit
+        # Key counter — incrementing resets the file uploader widget
         if "bulk_upload_key" not in st.session_state:
             st.session_state.bulk_upload_key = 0
 
-        # Show toast confirmation from previous submit (fires once, then cleared)
-        if st.session_state.get("upload_toast"):
-            st.toast(st.session_state.pop("upload_toast"), icon="✅")
+        # ── Acknowledge-and-clear banner ──────────────────────────────────────
+        if st.session_state.get("bulk_upload_result"):
+            _bres = st.session_state.bulk_upload_result
+            _bfiles_lbl = ", ".join(_bres.get("files", []))
+            st.success(
+                "\u2705  **Submission successful.**\n\n"
+                "**" + str(_bres["logged"]) + "** container records logged across "
+                "**" + str(_bres["carriers"]) + "** carrier(s)  \n"
+                "Files: " + _bfiles_lbl
+            )
+            st.info("Your data has been captured and stored. Click below to clear and submit another batch.")
+            if st.button("\u2714\ufe0f  Acknowledge & Clear", type="primary", key="bulk_ack_btn"):
+                del st.session_state["bulk_upload_result"]
+                st.session_state.bulk_upload_key += 1
+                st.rerun()
+        else:
+            bulk_files = st.file_uploader(
+                "Drop DBR files here",
+                type=["xlsx", "csv"],
+                accept_multiple_files=True,
+                key="bulk_dbr_upload_" + str(st.session_state.bulk_upload_key),
+                label_visibility="collapsed",
+            )
 
-        bulk_files = st.file_uploader(
-            "Drop DBR files here",
-            type=["xlsx", "csv"],
-            accept_multiple_files=True,
-            key=f"bulk_dbr_upload_{st.session_state.bulk_upload_key}",
-            label_visibility="collapsed",
-        )
+            if bulk_files:
+                st.caption(str(len(bulk_files)) + " file(s) selected — confirm carrier for each:")
 
-        if bulk_files:
-            st.caption(f"{len(bulk_files)} file(s) selected — confirm carrier for each:")
+                _file_carrier_map = {}
+                _hdr1, _hdr2, _hdr3 = st.columns([4, 1, 2])
+                _hdr2.caption("Carrier")
+                _hdr3.caption("File date — which day is this data from?")
+                for _fi, _uf in enumerate(bulk_files):
+                    _det      = _detect_carrier_from_name(_uf.name)
+                    _det_date = _detect_date_from_name(_uf.name)
+                    _hd1, _hd2, _hd3 = st.columns([4, 1, 2])
+                    with _hd1:
+                        st.markdown("&nbsp;&nbsp;\U0001f4c4 `" + _uf.name + "`")
+                    with _hd2:
+                        _chosen = st.selectbox(
+                            "Carrier", _CARRIER_OPTS,
+                            index=_CARRIER_OPTS.index(_det) if _det in _CARRIER_OPTS else 0,
+                            key="bulk_c_" + str(_fi), label_visibility="collapsed",
+                        )
+                    with _hd3:
+                        _file_date = st.date_input(
+                            "File date", value=_det_date,
+                            key="bulk_d_" + str(_fi), label_visibility="collapsed",
+                        )
+                    _file_carrier_map[_fi] = (_uf, _chosen, _file_date)
 
-            _file_carrier_map = {}
-            _hdr1, _hdr2, _hdr3 = st.columns([4, 1, 2])
-            _hdr2.caption("Carrier")
-            _hdr3.caption("File date — which day is this data from?")
-            for _fi, _uf in enumerate(bulk_files):
-                _det      = _detect_carrier_from_name(_uf.name)
-                _det_date = _detect_date_from_name(_uf.name)
-                _hd1, _hd2, _hd3 = st.columns([4, 1, 2])
-                with _hd1:
-                    st.markdown(f"&nbsp;&nbsp;📄 `{_uf.name}`")
-                with _hd2:
-                    _chosen = st.selectbox(
-                        "Carrier",
-                        _CARRIER_OPTS,
-                        index=_CARRIER_OPTS.index(_det) if _det in _CARRIER_OPTS else 0,
-                        key=f"bulk_c_{_fi}",
-                        label_visibility="collapsed",
-                    )
-                with _hd3:
-                    _file_date = st.date_input(
-                        "File date",
-                        value=_det_date,
-                        key=f"bulk_d_{_fi}",
-                        label_visibility="collapsed",
-                    )
-                _file_carrier_map[_fi] = (_uf, _chosen, _file_date)
+                _unassigned = [_uf.name for _, (_uf, _c, _fd) in _file_carrier_map.items() if not _c]
+                if _unassigned:
+                    st.warning("Assign carrier for: " + ", ".join(_unassigned))
+                else:
+                    _all_parsed = {}
+                    _parse_errs = []
+                    for _fi, (_uf, _carrier, _file_date) in _file_carrier_map.items():
+                        _ck = "bulk_" + _uf.name + "_" + str(_uf.size)
+                        if _ck not in st.session_state:
+                            st.session_state[_ck] = _uf.read()
+                        _raw = st.session_state[_ck]
+                        try:
+                            _p = parse_carrier_template(_raw, _uf.name)
+                            if _p:
+                                if _carrier not in _all_parsed:
+                                    _all_parsed[_carrier] = {}
+                                for _stype, _rows in _p.items():
+                                    _all_parsed[_carrier].setdefault(_stype, [])
+                                    for _r in _rows:
+                                        _r["_src"] = _uf.name
+                                    _all_parsed[_carrier][_stype].extend(_rows)
+                            else:
+                                _parse_errs.append(_uf.name + ": no container data found")
+                        except Exception as _e:
+                            _parse_errs.append(_uf.name + ": " + str(_e))
 
-            _unassigned = [_uf.name for _, (_uf, _c, _fd) in _file_carrier_map.items() if not _c]
-            if _unassigned:
-                st.warning(f"Assign carrier for: {', '.join(_unassigned)}")
-            else:
-                # Parse all files, group by carrier
-                _all_parsed = {}
-                _parse_errs = []
-                for _fi, (_uf, _carrier, _file_date) in _file_carrier_map.items():
-                    _ck = f"bulk_{_uf.name}_{_uf.size}"
-                    if _ck not in st.session_state:
-                        st.session_state[_ck] = _uf.read()
-                    _raw = st.session_state[_ck]
-                    try:
-                        _p = parse_carrier_template(_raw, _uf.name)
-                        if _p:
-                            if _carrier not in _all_parsed:
-                                _all_parsed[_carrier] = {}
-                            for _stype, _rows in _p.items():
-                                _all_parsed[_carrier].setdefault(_stype, [])
-                                for _r in _rows:
-                                    _r["_src"] = _uf.name
-                                _all_parsed[_carrier][_stype].extend(_rows)
-                        else:
-                            _parse_errs.append(f"{_uf.name}: no container data found")
-                    except Exception as _e:
-                        _parse_errs.append(f"{_uf.name}: {_e}")
+                    for _err in _parse_errs:
+                        st.warning(_err)
 
-                for _err in _parse_errs:
-                    st.warning(_err)
+                    if _all_parsed:
+                        _tot = sum(len(_r) for _cd in _all_parsed.values() for _r in _cd.values())
+                        st.success("Ready: **" + str(_tot) + " containers** across **" + str(len(_all_parsed)) + " carrier(s)**")
 
-                if _all_parsed:
-                    _tot = sum(len(_r) for _cd in _all_parsed.values() for _r in _cd.values())
-                    st.success(f"Ready: **{_tot} containers** across **{len(_all_parsed)} carrier(s)**")
-
-                    for _carrier, _sheets in _all_parsed.items():
-                        _ctot = sum(len(_r) for _r in _sheets.values())
-                        with st.expander(f"🔎 Preview — {_carrier} ({_ctot} containers)"):
-                            _slabels = {"delivery": "Delivery", "delivery_ilm1": "ILM1",
-                                        "delivery_ric6": "RIC6", "empty_return": "Empty Returns",
-                                        "demurrage": "Demurrage", "accessorial": "Accessorials", "ody": "ODY"}
-                            _ptabs = st.tabs([_slabels.get(_k, _k) for _k in _sheets])
-                            for _ptab, (_st, _rows) in zip(_ptabs, _sheets.items()):
-                                with _ptab:
-                                    _df_p = pd.DataFrame(_rows).drop(columns=["_raw_container","_src"], errors="ignore")
-                                    st.dataframe(_df_p, use_container_width=True, hide_index=True)
-
-                    if st.button("✅ Confirm & Submit All", type="primary", key="bulk_submit_btn"):
-                        _logged_at = datetime.now(_EASTERN).isoformat()
-                        _conn = get_db()
-                        _logged = 0
-                        # file date per carrier from per-file date pickers
-                        _carrier_file_dates = {}
-                        for _fi, (_uf, _carrier, _fdate) in _file_carrier_map.items():
-                            if _carrier:
-                                _carrier_file_dates.setdefault(_carrier, _fdate)
                         for _carrier, _sheets in _all_parsed.items():
-                            _fdate = _carrier_file_dates.get(_carrier, datetime.now(_EASTERN).date())
-                            for _stype, _rows in _sheets.items():
-                                for _row in _rows:
-                                    _conn.execute(
-                                        """INSERT OR IGNORE INTO carrier_submissions
-                                           (submitted_at, carrier_name, container_id, sheet_type,
-                                            port, terminal, fc_building, flexi_id, outgate_date,
-                                            delivery_date, status, within_sla, sla_notes,
-                                            empty_return_due, appointment_date, accessorial_type,
-                                            notes, source_file, source)
-                                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                                        (_fdate.isoformat(), _carrier, _row["container_id"], _stype,
-                                         _row.get("port"), _row.get("terminal"), _row.get("fc_building"),
-                                         _row.get("flexi_id"), _row.get("outgate_date"),
-                                         _row.get("delivery_date"), _row.get("status"),
-                                         _row.get("within_sla"), _row.get("sla_notes"),
-                                         _row.get("empty_return_due"), _row.get("appointment_date"),
-                                         _row.get("accessorial_type"), _row.get("notes"),
-                                         _row.get("_src"), "web")
-                                    )
-                                    _logged += 1
-                            _wk = (_fdate - timedelta(days=_fdate.weekday())).isoformat()
-                            _conn.execute(
-                                "INSERT OR IGNORE INTO dbr_receipts (carrier, week_start, received_date, received_via, logged_at) VALUES (?,?,?,?,?)",
-                                (_carrier, _wk, _fdate.isoformat(), "portal", _logged_at)
-                            )
-                        _conn.commit()
-                        _conn.close()
-                        if S3_ENABLED:
-                            data_sync.push_db_to_s3(AWS_KEY, AWS_SECRET, AWS_REGION, S3_BUCKET)
-                        _msg = f"✅ Submitted {_logged} containers across {len(_all_parsed)} carrier(s)"
-                        st.session_state["upload_toast"] = _msg
-                        st.session_state.bulk_upload_key += 1
-                        st.rerun()
+                            _ctot = sum(len(_r) for _r in _sheets.values())
+                            with st.expander("\U0001f50e Preview \u2014 " + _carrier + " (" + str(_ctot) + " containers)"):
+                                _slabels = {"delivery": "Delivery", "delivery_ilm1": "ILM1",
+                                            "delivery_ric6": "RIC6", "empty_return": "Empty Returns",
+                                            "demurrage": "Demurrage", "accessorial": "Accessorials", "ody": "ODY"}
+                                _ptabs = st.tabs([_slabels.get(_k, _k) for _k in _sheets])
+                                for _ptab, (_st, _rows) in zip(_ptabs, _sheets.items()):
+                                    with _ptab:
+                                        _df_p = pd.DataFrame(_rows).drop(columns=["_raw_container","_src"], errors="ignore")
+                                        st.dataframe(_df_p, use_container_width=True, hide_index=True)
+
+                        if st.button("\u2705 Confirm & Submit All", type="primary", key="bulk_submit_btn"):
+                            _logged_at = datetime.now(_EASTERN).isoformat()
+                            _conn = get_db()
+                            _logged = 0
+                            _DEL_T = {"delivery","delivery_ilm1","delivery_ric6","delivery_dbm6"}
+                            _FC_MP = {"delivery_ilm1":"ILM1","delivery_ric6":"RIC6","delivery_dbm6":"DBM6"}
+                            _carrier_file_dates = {}
+                            for _fi, (_uf, _carrier, _fdate) in _file_carrier_map.items():
+                                if _carrier:
+                                    _carrier_file_dates.setdefault(_carrier, _fdate)
+                            for _carrier, _sheets in _all_parsed.items():
+                                _fdate = _carrier_file_dates.get(_carrier, datetime.now(_EASTERN).date())
+                                for _stype, _rows in _sheets.items():
+                                    for _row in _rows:
+                                        # carrier_submissions log
+                                        _conn.execute(
+                                            "INSERT OR IGNORE INTO carrier_submissions"
+                                            " (submitted_at, carrier_name, container_id, sheet_type,"
+                                            " port, terminal, fc_building, flexi_id, outgate_date,"
+                                            " delivery_date, status, within_sla, sla_notes,"
+                                            " empty_return_due, appointment_date, accessorial_type,"
+                                            " notes, source_file, source)"
+                                            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                                            (_fdate.isoformat(), _carrier, _row["container_id"], _stype,
+                                             _row.get("port"), _row.get("terminal"), _row.get("fc_building"),
+                                             _row.get("flexi_id"), _row.get("outgate_date"),
+                                             _row.get("delivery_date"), _row.get("status"),
+                                             _row.get("within_sla"), _row.get("sla_notes"),
+                                             _row.get("empty_return_due"), _row.get("appointment_date"),
+                                             _row.get("accessorial_type"), _row.get("notes"),
+                                             _row.get("_src"), "web"),
+                                        )
+                                        _logged += 1
+                                        # inbound_containers upsert (feeds DBR Dashboard)
+                                        if _stype in _DEL_T:
+                                            _hd = bool(_row.get("delivery_date"))
+                                            _ho = bool(_row.get("outgate_date"))
+                                            if _hd:   _ic_st, _fa = "delivered", str(_row["delivery_date"])
+                                            elif _ho: _ic_st, _fa = "at_yard", None
+                                            else:     _ic_st, _fa = "pending", None
+                                            _fd = _FC_MP.get(_stype) or _row.get("fc_building")
+                                            _conn.execute(
+                                                "INSERT INTO inbound_containers"
+                                                " (container_id,carrier,port_region,fc_dest,"
+                                                "  yard_actual,fc_actual,status,notes,last_updated,source_file)"
+                                                " VALUES (?,?,?,?,?,?,?,?,?,?)"
+                                                " ON CONFLICT(container_id) DO UPDATE SET"
+                                                "  carrier=COALESCE(excluded.carrier,carrier),"
+                                                "  port_region=COALESCE(excluded.port_region,port_region),"
+                                                "  fc_dest=COALESCE(excluded.fc_dest,fc_dest),"
+                                                "  yard_actual=COALESCE(excluded.yard_actual,yard_actual),"
+                                                "  fc_actual=COALESCE(excluded.fc_actual,fc_actual),"
+                                                "  status=excluded.status,"
+                                                "  last_updated=excluded.last_updated,"
+                                                "  source_file=excluded.source_file",
+                                                (_row["container_id"], _carrier, _row.get("port"), _fd,
+                                                 _row.get("outgate_date"), _fa,
+                                                 _ic_st, _row.get("notes"), _logged_at, _row.get("_src")),
+                                            )
+                                        elif _stype == "empty_return":
+                                            _ret = str(_row.get("status") or "").lower()
+                                            if any(kw in _ret for kw in ("return","complete","done","at port")):
+                                                _rd = _row.get("appointment_date") or _fdate.isoformat()
+                                                _conn.execute(
+                                                    "UPDATE inbound_containers SET"
+                                                    " empty_returned=COALESCE(empty_returned,?),"
+                                                    " status='empty_returned', last_updated=?"
+                                                    " WHERE container_id=?",
+                                                    (_rd, _logged_at, _row["container_id"]),
+                                                )
+                                _wk = (_fdate - timedelta(days=_fdate.weekday())).isoformat()
+                                _conn.execute(
+                                    "INSERT OR IGNORE INTO dbr_receipts"
+                                    " (carrier, week_start, received_date, received_via, logged_at)"
+                                    " VALUES (?,?,?,?,?)",
+                                    (_carrier, _wk, _fdate.isoformat(), "portal", _logged_at),
+                                )
+                            _conn.commit()
+                            _conn.close()
+                            if S3_ENABLED:
+                                data_sync.push_db_to_s3(AWS_KEY, AWS_SECRET, AWS_REGION, S3_BUCKET)
+                            st.session_state["bulk_upload_result"] = {
+                                "logged": _logged,
+                                "carriers": len(_all_parsed),
+                                "files": [_file_carrier_map[i][0].name for i in _file_carrier_map],
+                            }
+                            st.rerun()
 
         st.divider()
 
