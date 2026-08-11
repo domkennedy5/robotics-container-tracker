@@ -869,68 +869,55 @@ st.markdown("""
 /* Layout */
 .main .block-container { padding-top: 1.25rem; padding-bottom: 2rem; }
 
-/* Metric cards */
+/* Metric cards — structural only, no color overrides (respects light/dark theme) */
 [data-testid="stMetric"] {
-    background: #F9FAFB;
-    border: 1px solid #E5E7EB;
     border-radius: 8px;
     padding: 1rem 1.25rem;
+    border: 1px solid rgba(128,128,128,0.2);
 }
 [data-testid="stMetricLabel"] > div {
-    color: #6B7280;
     font-size: 0.72rem;
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.06em;
+    opacity: 0.75;
 }
 [data-testid="stMetricValue"] > div {
-    color: #111827;
     font-size: 1.7rem;
     font-weight: 700;
 }
 
-/* Tab bar */
-[data-testid="stTabs"] [role="tablist"] {
-    gap: 0.25rem;
-    border-bottom: 2px solid #E5E7EB;
-}
+/* Tab bar — structural only */
+[data-testid="stTabs"] [role="tablist"] { gap: 0.25rem; }
 [data-testid="stTabs"] button[role="tab"] {
     font-size: 0.83rem;
     font-weight: 500;
-    color: #6B7280;
     padding: 0.45rem 0.85rem;
     border-radius: 6px 6px 0 0;
 }
 [data-testid="stTabs"] button[role="tab"][aria-selected="true"] {
-    color: #1D4ED8;
-    font-weight: 600;
-    border-bottom: 2px solid #1D4ED8;
+    font-weight: 700;
 }
 
-/* Typography */
-h1 { font-size: 1.35rem !important; font-weight: 800 !important; color: #111827 !important; }
-h2 { font-size: 1.2rem  !important; font-weight: 700 !important; color: #111827 !important; margin-bottom: 0.2rem !important; }
-h3 { font-size: 1.0rem  !important; font-weight: 600 !important; color: #1F2937 !important; margin-top: 1.2rem !important; margin-bottom: 0.15rem !important; }
-h4 { font-size: 0.9rem  !important; font-weight: 600 !important; color: #374151 !important; margin-top: 0.9rem !important; margin-bottom: 0.15rem !important; }
+/* Typography — size and weight only */
+h1 { font-size: 1.35rem !important; font-weight: 800 !important; }
+h2 { font-size: 1.2rem  !important; font-weight: 700 !important; margin-bottom: 0.2rem !important; }
+h3 { font-size: 1.0rem  !important; font-weight: 600 !important; margin-top: 1.2rem !important; margin-bottom: 0.15rem !important; }
+h4 { font-size: 0.9rem  !important; font-weight: 600 !important; margin-top: 0.9rem !important; margin-bottom: 0.15rem !important; }
 
-/* Dividers */
-hr { border-color: #E5E7EB !important; margin: 0.85rem 0 !important; }
-
-/* Captions */
-[data-testid="stCaptionContainer"] p { color: #6B7280; font-size: 0.8rem; }
+/* Spacing */
+hr { margin: 0.85rem 0 !important; }
 
 /* Alert boxes */
 [data-testid="stAlert"] { border-radius: 6px; }
 
-/* Sidebar */
-[data-testid="stSidebar"] { background: #F9FAFB; border-right: 1px solid #E5E7EB; }
+/* Sidebar headers — structural only */
 [data-testid="stSidebar"] h2,
 [data-testid="stSidebar"] h3 {
     font-size: 0.75rem !important;
     font-weight: 700 !important;
     text-transform: uppercase !important;
     letter-spacing: 0.07em !important;
-    color: #374151 !important;
 }
 </style>
 """, unsafe_allow_html=True)
