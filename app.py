@@ -5232,7 +5232,7 @@ with tab9:
         from wbr_engine import (
             load_gvt, load_oblt, load_inbound_loads,
             compute_metrics, compute_totals, compute_carrier_scorecard,
-            week_bounds, guess_week,
+            week_bounds, guess_week, guess_week_from_oblt,
             save_week_to_db, load_weeks_from_db, parse_wbr_pdf,
             load_market_context, format_market_context_block,
             _latest,
@@ -5412,10 +5412,11 @@ with tab9:
             with st.expander(f"ℹ️ How to pull OBLT — W{_wbr_wnum}"):
                 st.markdown(f"""**OBLT (Ocean Bridge Logistics Tracking) — W{_wbr_wnum} pull**
     - Navigate to OBLT → Export
-    - Pull containers with **AV date between `{_wbr_sun_str}` and `{_wbr_sat_str}`** (W{_wbr_wnum})
+    - Pull containers with **OA (gate-out) date between `{_wbr_sun_str}` and `{_wbr_sat_str}`** (W{_wbr_wnum})
+    - AV date range can be wider — OBLT is filtered to OA date for population
     - Required sheet: `ObltData`
     - Key columns: `tracking_id`, `status` (AV/OA/VD/RD), `status_date`
-    - Status key: AV=Available · OA=Outgate/Pickup · VD=Vessel Departed · RD=Received
+    - Status key: AV=EVENT_308 (available) · OA=EVENT_602 (gate-out) · VD=Vessel Departed · RD=EVENT_511 (empty return)
     - Save as `OBLT WK{_wbr_wnum}.xlsx`""")
             wbr_oblt_file = st.file_uploader("OBLT Data (.xlsx)", type=["xlsx"], key="wbr_oblt")
 
@@ -5490,10 +5491,13 @@ with tab9:
                     inbound_df = load_inbound_loads(il_bytes)
                     iss_df     = parse_shipment_status_file(iss_bytes) if iss_bytes else pd.DataFrame()
 
-                    week_num, year = guess_week(gvt_df["ready_date"], wbr_report_date)
+                    # Primary: OBLT OA dates; fallback: GVT Ready Date
+                    week_num, year = guess_week_from_oblt(oblt_df, wbr_report_date)
                     if week_num is None:
-                        st.error("❌ GVT file has no parseable Ready Date/Time values. "
-                                 "Re-pull GVT and ensure the Ready Date column is populated before continuing.")
+                        week_num, year = guess_week(gvt_df["ready_date"], wbr_report_date)
+                    if week_num is None:
+                        st.error("❌ Cannot detect reporting week from OBLT or GVT. "
+                                 "Verify OBLT has OA events and GVT has Ready Date values.")
                         st.stop()
                     wk_start, wk_end = week_bounds(week_num, year)
                     st.info(f"Detected: **W{week_num}** ({wk_start} to {wk_end})")
@@ -5501,17 +5505,21 @@ with tab9:
                     # ── Data Preview ──────────────────────────────────────────────
                     with st.expander("📋 Data Preview — inspect raw files before generating", expanded=False):
                         pv1, pv2, pv3, pv4 = st.tabs(["GVT", "OBLT", "Inbound Loads", "Import Shipment Status"])
-                        pop_gvt = gvt_df[
-                            gvt_df["ready_date"].notna() &
-                            (gvt_df["ready_date"] >= wk_start) &
-                            (gvt_df["ready_date"] <= wk_end)
-                        ].copy()
-                        _pop_ctrs = set(pop_gvt["container"])
+                        # Population = OBLT OA dates in week window
+                        _oa_prev = oblt_df[
+                            (oblt_df["status"] == "OA") &
+                            oblt_df["date"].notna() &
+                            (oblt_df["date"].dt.date >= wk_start) &
+                            (oblt_df["date"].dt.date <= wk_end)
+                        ]
+                        _pop_ctrs = set(_oa_prev["container"])
+                        # GVT rows for the same containers (for facility/port preview)
+                        pop_gvt = gvt_df[gvt_df["container"].isin(_pop_ctrs)].copy()
 
                         with pv1:
-                            st.caption(f"GVT — {len(gvt_df):,} total rows | **{len(pop_gvt)} containers in W{week_num}**")
-                            _gvt_cols = [c for c in ["container","ready_date","facility","market","port","scac","status","container_empty","return_to_port","enter_facility"] if c in pop_gvt.columns]
-                            st.dataframe(pop_gvt[_gvt_cols].sort_values("ready_date").reset_index(drop=True), use_container_width=True, height=220)
+                            st.caption(f"GVT — {len(gvt_df):,} total rows | **{len(pop_gvt)} W{week_num} containers matched from OBLT population** ({len(_pop_ctrs)} total in OBLT OA cohort)")
+                            _gvt_cols = [c for c in ["container","ready_date","facility","market","port","scac","status","enter_facility"] if c in pop_gvt.columns]
+                            st.dataframe(pop_gvt[_gvt_cols].sort_values("ready_date", na_position="last").reset_index(drop=True), use_container_width=True, height=220)
                             _rdates = gvt_df["ready_date"].dropna()
                             if len(_rdates):
                                 st.code(f"Ready Date range: {_rdates.min()} to {_rdates.max()}")
@@ -5587,34 +5595,34 @@ with tab9:
                         n_pop = len(_pop_ctrs)
                         n_ctr = curr_metrics.get("containers", 0) or 0
                         if n_ctr == 0:
-                            st.error("Zero containers — verify GVT file is the correct week.")
+                            st.error("Zero containers — verify OBLT has OA (EVENT_602) events in the reporting week.")
                         elif n_ctr < 20:
                             st.warning(f"Low count ({n_ctr}). Typical weeks are 30–100+.")
                         else:
-                            st.success(f"Container count: {n_ctr}")
+                            st.success(f"Container count: {n_ctr} (OBLT OA cohort)")
 
-                        oblt_set = set(oblt_df["container"])
-                        oblt_cov = len(_pop_ctrs & oblt_set) / n_pop * 100 if n_pop else 0
-                        if oblt_cov < 60:
-                            st.warning(f"OBLT coverage low ({oblt_cov:.0f}%). AV→OA and OA→Del may be understated.")
+                        # OBLT AV coverage (population itself is from OBLT OA, so check AV presence)
+                        av_set = set(oblt_df[oblt_df["status"] == "AV"]["container"]) & _pop_ctrs
+                        av_cov = len(av_set) / n_pop * 100 if n_pop else 0
+                        if av_cov < 60:
+                            st.warning(f"AV event coverage: {av_cov:.0f}% of OA population. AV→OA avg may be understated.")
                         else:
-                            st.success(f"OBLT coverage: {oblt_cov:.0f}%")
+                            st.success(f"AV event coverage: {av_cov:.0f}% (OBLT EVENT_308)")
 
-                        oa_set = set(oblt_df[oblt_df["status"] == "OA"]["container"]) & _pop_ctrs
                         rd_set = set(oblt_df[oblt_df["status"] == "RD"]["container"]) & _pop_ctrs
-                        in_tr  = len(oa_set - rd_set)
+                        in_tr  = len(_pop_ctrs - rd_set)
                         if in_tr > 0:
-                            st.info(f"{in_tr} container(s) have OA but no RD — in-transit. Elapsed time included in OA→Del avg.")
+                            st.info(f"{in_tr} container(s) have OA (EVENT_602) but no RD (EVENT_511) — in-transit or empty return pending. Elapsed time used for OA→Del.")
 
                         il_m = inbound_df[inbound_df["container"].isin(_pop_ctrs)].dropna(subset=["po_promised","actual_arrival"])
                         otp_m = len(il_m) / n_pop * 100 if n_pop else 0
                         if otp_m < 40:
-                            st.warning(f"OTP match rate: only {otp_m:.0f}%. Verify Inbound Loads covers the right containers.")
+                            st.warning(f"OTP match rate: only {otp_m:.0f}% (IL fallback). Check GVT Current Dray SLA column first.")
                         else:
                             st.success(f"OTP match rate: {otp_m:.0f}% ({len(il_m)}/{n_pop})")
 
-                        st.markdown(f"**Week detected:** W{week_num} | {wk_start} (Sun) → {wk_end} (Sat)")
-                        st.info("OA→Del excludes A320-RBTCS (ORF, non-operational). BOS-market containers scored.")
+                        st.markdown(f"**Week detected:** W{week_num} | {wk_start} (Sun) → {wk_end} (Sat) | Population source: OBLT EVENT_602 (OA)")
+                        st.info("Population = OBLT OA cohort (EVENT_602). OA→Del: BOS only, excl A320-RBTCS. Empty→Term: ALL markets, OBLT OA→RD (EVENT_511), completed only.")
 
                         # ── Additional cross-checks ────────────────────────────────
                         st.markdown("**Cross-file checks**")
@@ -5972,14 +5980,10 @@ with tab9:
                                 _headline_parts.append(f"OTP {_dir_tc(_otp, _pw.get('otp_pct'))} {_otp}%")
                             _headline = "; ".join(_headline_parts) if _headline_parts else "Week in Review"
 
-                            # Port mix from GVT (appended to Volume narrative)
+                            # Port mix from GVT — keyed to OBLT OA population
                             _port_mix_str = ""
                             try:
-                                _pop_gvt = gvt_df[
-                                    gvt_df['ready_date'].notna() &
-                                    (gvt_df['ready_date'] >= wk_start.date()) &
-                                    (gvt_df['ready_date'] <= wk_end.date())
-                                ]
+                                _pop_gvt = gvt_df[gvt_df['container'].isin(_pop_ctrs)]
                                 _ports = _pop_gvt['port'].dropna().astype(str).str.strip().str.upper()
                                 _port_counts = _ports.value_counts()
                                 if len(_port_counts) > 1:

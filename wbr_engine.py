@@ -1,13 +1,22 @@
 """
 wbr_engine.py — WBR metric calculations for Robotics Destination Dray
 
-Methodology (locked against WK29 validation):
-- Population:  GVT containers with Ready Date/Time in week Sun–Sat
-- AV->OA:      OBLT latest AV/OA; measurable = has_OA OR (has_AV > 3 frac days before report)
-- OA->Del:     OBLT OA->RD; BOS-only (excludes A320-RBTCS ORF facility); in-transit = elapsed
-- Empty->Term: GVT Container Empty -> Return to Port; completed only; SLA <= 3 days
-- E2E:         OBLT VD -> GVT Enter Facility; completed only
-- OTP:         Inbound Loads delivery_date <= PO Promised Date; delivered containers only
+Methodology (updated Aug 2026 — OBLT-primary):
+- Population:  OBLT containers with EVENT_602 (OA/gate-out) date in week Sun–Sat.
+               De-duplicated: each container counted once, in the week its EVENT_602 fires.
+- AV->OA:      OBLT EVENT_308 (AV) → EVENT_602 (OA); measurable = has_OA OR (has_AV > 3 frac days
+               before report with no OA). GVT Terminal Avail supplements missing AV records.
+- OA->Del:     OBLT OA (EVENT_602) → RD (EVENT_511); BOS-only, excl A320-RBTCS; in-transit = elapsed.
+- Empty->Term: OBLT EVENT_602 (OA) → EVENT_511 (RD); ALL Robotics markets; completed only
+               (both OA and RD required). Do NOT use GVT Container Empty / Return to Port.
+- E2E:         OBLT VD (Vessel Departure) → GVT Enter Facility; completed only.
+- OTP:         GVT Current Dray SLA vs. Enter Facility (primary); Inbound Loads fallback.
+
+Data source roles (Aug 2026):
+  OBLT   — PRIMARY: population bucketing (EVENT_602), AV→OA, Empty→Term, OA→Del
+  GVT    — E2E Transit (Enter Facility) + OTP (delivery date); facility/scac lookup
+  IL     — OTP fallback when GVT Dray SLA is absent
+  ISS    — Supplemental context only
 """
 from __future__ import annotations
 
@@ -54,6 +63,18 @@ def guess_week(ready_dates, report_date=None) -> tuple:
     iso_weeks = dates.apply(lambda d: (d + timedelta(days=1)).isocalendar()[:2])
     most_common = pd.Series(iso_weeks).value_counts().idxmax()
     return int(most_common[1]), int(most_common[0])
+
+
+def guess_week_from_oblt(oblt: pd.DataFrame, report_date=None) -> tuple:
+    """Return (week_num, year) from OBLT EVENT_602 (OA/gate-out) dates.
+
+    Preferred over GVT-based detection when OBLT is the population source.
+    Falls back to None if no OA events are present.
+    """
+    oa_dates = oblt[oblt['status'] == 'OA']['date'].dropna()
+    if oa_dates.empty:
+        return None, date.today().year
+    return guess_week(oa_dates, report_date)
 
 
 def _to_date(v):
@@ -146,39 +167,51 @@ def _latest(oblt: pd.DataFrame, status: str):
 
 
 def compute_metrics(gvt, oblt, inbound, week_start, week_end, report_date) -> dict:
-    pop = gvt[
-        gvt['ready_date'].notna() &
-        (gvt['ready_date'] >= week_start) &
-        (gvt['ready_date'] <= week_end)
-    ].copy()
-    # Filter to Robotics containers only when Category column is present
-    if 'category' in pop.columns and pop['category'].notna().any():
-        robo = pop[pop['category'].astype(str).str.upper().str.contains('ROBOTICS', na=False)]
-        if not robo.empty:
-            pop = robo
+    # ── Population: OBLT EVENT_602 (OA) date in reporting week ──────────────────
+    # Each container counted once, in the week its OA event fires.
+    # De-duplicated: latest OA within the week if a container has multiple records.
+    oa_wk = oblt[
+        (oblt['status'] == 'OA') &
+        oblt['date'].notna() &
+        (oblt['date'].dt.date >= week_start) &
+        (oblt['date'].dt.date <= week_end)
+    ].sort_values('date')
+    pop_oa = oa_wk.groupby('container').last().reset_index()   # one row per container
+    pop_ctrs = set(pop_oa['container'])
+    n = len(pop_ctrs)
+    if n == 0:
+        return _empty_metrics()
 
-    n = len(pop)
-    if n == 0: return _empty_metrics()
+    # Week-specific OA timestamps keyed by container (used for AV→OA and Empty→Term)
+    oa_ev = pop_oa.set_index('container')['date']
 
+    # ── GVT subset: facility, scac, E2E (Enter Facility), OTP (Dray SLA) ────────
+    gvt_pop = gvt[gvt['container'].isin(pop_ctrs)].copy()
+    if not gvt_pop.empty:
+        # De-dup GVT: keep one row per container (latest enter_facility if available)
+        gvt_pop = (gvt_pop.sort_values('enter_facility', na_position='last')
+                          .groupby('container').last().reset_index())
+    gvt_facility = (gvt_pop.set_index('container')['facility']
+                    if not gvt_pop.empty else pd.Series(dtype=str))
+
+    # ── OBLT milestone events (full file — not week-restricted) ─────────────────
     av_ev = _latest(oblt, 'AV')
-    oa_ev = _latest(oblt, 'OA')
-    rd_ev = _latest(oblt, 'RD')
-    vd_ev = _latest(oblt, 'VD')
+    rd_ev = _latest(oblt, 'RD')   # EVENT_511 — empty container return to terminal
+    vd_ev = _latest(oblt, 'VD')   # Vessel Departure
     rpt   = pd.Timestamp(report_date)
 
-    # Supplement OBLT AV events with GVT Terminal Avail for containers missing an AV record
-    if 'terminal_avail' in pop.columns:
-        ta = pop.set_index('container')['terminal_avail'].dropna()
+    # Supplement OBLT AV with GVT Terminal Avail for containers missing an AV record
+    if not gvt_pop.empty and 'terminal_avail' in gvt_pop.columns:
+        ta = gvt_pop.set_index('container')['terminal_avail'].dropna()
         missing_av = ta[~ta.index.isin(av_ev.index)]
         if not missing_av.empty:
             av_ev = pd.concat([av_ev, missing_av])
 
-    # AV->OA
-    # Denominator: containers with OA (regardless of AV) + containers with AV expired (>3d, no OA)
+    # ── AV→OA ──────────────────────────────────────────────────────────────────
+    # Denominator: containers with OA + containers with AV expired (>3d, no OA)
     # Avg/P90: only containers with both AV+OA (computable delta)
-    # SLA met: OA-AV <= 3 days (if both present) OR has OA but no AV (treat as met, delta unknown)
     ao_days = []; ao_met = 0; ao_den = 0
-    for c in pop['container']:
+    for c in pop_ctrs:
         hav = c in av_ev.index; hoa = c in oa_ev.index
         if hoa and hav:
             d = (oa_ev[c] - av_ev[c]).total_seconds() / 86400
@@ -186,19 +219,17 @@ def compute_metrics(gvt, oblt, inbound, week_start, week_end, report_date) -> di
             ao_den += 1
             if d <= AV_OA_SLA_DAYS: ao_met += 1
         elif hoa and not hav:
-            # Has OA but no AV recorded — in denominator, count as SLA met (arrived, OA happened)
+            # OA present, no AV recorded — in denominator, count as SLA met
             ao_den += 1; ao_met += 1
         elif hav and not hoa:
-            # Use week_end (not report_date) as expiry threshold: a container
-            # available before Saturday close is in-scope regardless of when we run.
-            # Expired = AV > SLA_DAYS before report_date (not week_end) — per spec
+            # Expired = AV > SLA_DAYS before report_date with no OA — per spec
             if (rpt - av_ev[c]).total_seconds() / 86400 > AV_OA_SLA_DAYS:
                 ao_den += 1  # expired without OA = miss
 
-    # OA->Del (BOS only, excl A320-RBTCS)
-    pop_bos = pop[pop['facility'] != EXCL_FACILITY]
+    # ── OA→Del (BOS only, excl A320-RBTCS) ────────────────────────────────────
+    pop_bos_ctrs = {c for c in pop_ctrs if gvt_facility.get(c, '') != EXCL_FACILITY}
     od_days = []; od_met = 0; od_den = 0
-    for c in pop_bos['container']:
+    for c in pop_bos_ctrs:
         if c not in oa_ev.index: continue
         oa = oa_ev[c]
         d = (rd_ev[c] - oa).total_seconds()/86400 if c in rd_ev.index else (rpt - oa).total_seconds()/86400
@@ -206,42 +237,44 @@ def compute_metrics(gvt, oblt, inbound, week_start, week_end, report_date) -> di
         od_den += 1
         if d <= OA_DEL_SLA_DAYS: od_met += 1
 
-    # Empty->Term (completed only)
+    # ── Empty→Term: OBLT EVENT_602 (OA) → EVENT_511 (RD), ALL markets ──────────
+    # Completed only: both OA and RD must be present. Do NOT use GVT fields.
     et_met = 0; et_den = 0
-    for _, r in pop.iterrows():
-        ce, rp = r['container_empty'], r['return_to_port']
-        if pd.isna(ce) or pd.isna(rp): continue
+    for c in pop_ctrs:
+        if c not in oa_ev.index or c not in rd_ev.index: continue
         et_den += 1
-        if (rp - ce).total_seconds()/86400 <= EMPTY_TERM_SLA: et_met += 1
+        d = (rd_ev[c] - oa_ev[c]).total_seconds() / 86400
+        if d <= EMPTY_TERM_SLA: et_met += 1
 
-    # E2E (VD->Enter Facility)
-    # Completed containers use actual Enter Facility date.
-    # In-transit containers that have voyaged 40-75 days (same voyage window
-    # as completed ones) use report_date as proxy.  Containers with recent
-    # VD dates (still at sea) are excluded — their voyage isn't measurable yet.
-    # E2E: VD → Enter Facility, completed containers only (no in-transit proxy)
+    # ── E2E: OBLT VD → GVT Enter Facility, completed only ──────────────────────
+    gvt_ef = (gvt_pop.set_index('container')['enter_facility']
+              if not gvt_pop.empty and 'enter_facility' in gvt_pop.columns
+              else pd.Series(dtype='datetime64[ns]'))
     e2e = []
-    for _, r in pop.iterrows():
-        c, ef = r['container'], r['enter_facility']
+    for c in pop_ctrs:
         if c not in vd_ev.index: continue
+        ef = gvt_ef.get(c)
         if pd.isna(ef): continue
-        vd = vd_ev[c]
-        d = (ef - vd).total_seconds() / 86400
+        d = (ef - vd_ev[c]).total_seconds() / 86400
         if d > 0:
             e2e.append(d)
 
-    # OTP: GVT Current Dray SLA + Enter Facility (primary); Inbound Loads (fallback)
+    # ── OTP: GVT Current Dray SLA + Enter Facility (primary); IL fallback ───────
     otp_met = 0; otp_den = 0
-    if 'current_dray_sla' in pop.columns and pop['current_dray_sla'].notna().any():
-        scored = pop[pop['enter_facility'].notna() & pop['current_dray_sla'].notna()].copy()
+    if (not gvt_pop.empty
+            and 'current_dray_sla' in gvt_pop.columns
+            and gvt_pop['current_dray_sla'].notna().any()):
+        scored = gvt_pop[
+            gvt_pop['enter_facility'].notna() & gvt_pop['current_dray_sla'].notna()
+        ].copy()
         if not scored.empty:
             scored['del_date'] = scored['enter_facility'].dt.normalize()
             scored['sla_date'] = scored['current_dray_sla'].dt.normalize()
             otp_met = int((scored['del_date'] <= scored['sla_date']).sum())
             otp_den = len(scored)
     if otp_den == 0 and inbound is not None and not inbound.empty:
-        # Fall back to Inbound Loads file
-        il = inbound[inbound['container'].isin(set(pop['container']))].dropna(subset=['po_promised','actual_arrival'])
+        il = inbound[inbound['container'].isin(pop_ctrs)].dropna(
+            subset=['po_promised', 'actual_arrival'])
         otp_met = int((il['actual_arrival'] <= il['po_promised']).sum())
         otp_den = len(il)
 
@@ -269,57 +302,78 @@ def compute_metrics(gvt, oblt, inbound, week_start, week_end, report_date) -> di
 def compute_carrier_scorecard(gvt, oblt, week_start, week_end, report_date) -> list:
     """
     Per-carrier AV->OA and OA->Del breakdown for the Enhanced WBR carrier scorecard.
+    Population: OBLT EVENT_602 (OA) date in week window.
+    Carrier assignment: GVT scac lookup by container.
     Returns list of dicts sorted by volume descending.
     """
-    pop = gvt[
-        gvt['ready_date'].notna() &
-        (gvt['ready_date'] >= week_start) &
-        (gvt['ready_date'] <= week_end)
-    ].copy()
-
-    if pop.empty:
+    # ── Population: OBLT OA-based (EVENT_602) ───────────────────────────────
+    oa_wk = oblt[
+        (oblt['status'] == 'OA') &
+        oblt['date'].notna() &
+        (oblt['date'].dt.date >= week_start) &
+        (oblt['date'].dt.date <= week_end)
+    ].sort_values('date')
+    pop_oa = oa_wk.groupby('container').last().reset_index()
+    pop_ctrs = set(pop_oa['container'])
+    if not pop_ctrs:
         return []
 
-    av_ev     = _latest(oblt, 'AV')
-    oa_ev     = _latest(oblt, 'OA')
-    rd_ev     = _latest(oblt, 'RD')
-    rpt       = pd.Timestamp(report_date)
-    wk_end_ts = pd.Timestamp(week_end)
+    # Week-specific OA timestamps
+    oa_ev = pop_oa.set_index('container')['date']
+
+    # GVT for scac and facility lookup
+    gvt_pop = gvt[gvt['container'].isin(pop_ctrs)].copy()
+    if not gvt_pop.empty:
+        gvt_pop = (gvt_pop.sort_values('enter_facility', na_position='last')
+                          .groupby('container').last().reset_index())
+    gvt_scac     = (gvt_pop.set_index('container')['scac']
+                    if not gvt_pop.empty and 'scac' in gvt_pop.columns
+                    else pd.Series(dtype=str))
+    gvt_facility = (gvt_pop.set_index('container')['facility']
+                    if not gvt_pop.empty else pd.Series(dtype=str))
+
+    av_ev = _latest(oblt, 'AV')
+    rd_ev = _latest(oblt, 'RD')
+    rpt   = pd.Timestamp(report_date)
+
+    # Build per-carrier container groups via GVT scac
+    carrier_map: dict = {}
+    for c in pop_ctrs:
+        scac = gvt_scac.get(c)
+        label = str(scac).strip() if scac and not pd.isna(scac) and str(scac).strip() else 'Unknown'
+        carrier_map.setdefault(label, set()).add(c)
 
     scorecard = []
-    for carrier, grp in pop.groupby('scac'):
-        carrier_label = str(carrier).strip() if carrier else 'Unknown'
-
+    for carrier_label, ctrs in carrier_map.items():
         # AV→OA
         ao_days = []; ao_met = 0; ao_den = 0
-        for c in grp['container']:
+        for c in ctrs:
             hav = c in av_ev.index; hoa = c in oa_ev.index
             if hoa and hav:
                 d = (oa_ev[c] - av_ev[c]).total_seconds() / 86400
-                if d > 0: ao_days.append(d)  # skip bad OBLT rows where OA < AV
+                if d > 0: ao_days.append(d)
                 ao_den += 1
                 if d <= AV_OA_SLA_DAYS: ao_met += 1
             elif hoa and not hav:
                 ao_den += 1; ao_met += 1
             elif hav and not hoa:
-                # Expired = AV > SLA_DAYS before report_date — per spec
                 if (rpt - av_ev[c]).total_seconds() / 86400 > AV_OA_SLA_DAYS:
-                    ao_den += 1  # expired miss
+                    ao_den += 1
 
         # OA→Del (BOS only, excl A320-RBTCS)
-        bos_grp = grp[grp['facility'] != EXCL_FACILITY]
+        bos_ctrs = {c for c in ctrs if gvt_facility.get(c, '') != EXCL_FACILITY}
         od_days = []; od_met = 0; od_den = 0
-        for c in bos_grp['container']:
+        for c in bos_ctrs:
             if c not in oa_ev.index: continue
             oa = oa_ev[c]
             d = (rd_ev[c] - oa).total_seconds()/86400 if c in rd_ev.index else (rpt - oa).total_seconds()/86400
-            if d > 0: od_days.append(d)  # skip bad rows where delivery < outgate
+            if d > 0: od_days.append(d)
             od_den += 1
             if d <= OA_DEL_SLA_DAYS: od_met += 1
 
         scorecard.append({
             'carrier':        carrier_label,
-            'volume':         len(grp),
+            'volume':         len(ctrs),
             'av_oa_sla_pct':  round(ao_met/ao_den*100) if ao_den else None,
             'av_oa_misses':   (ao_den - ao_met) if ao_den else 0,
             'av_oa_avg':      round(float(np.mean(ao_days)), 1) if ao_days else None,
