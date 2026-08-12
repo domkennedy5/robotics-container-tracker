@@ -29,7 +29,7 @@ import data_sync
 
 # ── page config ────────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Quantum Matrix: AGL Solution",
+    page_title="Quantum Matrix: AGLxAR Solution",
     page_icon=None,
     layout="wide",
     initial_sidebar_state="expanded",
@@ -79,7 +79,7 @@ def _check_password():
     except Exception:
         correct = "robotics2026"
 
-    st.title("Quantum Matrix: AGL Solution")
+    st.title("Quantum Matrix: AGLxAR Solution")
     pwd = st.text_input("Password", type="password")
     if st.button("Sign in"):
         if pwd == correct:
@@ -878,7 +878,7 @@ with st.sidebar:
         unsafe_allow_html=True
     )
     st.caption(f"Data last updated: {_data_updated}")
-    st.caption("Quantum Matrix: AGL Solution v1.2" + (" · S3 sync active" if S3_ENABLED else ""))
+    st.caption("Quantum Matrix: AGLxAR Solution v1.2" + (" · S3 sync active" if S3_ENABLED else ""))
 
 # ── Global styles ─────────────────────────────────────────────────────────────
 st.markdown("""
@@ -899,7 +899,7 @@ hr { margin: 0.85rem 0 !important; }
 """, unsafe_allow_html=True)
 
 # ── tabs ───────────────────────────────────────────────────────────────────────
-st.title("Quantum Matrix: AGL Solution")
+st.title("Quantum Matrix: AGLxAR Solution")
 tab9, tab7, tab6, tab1, tabC, tabDBR, tab10 = st.tabs(["WBR", "Planning", "Insights", "Container Lookup", "Carriers", "DBR Dashboard", "Inbound Forecast"])
 
 
