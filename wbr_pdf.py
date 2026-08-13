@@ -102,17 +102,18 @@ def _fmt(v, key: str) -> str:
     return str(int(round(float(v))))
 
 
-def _nice_max(raw_max: float, n_intervals: int = 5) -> float:
-    """Round raw_max * 1.2 up to a value divisible by n_intervals."""
-    target = raw_max * 1.20
-    if target <= 0:
-        return float(n_intervals)
-    magnitude = 10 ** math.floor(math.log10(target))
-    for step in [1, 2, 2.5, 5, 10]:
-        candidate = math.ceil(target / (magnitude * step)) * magnitude * step
-        if candidate >= target:
-            return candidate
-    return target
+def _dynamic_ymax(raw_max: float) -> tuple:
+    """Return (ymax, ystep) per the documented scaling breakpoints.
+
+    Breakpoints: <=10->(10,2)  <=25->(25,5)  <=50->(50,10)  <=80->(80,16)
+                 <=120->(120,24)  <=200->(200,40)  else ceil to next *40.
+    Always 5 intervals. NEVER hard-code a ceiling.
+    """
+    for ymax, ystep in _YMAX_BREAKS:
+        if raw_max <= ymax:
+            return float(ymax), float(ystep)
+    ymax = math.ceil(raw_max / 40) * 40
+    return float(ymax), 40.0
 
 
 def _chart_vals(weeks_data, key):
@@ -174,19 +175,12 @@ def _draw_chart(
     n  = len(values)
     dot_xs = [x_start + i * dot_spc for i in range(n)]
 
-    # ── Y scale ──────────────────────────────────────────────────────────────
+    # ── Y scale — dynamic breakpoints, never hard-coded ─────────────────────
     clean   = [float(v) for v in values if v is not None]
     raw_max = max(clean) if clean else 1.0
     if raw_max == 0:
         raw_max = 1.0
-    fixed = CHART_YMAX.get(key)
-    if fixed is not None:
-        max_v = float(fixed)
-        # expand only if data actually exceeds the fixed ceiling
-        if clean and max(clean) > max_v:
-            max_v = _nice_max(max(clean))
-    else:
-        max_v = _nice_max(raw_max)
+    max_v, ystep = _dynamic_ymax(raw_max)
 
     def _y(v):
         if v is None:
@@ -210,8 +204,8 @@ def _draw_chart(
     c.setFillColor(C_GRAY)
     for i in range(6):
         gy    = plot_bot + i * (PLOT_H / 5)
-        v_lbl = max_v * i / 5
-        lbl   = str(int(v_lbl)) if v_lbl == int(v_lbl) else f"{v_lbl:.1f}"
+        v_lbl = ystep * i   # 0, ystep, 2*ystep ... 5*ystep (=max_v)
+        lbl   = str(int(v_lbl))
         c.drawRightString(x_start - 2, gy + 4.4, lbl)
 
     # ── Connecting line (lw=2.2 teal) ────────────────────────────────────

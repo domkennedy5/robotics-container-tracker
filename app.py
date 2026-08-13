@@ -5428,8 +5428,7 @@ with tab9:
     - Required sheet: `Inbound Loads`
     - Key columns: `Container Id`, `PO Promised Date`, `Actual Arrival At Final Destination`
     - Expected filename: `Amazon Robotics Inbound Loads Report{_next_mon2.strftime("%d-%b-%Y")} ######.xlsx`
-    - ⚠️ Actual Arrival blank for undelivered containers — expected. OTP scored on delivered only.
-    - **Supplemental:** DBR Tracker (SharePoint → AGLRobotics) fills gaps for GF/BF deliveries""")
+    - ⚠️ **Supplementary only** — not used in WBR metric calculations. Upload for volume/site context in the Enhanced WBR bridge.""")
             wbr_il_file = st.file_uploader("Inbound Loads (.xlsx)", type=["xlsx"], key="wbr_il")
 
         with wu4:
@@ -5612,7 +5611,7 @@ with tab9:
                         rd_set = set(oblt_df[oblt_df["status"] == "RD"]["container"]) & _pop_ctrs
                         in_tr  = len(_pop_ctrs - rd_set)
                         if in_tr > 0:
-                            st.info(f"{in_tr} container(s) have no OA (EVENT_602) outgate yet — in-transit. Elapsed time from report date used for OA→Del.")
+                            st.info(f"{in_tr} container(s) have EVENT_511 (gate-out) but no confirmed delivery RD yet — in-transit or live unload (delta = 0 days for OA→Del).")
 
                         il_m = inbound_df[inbound_df["container"].isin(_pop_ctrs)].dropna(subset=["po_promised","actual_arrival"])
                         otp_m = len(il_m) / n_pop * 100 if n_pop else 0
@@ -5622,7 +5621,7 @@ with tab9:
                             st.success(f"OTP match rate: {otp_m:.0f}% ({len(il_m)}/{n_pop})")
 
                         st.markdown(f"**Week detected:** W{week_num} | {wk_start} (Sun) → {wk_end} (Sat) | Population source: OBLT EVENT_511 (RD/gate-out)")
-                        st.info("Population = OBLT RD cohort (EVENT_511 gate-out). AV→OA: EVENT_308→EVENT_511. OA→Del: EVENT_602→EVENT_511, BOS only, excl A320-RBTCS. Empty→Term: collapses (OA = Empty = EVENT_511).")
+                        st.info("Population = OBLT EVENT_511 cohort. AV→OA: EVENT_308→EVENT_511. OA→Del: EVENT_511→OBLT RD (live unloads = 0 days, correct by design), excl A320-RBTCS. Empty→Term: collapses. OTP: GVT only.")
 
                         # ── Additional cross-checks ────────────────────────────────
                         st.markdown("**Cross-file checks**")
@@ -5663,18 +5662,18 @@ with tab9:
                         else:
                             st.info("ℹ️ Import Shipment Status not uploaded — forward look will show placeholder data. Upload the 4th file to enrich the Enhanced WBR.")
 
-                        # Check 3b: OBLT has any AV timestamps AFTER OA timestamps (data quality)
+                        # Check 3b: OBLT has any AV timestamps AFTER EVENT_511 (data quality)
                         _av_ts = dict(_latest(oblt_df, "AV"))
-                        _oa_ts = dict(_latest(oblt_df, "OA"))
-                        _bad_ts = [(c, _av_ts[c], _oa_ts[c]) for c in set(_av_ts) & set(_oa_ts)
-                                   if _oa_ts[c] < _av_ts[c]]
+                        _rd_ts = dict(_latest(oblt_df, "RD"))
+                        _bad_ts = [(c, _av_ts[c], _rd_ts[c]) for c in set(_av_ts) & set(_rd_ts)
+                                   if _rd_ts[c] < _av_ts[c]]
                         if _bad_ts:
                             st.warning(
-                                f"⚠️ {len(_bad_ts)} OBLT row(s) have OA timestamp earlier than AV (bad source data). "
+                                f"⚠️ {len(_bad_ts)} OBLT row(s) have EVENT_511 timestamp earlier than AV (bad source data). "
                                 "These are excluded from AV→OA averages automatically but counted toward denominator."
                             )
                         else:
-                            st.success("OBLT timestamps: no AV/OA inversions detected")
+                            st.success("OBLT timestamps: no AV/EVENT_511 inversions detected")
 
                         st.markdown("**Operational context — added directly to bridge**")
                         _nc1, _nc2 = st.columns(2)
