@@ -900,7 +900,7 @@ hr { margin: 0.85rem 0 !important; }
 
 # ── tabs ───────────────────────────────────────────────────────────────────────
 st.title("Quantum Matrix: AGLxAR Solution")
-tab9, tab7, tab6, tab1, tabC, tabDBR, tab10 = st.tabs(["WBR", "Planning", "Insights", "Container Lookup", "Carriers", "DBR Dashboard", "Inbound Forecast"])
+tab9, tabBR, tab7, tab6, tab1, tabC, tabDBR, tab10 = st.tabs(["WBR", "Business Review", "Planning", "Insights", "Container Lookup", "Carriers", "DBR Dashboard", "Inbound Forecast"])
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -6938,6 +6938,270 @@ with tab9:
                     st.error(f"Export failed: {_ee}")
                     import traceback; st.code(traceback.format_exc())
 
+
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB — Business Review
+# ══════════════════════════════════════════════════════════════════════════════
+with tabBR:
+    st.markdown("### Business Review")
+    st.caption("Aggregate weekly WBR data by period. Weeks must be generated in the **WBR** tab first.")
+
+    import plotly.graph_objects as _go_br
+    from calendar import month_abbr as _month_abbr
+    from wbr_engine import compute_totals as _br_ctot
+
+    # ── Load all saved weeks from DB ──────────────────────────────────────────
+    _br_conn = get_db()
+    try:
+        _br_all = pd.read_sql_query(
+            "SELECT * FROM wbr_results "
+            "WHERE generated_at IS NULL OR generated_at != 'seed' "
+            "ORDER BY year, week_num",
+            _br_conn,
+        )
+    except Exception:
+        _br_all = pd.DataFrame()
+    finally:
+        _br_conn.close()
+
+    if _br_all.empty:
+        st.info("No WBR data yet. Generate weekly WBRs in the **WBR** tab first.")
+    else:
+        _br_all = _br_all.copy()
+        _br_all["_ws_date"] = pd.to_datetime(_br_all["week_start"], errors="coerce").dt.date
+
+        # ── Controls ──────────────────────────────────────────────────────────
+        _brc1, _brc2, _brc3 = st.columns([2, 1, 2])
+        with _brc1:
+            _br_cadence = st.radio(
+                "Cadence", ["Week", "Month", "Quarter", "Year"],
+                horizontal=True, key="br_cadence",
+            )
+        _br_avail_years = sorted(
+            _br_all["year"].dropna().unique().astype(int).tolist(), reverse=True
+        )
+        with _brc2:
+            _br_year = int(st.selectbox("Year", _br_avail_years, index=0, key="br_year"))
+        _br_yr = _br_all[_br_all["year"] == _br_year].copy()
+
+        def _br_q(d): return (d.month - 1) // 3 + 1 if d else None
+
+        with _brc3:
+            if _br_cadence == "Week":
+                _br_avail_wks = sorted(_br_yr["week_num"].dropna().astype(int).tolist())
+                _br_sel_wk = int(st.selectbox(
+                    "Week", _br_avail_wks, index=len(_br_avail_wks) - 1, key="br_wk",
+                    format_func=lambda w: f"W{w}",
+                ))
+                _br_slice  = _br_yr[_br_yr["week_num"] == _br_sel_wk]
+                _br_label  = f"W{_br_sel_wk} {_br_year}"
+                _br_pslice = _br_yr[_br_yr["week_num"] == _br_sel_wk - 1]
+                _br_plabel = f"W{_br_sel_wk - 1}"
+
+            elif _br_cadence == "Month":
+                _br_avail_months = sorted(
+                    _br_yr["_ws_date"].dropna().apply(lambda d: d.month).unique().tolist()
+                )
+                _br_sel_m = int(st.selectbox(
+                    "Month", _br_avail_months, index=len(_br_avail_months) - 1, key="br_month",
+                    format_func=lambda m: _month_abbr[m],
+                ))
+                _br_slice  = _br_yr[_br_yr["_ws_date"].apply(
+                    lambda d: d.month == _br_sel_m if d else False
+                )]
+                _br_label  = f"{_month_abbr[_br_sel_m]} {_br_year}"
+                _br_pm, _br_py = (_br_sel_m - 1, _br_year) if _br_sel_m > 1 else (12, _br_year - 1)
+                _br_pslice = _br_all[
+                    (_br_all["year"] == _br_py) &
+                    (_br_all["_ws_date"].apply(lambda d: d.month == _br_pm if d else False))
+                ]
+                _br_plabel = f"{_month_abbr[_br_pm]} {_br_py}"
+
+            elif _br_cadence == "Quarter":
+                _br_avail_qs = sorted(
+                    _br_yr["_ws_date"].dropna().apply(_br_q).dropna().astype(int).unique().tolist()
+                )
+                _br_sel_q = int(st.selectbox(
+                    "Quarter", _br_avail_qs, index=len(_br_avail_qs) - 1, key="br_q",
+                    format_func=lambda q: f"Q{q}",
+                ))
+                _br_slice  = _br_yr[_br_yr["_ws_date"].apply(
+                    lambda d: _br_q(d) == _br_sel_q if d else False
+                )]
+                _br_label  = f"Q{_br_sel_q} {_br_year}"
+                _br_pq, _br_py = (_br_sel_q - 1, _br_year) if _br_sel_q > 1 else (4, _br_year - 1)
+                _br_pslice = _br_all[
+                    (_br_all["year"] == _br_py) &
+                    (_br_all["_ws_date"].apply(lambda d: _br_q(d) == _br_pq if d else False))
+                ]
+                _br_plabel = f"Q{_br_pq} {_br_py}"
+
+            else:  # Year
+                st.write("")  # keeps column height consistent
+                _br_slice  = _br_yr.copy()
+                _br_label  = str(_br_year)
+                _br_pslice = _br_all[_br_all["year"] == _br_year - 1]
+                _br_plabel = str(_br_year - 1)
+
+        if _br_slice.empty:
+            st.warning(f"No data for {_br_label}.")
+        else:
+            # ── Aggregate ─────────────────────────────────────────────────────
+            _BR_KEYS = [
+                "containers", "av_oa_avg", "av_oa_sla_pct", "av_oa_p90",
+                "oa_del_avg", "oa_del_sla_pct", "oa_del_p90",
+                "empty_term_pct", "e2e_avg", "otp_pct", "week_start", "week_end",
+            ]
+
+            def _rows_to_list(df):
+                return [{k: row.get(k) for k in _BR_KEYS} for _, row in df.iterrows()]
+
+            _bm  = _br_ctot(_rows_to_list(_br_slice))
+            _bmp = _br_ctot(_rows_to_list(_br_pslice)) if not _br_pslice.empty else {}
+
+            # Period header
+            _br_wks      = sorted(_br_slice["week_num"].dropna().astype(int).tolist())
+            _br_ws_dates = _br_slice["_ws_date"].dropna()
+            _br_we_dates = pd.to_datetime(_br_slice["week_end"], errors="coerce").dt.date.dropna()
+            _br_ps = min(_br_ws_dates).strftime("%b %d") if not _br_ws_dates.empty else ""
+            _br_pe = max(_br_we_dates).strftime("%b %d, %Y") if not _br_we_dates.empty else ""
+            st.info(
+                f"**{_br_label}** · {_br_ps} – {_br_pe} · "
+                f"{len(_br_wks)} week{'s' if len(_br_wks) != 1 else ''} · "
+                f"{int(_bm.get('containers') or 0):,} containers"
+            )
+
+            # ── Metric cards ──────────────────────────────────────────────────
+            def _d_pct(curr, prior):
+                if curr is None or prior is None: return None
+                d = round(curr - prior, 1)
+                return f"{d:+.1f} pts vs {_br_plabel}"
+
+            def _d_val(curr, prior, unit="d"):
+                if curr is None or prior is None: return None
+                d = round(curr - prior, 1)
+                return f"{d:+.1f}{unit} vs {_br_plabel}"
+
+            _bmc1, _bmc2, _bmc3, _bmc4, _bmc5, _bmc6 = st.columns(6)
+            _bmc1.metric(
+                "Containers",
+                f"{int(_bm['containers']):,}" if _bm.get("containers") else "—",
+                delta=(
+                    f"{int(_bm['containers']) - int(_bmp.get('containers',0)):+,} vs {_br_plabel}"
+                    if _bm.get("containers") and _bmp.get("containers") else None
+                ),
+            )
+            _bmc2.metric(
+                "AV→OA SLA",
+                f"{_bm['av_oa_sla_pct']}%" if _bm.get("av_oa_sla_pct") is not None else "—",
+                delta=_d_pct(_bm.get("av_oa_sla_pct"), _bmp.get("av_oa_sla_pct")),
+            )
+            _bmc3.metric(
+                "OA→Del SLA",
+                f"{_bm['oa_del_sla_pct']}%" if _bm.get("oa_del_sla_pct") is not None else "—",
+                delta=_d_pct(_bm.get("oa_del_sla_pct"), _bmp.get("oa_del_sla_pct")),
+            )
+            _bmc4.metric(
+                "EL→CL SLA",
+                f"{_bm['empty_term_pct']}%" if _bm.get("empty_term_pct") is not None else "—",
+                delta=_d_pct(_bm.get("empty_term_pct"), _bmp.get("empty_term_pct")),
+            )
+            _bmc5.metric(
+                "E2E Avg (d)",
+                f"{_bm['e2e_avg']}" if _bm.get("e2e_avg") is not None else "—",
+                delta=_d_val(_bm.get("e2e_avg"), _bmp.get("e2e_avg")),
+                delta_color="inverse",  # fewer days = better
+            )
+            _bmc6.metric(
+                "On-Time %",
+                f"{_bm['otp_pct']}%" if _bm.get("otp_pct") is not None else "—",
+                delta=_d_pct(_bm.get("otp_pct"), _bmp.get("otp_pct")),
+            )
+
+            st.divider()
+
+            # ── Weekly breakdown table + SLA trend chart ──────────────────────
+            _brtab_tbl, _brtab_chart = st.columns([1, 2])
+
+            with _brtab_tbl:
+                st.markdown("**Weekly Breakdown**")
+                _br_tbl = _br_slice[[
+                    "week_num", "containers",
+                    "av_oa_sla_pct", "oa_del_sla_pct", "empty_term_pct",
+                    "e2e_avg", "otp_pct",
+                ]].copy()
+                _br_tbl.columns = ["Week", "Containers", "AV→OA%", "OA→Del%", "EL→CL%", "E2E(d)", "OTP%"]
+                _br_tbl["Week"] = _br_tbl["Week"].apply(lambda w: f"W{int(w)}")
+                st.dataframe(_br_tbl, use_container_width=True, hide_index=True)
+
+            with _brtab_chart:
+                st.markdown("**SLA Trend by Week**")
+                if len(_br_wks) >= 2:
+                    _br_fig = _go_br.Figure()
+                    _br_idx = _br_slice.set_index("week_num")
+                    _wl = [f"W{w}" for w in _br_wks]
+                    _ao_s = [_br_idx.loc[w, "av_oa_sla_pct"]  if w in _br_idx.index else None for w in _br_wks]
+                    _od_s = [_br_idx.loc[w, "oa_del_sla_pct"] if w in _br_idx.index else None for w in _br_wks]
+                    _br_fig.add_trace(_go_br.Scatter(
+                        x=_wl, y=_ao_s, name="AV→OA SLA%",
+                        mode="lines+markers", line=dict(color="#5BBFD9", width=2),
+                        connectgaps=True,
+                    ))
+                    _br_fig.add_trace(_go_br.Scatter(
+                        x=_wl, y=_od_s, name="OA→Del SLA%",
+                        mode="lines+markers", line=dict(color="#00B050", width=2),
+                        connectgaps=True,
+                    ))
+                    _br_fig.add_hline(
+                        y=90, line_dash="dash", line_color="#888", line_width=1,
+                        annotation_text="90%", annotation_position="right",
+                    )
+                    _br_fig.update_layout(
+                        yaxis=dict(range=[0, 105], title="SLA %", gridcolor="#2a2a2a"),
+                        xaxis=dict(title=""),
+                        height=280, margin=dict(l=10, r=10, t=10, b=10),
+                        legend=dict(orientation="h", y=1.12),
+                        paper_bgcolor="rgba(0,0,0,0)",
+                        plot_bgcolor="rgba(0,0,0,0)",
+                    )
+                    st.plotly_chart(_br_fig, use_container_width=True)
+                else:
+                    st.caption("Trend chart requires 2+ weeks in the period.")
+
+            st.divider()
+
+            # ── Carrier scorecard for period ──────────────────────────────────
+            st.markdown("**Carrier Performance**")
+            try:
+                _br_cconn = get_db()
+                _br_ph = ",".join("?" * len(_br_wks))
+                _br_crows = _br_cconn.execute(
+                    f"SELECT carrier, SUM(volume) AS volume, "
+                    f"ROUND(SUM(av_oa_sla_pct  * volume) / NULLIF(SUM(volume),0), 1) AS av_oa_sla_pct, "
+                    f"ROUND(SUM(av_oa_avg      * volume) / NULLIF(SUM(volume),0), 1) AS av_oa_avg, "
+                    f"SUM(av_oa_misses)  AS av_oa_misses, "
+                    f"ROUND(SUM(oa_del_sla_pct * volume) / NULLIF(SUM(volume),0), 1) AS oa_del_sla_pct, "
+                    f"ROUND(SUM(oa_del_avg     * volume) / NULLIF(SUM(volume),0), 1) AS oa_del_avg, "
+                    f"SUM(oa_del_misses) AS oa_del_misses "
+                    f"FROM wbr_carrier_results "
+                    f"WHERE year=? AND week_num IN ({_br_ph}) "
+                    f"GROUP BY carrier ORDER BY volume DESC",
+                    [_br_year] + _br_wks,
+                ).fetchall()
+                _br_cconn.close()
+                if _br_crows:
+                    _br_cdf = pd.DataFrame(_br_crows, columns=[
+                        "Carrier", "Volume",
+                        "AV→OA SLA%", "AV→OA Avg(d)", "AV→OA Misses",
+                        "OA→Del SLA%", "OA→Del Avg(d)", "OA→Del Misses",
+                    ])
+                    st.dataframe(_br_cdf, use_container_width=True, hide_index=True)
+                else:
+                    st.caption("No carrier data for this period. Carrier results are saved when WBRs are generated in the **WBR** tab.")
+            except Exception as _br_ce:
+                st.caption(f"Carrier data unavailable: {_br_ce}")
 
 
 with tab10:
