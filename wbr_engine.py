@@ -10,12 +10,8 @@ Methodology (finalized Aug 2026 — QBR spec):
                Elapsed = business days (Mon–Fri, US federal holidays excluded). SLA ≤ 3.
                Missing AV → exclude container from denominator entirely.
 - OA→Del:     OA = GVT Terminal Gateout. SLA clock starts next business day after OA.
-               4-tier delivery source:
-                 Tier 1: GVT Arrived at Site
-                 Tier 2: OBLT EVENT_526 / status LY
-                 Tier 3: OBLT EVENT_511 / status RD
-                 Tier 4: GVT Enter Facility
-               Containers with no delivery date in any tier = in-transit; excluded from denom.
+               Delivery date = GVT Arrived at Site ONLY (QBR-validated).
+               Containers without Arrived at Site = in-transit / data gap; excluded from denom.
                Excl A320-RBTCS (non-operational). Elapsed = business days. SLA ≤ 3.
 - EL→CL:      EL 3-tier: OBLT EVENT_511/RD → OBLT EVENT_517/ON → GVT Container Empty.
                CL 4-tier: OBLT EVENT_563/Y5 → OBLT EVENT_518/ED → OBLT EVENT_519/ER
@@ -30,8 +26,8 @@ Methodology (finalized Aug 2026 — QBR spec):
 
 Data source roles (finalized):
   GVT    — PRIMARY: population (Terminal Gateout, Movement Key), AV (pre-resolved),
-            OA, OA→Del Tier 1 + 4, EL Tier 3, CL Tier 4, E2E endpoint, OTP
-  OBLT   — OA→Del Tiers 2+3, EL Tiers 1+2, CL Tiers 1-3, E2E start (VD)
+            OA, OA→Del (Arrived at Site), EL Tier 3, CL Tier 4, E2E endpoint, OTP
+  OBLT   — EL Tiers 1+2, CL Tiers 1-3, E2E start (VD)
   IL/ISS — Supplementary context only; NOT used in any metric calculation
 
 Backward compatibility:
@@ -131,8 +127,10 @@ def business_days_elapsed(start: date, end: date) -> int:
     if end < start:
         return 0
     h = _hols(start, end)
-    # np.busday_count([a,b)) exclusive of b — add one day for inclusive end
-    return max(0, int(np.busday_count(str(start), str(end + timedelta(days=1)), holidays=h)))
+    # np.busday_count([start, end)) is exclusive of end — this is the correct
+    # QBR formula: count business days elapsed before the OA/delivery date,
+    # not including the event date itself. Validated against pre-computed miss data.
+    return max(0, int(np.busday_count(str(start), str(end), holidays=h)))
 
 
 def guess_week(ready_dates, report_date=None) -> tuple:
@@ -191,34 +189,72 @@ def _to_ts(v):
 
 
 def load_gvt(file_bytes: bytes) -> pd.DataFrame:
+    """Load GVT data from either weekly (legacy) or QBR-format files.
+
+    QBR format (QBR Data.xlsx): header row 3, data from row 4, 'Container ID' column,
+    'Business' filter = 'AMAZON ROBOTICS'.
+    Legacy format (weekly GVT): header row 1, data from row 2, 'Container' column.
+    Auto-detected by checking row 1 for 'Container'.
+    """
     wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
     ws = wb.active
-    hdrs = [ws.cell(1, c).value for c in range(1, ws.max_column + 1)]
+
+    # Detect format: legacy has headers in row 1, QBR format has title in row 1 + headers in row 3
+    row1_hdrs = [ws.cell(1, c).value for c in range(1, ws.max_column + 1)]
+    if 'Container' in row1_hdrs:
+        hdr_row, data_start = 1, 2   # legacy weekly format
+        ctr_col = 'Container'
+        qbr_format = False
+    else:
+        hdr_row, data_start = 3, 4   # QBR format
+        ctr_col = 'Container ID'
+        qbr_format = True
+
+    hdrs = [ws.cell(hdr_row, c).value for c in range(1, ws.max_column + 1)]
     h = {v: i for i, v in enumerate(hdrs) if v}
+
+    def _get(row, name, *aliases):
+        """Return row value for the first column name found in h, else None."""
+        for n in (name,) + aliases:
+            if n in h:
+                return row[h[n]]
+        return None
+
     rows = []
-    for row in ws.iter_rows(min_row=2, values_only=True):
-        ctr = row[h.get('Container', -1)]
-        if not ctr: continue
+    for row in ws.iter_rows(min_row=data_start, values_only=True):
+        ctr = _get(row, ctr_col)
+        if not ctr or not str(ctr).strip(): continue
+        ctr = str(ctr).strip()
+
+        # QBR format: filter to AMAZON ROBOTICS only
+        if qbr_format:
+            biz = _get(row, 'Business')
+            if str(biz).strip().upper() != 'AMAZON ROBOTICS':
+                continue
+            # Movement Key = 1 filter (QBR file numeric; weekly files have no pre-filter needed)
+            mk = _get(row, 'Container Gateout Movement Key')
+            if mk != 1:
+                continue
+
         rows.append({
-            'container':          str(ctr).strip(),
-            'ready_date':         _to_date(row[h.get('Ready Date/Time', -1)]),
-            'port':               row[h.get('Discharged Port', -1)],
-            'facility':           row[h.get('Facility', -1)],
-            'market':             row[h.get('Market', -1)],
-            'scac':               row[h.get('Dray SCAC(FL)', -1)],
-            'enter_facility':     _to_ts(row[h.get('Enter Facility', -1)]),
-            'container_empty':    _to_ts(row[h.get('Container Empty', -1)]),
-            'return_to_port':     _to_ts(row[h.get('Return to Port', -1)]),
-            'status':             row[h.get('Container Status', -1)],
-            'terminal_avail':     _to_ts(row[h.get('Terminal Avail', -1)]),
-            'current_dray_sla':   _to_ts(row[h.get('Current Dray SLA', -1)]),
-            'category':           row[h.get('Category', -1)],
-            # QBR methodology columns (present in all weekly GVT files)
-            'terminal_gateout':   _to_ts(row[h.get('Terminal Gateout', -1)]),
-            'available_ssl_dray': _to_ts(row[h.get('Available SSL/Dray Carrier', -1)]),
-            'movement_key':       row[h.get('Container Gateout Movement Key', -1)],
-            'arrived_at_site':    _to_ts(row[h.get('Arrived at Site', -1)]),
-            'port_region':        row[h.get('Port Region', -1)],
+            'container':          ctr,
+            'ready_date':         _to_date(_get(row, 'Ready Date/Time')),
+            'port':               _get(row, 'Discharged Port'),
+            'facility':           _get(row, 'Facility', 'destination_facility'),
+            'market':             _get(row, 'Market'),
+            'scac':               _get(row, 'Dray SCAC(FL)', 'SCAC'),
+            'enter_facility':     _to_ts(_get(row, 'Enter Facility')),
+            'container_empty':    _to_ts(_get(row, 'Container Empty', 'first_empty_time', 'Empty')),
+            'return_to_port':     _to_ts(_get(row, 'Return to Port', 'emptyreturned_time', 'Empty Return Time')),
+            'status':             _get(row, 'Container Status'),
+            'terminal_avail':     _to_ts(_get(row, 'Terminal Avail', 'Available date')),
+            'current_dray_sla':   _to_ts(_get(row, 'Current Dray SLA', 'Last CRDD')),
+            'category':           _get(row, 'Category'),
+            'terminal_gateout':   _to_ts(_get(row, 'Terminal Gateout')),
+            'available_ssl_dray': _to_ts(_get(row, 'Available SSL/Dray Carrier')),
+            'movement_key':       _get(row, 'Container Gateout Movement Key'),
+            'arrived_at_site':    _to_ts(_get(row, 'Arrived at Site')),
+            'port_region':        _get(row, 'Port Region'),
         })
     wb.close()
     return pd.DataFrame(rows)
@@ -436,8 +472,7 @@ def _compute_metrics_v2(gvt, oblt, week_start, week_end) -> dict:
     gvt_idx = pop_gvt.set_index('container')
 
     # ── OBLT event lookups (full file, not week-restricted) ───────────────────
-    oblt_526_ly = _latest_by_event(oblt, 'EVENT_526', 'LY')  # OA→Del Tier 2
-    oblt_511_rd = _latest_by_event(oblt, 'EVENT_511', 'RD')  # OA→Del Tier 3 + EL Tier 1
+    oblt_511_rd = _latest_by_event(oblt, 'EVENT_511', 'RD')  # EL Tier 1
     oblt_517_on = _latest_by_event(oblt, 'EVENT_517', 'ON')  # EL Tier 2
     oblt_563_y5 = _latest_by_event(oblt, 'EVENT_563', 'Y5')  # CL Tier 1
     oblt_518_ed = _latest_by_event(oblt, 'EVENT_518', 'ED')  # CL Tier 2
@@ -474,12 +509,13 @@ def _compute_metrics_v2(gvt, oblt, week_start, week_end) -> dict:
         if oa_d is None: continue
         clock = next_business_day(oa_d)
 
-        # Tier cascade: first non-null delivery date wins
-        del_d = None
-        if del_d is None: del_d = _ts_date(row.get('arrived_at_site'))
-        if del_d is None and c in oblt_526_ly.index: del_d = _ts_date(oblt_526_ly[c])
-        if del_d is None and c in oblt_511_rd.index: del_d = _ts_date(oblt_511_rd[c])
-        if del_d is None: del_d = _ts_date(row.get('enter_facility'))
+        # Delivery date = GVT Arrived at Site only (QBR-validated methodology).
+
+        # OBLT tiers and enter_facility fallback removed: containers without arrived_at_site
+
+        # are in-transit / data gap and are excluded from the denominator.
+
+        del_d = _ts_date(row.get('arrived_at_site'))
 
         if del_d is None:
             continue  # in-transit: no delivery date yet → exclude from denom
