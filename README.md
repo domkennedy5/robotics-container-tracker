@@ -1,27 +1,20 @@
-# AGL Robotics Container Tracker
+# Quantum Matrix: AGLxAR Solution
 
 **Live app:** https://robotics-container-tracker-7uf88f7ez9tga3k44phfjm.streamlit.app  
 **Password:** `robotics2026`  
-**Owner:** Dominique Kennedy (kennewdo) — Amazon Global Logistics
-
----
-
-## Quick Start
-
-```bash
-pip install -r requirements.txt
-streamlit run app.py
-# password: robotics2026
-```
+**Carrier portal:** https://robotics-container-tracker-7uf88f7ez9tga3k44phfjm.streamlit.app/vendor_upload  
+**Owner:** Dominique Kennedy (kennewdo) — Amazon Global Logistics  
+**Repo:** domkennedy5/robotics-container-tracker (Streamlit Cloud, auto-deploy on push)
 
 ---
 
 ## What This Does
 
-Single-app command center for the Amazon Robotics Dray Program. Two primary workflows:
+Single-app command center for the Amazon Robotics Dray Program. Three primary functions:
 
-1. **Weekly Delivery Planning** — build, validate, and distribute the carrier delivery schedule every Friday
-2. **WBR Generation** — auto-build the Monday WBR slide and bridge submitted to NA Destination Ops leadership
+1. **Weekly Delivery Planning** — build and distribute the carrier delivery schedule every Friday
+2. **WBR Generation** — auto-build the Monday WBR slide and Perjen-style bridge submitted to NA Destination Ops leadership
+3. **Container Lifecycle Tracking** — port → yard → FC → empty return visibility across all active carriers
 
 All data persists to SQLite (`tracker.db`) synced to S3 after every write. No local-only state.
 
@@ -29,126 +22,17 @@ All data persists to SQLite (`tracker.db`) synced to S3 after every write. No lo
 
 ## Tab Reference
 
-### Tab 1 — Container Lookup
-Upload the weekly DBR Excel → paste any container IDs (one per line) → instant cross-sheet results.  
-Searches: Delivery Appointments, Empty Returns, On Vessel, Canceled, Demurrage, Accessorials.  
-Check-digit-tolerant matching (dashes optional). Download results as Excel.
+### Tab 1 — WBR
 
-**How to use:**
-1. Upload the weekly DBR in the **sidebar**
-2. Paste container IDs (one per line) in the search box
-3. Click Search → results show which sheet each container appears on + status
+Four sub-tabs: **Summary · Trends · Build · History**
 
----
+**Build** is the primary sub-tab. Upload 3 required source files to generate the weekly WBR slide (PDF + PPTX) and Perjen-style bridge in one click.
 
-### Tab 2 — Carrier Submission
-Carriers submit container status updates directly, or upload an ARVY-style Excel template.  
-All submissions log to DB with timestamp and are searchable/filterable/exportable.
-
-**DBR Receipt Tracker** — tracks whether each carrier (ATMI, ARVY, HDDR, RKNE, TGHE) has submitted their weekly DBR.  
-Missing submissions are auto-flagged. Reminder messages are auto-drafted.
-
----
-
-### Tab 3 — Empty Returns Dashboard
-Upload DBR → see overdue / due-soon / on-track empty returns, color-coded 🔴🟡🟢.  
-Filter by carrier or status. Export to Excel.
-
-**SLA:** Empty returns due within 3 business days of delivery.
-
----
-
-### Tab 4 — Carrier Data
-Structured view of all DBR submissions. Filter by carrier or sheet type.  
-Sub-tabs: Delivery, Empty Returns, Demurrage, Accessorials.  
-Shows latest status per container (duplicates collapsed; full history retained in DB).
-
----
-
-### Tab 5 — Lane Costs
-Drayage rate lane management by SCAC + port + destination.  
-Simulator shows cost comparison across carriers for a given lane.
-
----
-
-### Tab 6 — Insights
-Aggregated analytics: detention/demurrage risk, SLA performance, upcoming ETAs.  
-Sections activate automatically as data is uploaded (DBR, GVT, Inbound Loads).
-
----
-
-### Tab 7 — Planning (Weekly Delivery Scheduler)
-
-Full SOP is documented inside the app at **Planning → SOP Guide** tab.  
-Below is a condensed reference.
-
-**SOP Metadata**
-
-| Field | Value |
+| File | Where to pull |
 |---|---|
-| Owner | Dominique Kennedy (kennewdo) |
-| Frequency | Weekly — Every Friday |
-| Plan Deadline | 3:00 PM ET / 2:00 PM CT / 12:00 PM PT |
-| Carrier DBR Deadline | 3:00 PM CT Thursday (primary input) |
-| Sites | RIC6, ILM1, DBM6/SAV, SJC8, XPH1-IAG1, LAX/West Coast |
-| SharePoint | AGLRobotics → Carrier DBRs → subfolders: ATMI / ARVY / HUDD |
-
-**Carriers**
-
-| SCAC | Carrier | Ops Contact | Email |
-|---|---|---|---|
-| ATMI | Cargomatic | Tyler Domingues | tdomingues@cargomatic.com |
-| ARVY | Arrive Logistics | Tyler Spangler | tspangler@arrivelogistics.com |
-| HDDR – RIC6 | Maersk | Sandji Ruffin | sandji.ruffin@maersk.com |
-| HDDR – ILM1 | Maersk | Jerry Nesbit | jerry.nesbit@maersk.com |
-| HDDR – LAX | Maersk | Desirae Swain / Ailua Osoimalo | desirae.swain@maersk.com |
-
-**Planning sub-tabs**
-
-| Sub-tab | What it does |
-|---|---|
-| Plan Builder | Add containers (single or bulk paste), parse stakeholder requests, level-load across week |
-| All Sites | Compiled view of full week across all sites — Excel export |
-| By Site | Per-site view with carrier badges, daily Slack notification generator, mid-week adjustment tool |
-| Carrier View | Shareable carrier-specific schedule + pre-send validation checklist + Excel export |
-| WoW / History | Week-over-week delta (new / rolled / dropped) + full history search |
-| Config | Sites table, carriers table, site–carrier map — all editable in-app |
-| Import History | Upload ToteASERs Robotics DBR Tracker.xlsx to backfill history |
-| **SOP Guide** | Full step-by-step SOP (Steps 1–9), GVT glossary, file naming reference |
-
-**RIC6 Receiving Constraints**
-
-| Parameter | Value |
-|---|---|
-| Receiving window | 7:30 AM – 4:30 PM |
-| Lunch (no deliveries) | 12:00 PM – 1:00 PM |
-| Last arrival | 3:30 PM |
-| Max loads/day | 11–12 |
-| No-receiving day | Monday |
-| HDDR preference | Before lunch (7:30–11:30 AM) |
-
-**Bulk Paste format** (Plan Builder → Step 2):
-```
-TCNU3773041  HDDR  RIC6
-MRKU4103422  ATMI  ILM1
-CSNU8812340  ARVY  DBM6
-```
-Carrier and Site are optional if defaults are set. Level-load checkbox distributes evenly across active days.
-
-**DBR email subjects to expect Thursday EOD:**
-```
-ATMI  : [EXTERNAL] Amazon Robotics - DBR [DATE]
-ARVY  : [EXTERNAL] Robotics DBR [DATE]
-HUDD RIC6: [EXTERNAL] RIC6 Delivery Plan Update (HUDD)
-HUDD ILM1: [EXTERNAL] ILM1 Delivery Plan Update / HUDD
-HUDD LAX : RE: DBR Bridges Report - HUDD - [DATE]
-```
-
----
-
-### Tab 8 — WBR Generator
-
-Generates the Monday WBR PDF + Perjen-style bridge, submitted to NA Destination Ops leadership.
+| GVT Data (`GVT Data WK##.xlsx`) | GM DCM Reports → Inbound Container Milestone (Customer=AMZ, Equip=AMAZON Robotics) |
+| OBLT Data | Ocean Bridge Logistics Tracking |
+| Inbound Loads | Amazon Robotics Inbound Loads Report (run Monday morning) |
 
 **Submission SOP**
 
@@ -160,54 +44,176 @@ Generates the Monday WBR PDF + Perjen-style bridge, submitted to NA Destination 
 | Attachment | `GLS_Robotics_YYYY-M-D.pdf` |
 | Fusion doc set | https://fusion.amazon.dev/documentset/DOCUMENTSET%23f42d63bd-a96a-4f29-a356-a66ac18602a9 |
 
-**Step-by-step:**
+**SLA Targets**
 
-1. **(Optional) Enter Context Notes** — type operational callouts before uploading. Notes save to DB by week and auto-inject into the bridge at generate time.
-2. **Upload 3 required files:**
-
-   | File | Where to pull | Filter / Notes |
-   |---|---|---|
-   | **GVT Data** (`GVT Data WK##.xlsx`) | GM DCM Reports → Inbound Container Milestone | Customer=AMZ, Equip Category=AMAZON Robotics, ETA 6–12 wks back + forward |
-   | **OBLT Data** | Ocean Bridge Logistics Tracking | All AV/OA/RD statuses for reporting week |
-   | **Inbound Loads** | Amazon Robotics Inbound Loads Report | Run Monday morning |
-   | *(Optional)* **Import Shipment Status** | CDS / Import Shipment Status report | Enriches Enhanced WBR forward look |
-
-3. **Set report date** — defaults to most recent Monday. Adjust only if re-running a prior week.
-4. **Click "Generate Both WBR Outputs"**
-5. **Download PDF** → use "📧 Open in Email Client" button to pre-fill To/Subject/body
-6. **After sending** → click "✅ Mark as Sent" and verify slide appears in Fusion doc set
-
-**If prior weeks are missing:**  
-The ⚠️ warning expander (auto-expanded) lets you enter historical values manually for W-5 through W-1. Values fill the chart columns on the slide.
-
-**What the slide contains:**
-- 6-week trend charts: AV→OA SLA%, OA→Del SLA%, OTP (top row) + Volume / E2E (bottom row)
-- Summary table: 6 prior weeks + current week + totals column
-- SLA Goals box (AV→OA ≤3d, OA→Del ≤3d BOS, Empty→Term ≤3d, OTP ≥95%)
-
-**Bridge (Perjen format):**  
-Auto-generated below the slide — `[Volume] / [AV→OA] / [OA→Del] / [Empty→Term] / [E2E/OTP]`  
-Includes WoW deltas, dominant carrier callout, context notes auto-injected.  
-Fully editable before sending. Carrier scorecard and root cause are in the right column (Enhanced WBR).
-
-**WBR SLA thresholds:**
-
-| Metric | SLA Target | Green |
-|---|---|---|
-| AV→OA transit | ≤ 3 days | ≥ 95% |
-| OA→Del transit (BOS) | ≤ 3 days | ≥ 95% |
-| Empty→Term return | ≤ 3 days | ≥ 95% |
-| On-Time to Promise (OTP) | ≥ 95% | — |
-
-**GVT Container Status Glossary** (for WBR data pulls):
-
-| Status | Meaning |
+| Metric | Target |
 |---|---|
-| In Yard Full | At dray yard — ready to deliver |
-| Dispatched to Destination | En route to FC or refused/returning |
-| Not Ready | At port — pending customs or carrier release |
-| On Water | Still at sea |
-| Closed | Delivered and empty returned |
+| AV→OA transit | ≤ 3 days |
+| OA→Del transit (BOS) | ≤ 3 days |
+| Empty→Term return | ≤ 3 days |
+| On-Time to Promise (OTP) | ≥ 95% |
+
+**Summary** shows the 6-week trend table and current-week metrics.  
+**Trends** shows the 6-chart slide preview (AV→OA, OA→Del, OTP, Volume, E2E, carrier scorecard).  
+**History** shows all past generated WBRs; re-download any prior week.
+
+If prior weeks are missing, the ⚠️ warning expander lets you enter historical W-5 through W-1 values manually.
+
+---
+
+### Tab 2 — Business Review
+
+Aggregates WBR weekly data into monthly, quarterly, or annual rollups. Requires WBR data generated in the WBR tab first.
+
+- **Cadence selector**: Week / Month / Quarter / Year
+- Shows volume totals, SLA performance, and WoW delta vs. prior period
+- All charts built from `wbr_results` DB table — no re-upload needed
+
+---
+
+### Tab 3 — Planning (Delivery Plan Scheduler)
+
+Nine sub-tabs: **Plan Builder · All Sites · By Site · Carrier View · WoW / History · SRF · Config · Import History · SOP Guide**
+
+**Owner:** Dominique Kennedy | **Frequency:** Weekly, every Friday | **Deadline:** 3:00 PM ET
+
+| Sub-tab | What it does |
+|---|---|
+| Plan Builder | Add containers (single or bulk paste), parse stakeholder requests, level-load across the week |
+| All Sites | Full-week compiled view across all sites — Excel export |
+| By Site | Per-site view with carrier badges, daily Slack notification generator, mid-week adjustment tool |
+| Carrier View | Shareable carrier-specific schedule + pre-send validation checklist + Excel export |
+| WoW / History | Week-over-week delta (new / rolled / dropped) + full history search |
+| SRF | Site Receiving Form generator |
+| Config | Sites table, carriers table, site–carrier map — all editable in-app |
+| Import History | Upload ToteASERs Robotics DBR Tracker.xlsx to backfill container history |
+| SOP Guide | Full step-by-step SOP (Steps 1–9), GVT glossary, file naming reference |
+
+**RIC6 Receiving Constraints**
+
+| Parameter | Value |
+|---|---|
+| Receiving window | 7:30 AM – 4:30 PM |
+| Lunch (no deliveries) | 12:00 PM – 1:00 PM |
+| Last arrival | 3:30 PM |
+| Saturday | 5 slots only — 7:30–11:30 AM, hard cap |
+| Weekly cap | 115 total loads across all programs |
+| HDDR preference | Before lunch (7:30–11:30 AM), one slot per day |
+
+**Bulk Paste format** (Plan Builder → Step 2):
+```
+TCNU3773041  HDDR  RIC6
+MRKU4103422  ATMI  ILM1
+CSNU8812340  ARVY  DBM6
+```
+Carrier and Site are optional if defaults are set. Level-load checkbox distributes evenly across active days.
+
+---
+
+### Tab 4 — Insights
+
+Three sub-tabs: **Overview · Empty Returns · Lane Costs**
+
+**Overview** — weekly operations briefing auto-generated from all loaded data sources.
+- DBR Snapshot: delivery count, empty return overdue/due-soon, on-vessel count, demurrage holds
+- Detention & Demurrage Risk: flags containers approaching LFD/demurrage dates (from Inbound Loads)
+- Carrier Submission Activity: recent submission log by carrier
+
+**Empty Returns** — overdue / due-soon / on-track flag view from the DBR Empty Returns sheet.  
+**Lane Costs** — drayage rate lane management by SCAC + port + destination. Cost comparison simulator.
+
+---
+
+### Tab 5 — Container Lookup
+
+Upload the weekly carrier DBR Excel → paste any container IDs → instant cross-sheet results.
+
+- Searches: Delivery Appointments, Empty Returns, On Vessel, Canceled, Demurrage, Accessorials
+- Check-digit-tolerant matching (dashes optional; TCNU389902-4 and TCNU389902 both match)
+- Download results as Excel
+
+**How to use:**
+1. Upload the weekly carrier DBR in the **sidebar**
+2. Paste container IDs (one per line) in the search box
+3. Click Search → results show sheet, status, key detail for each container
+
+---
+
+### Tab 6 — Carriers
+
+Two sub-tabs: **Submit · Data**
+
+**Submit** — the primary intake point for carrier DBR files.
+- Share the vendor portal link with carriers for direct self-submission
+- Or upload files manually here (supports AGL standard template + ARVY/HUDD/ATMI legacy formats)
+- **DBR Receipt Tracker**: compliance grid showing which carriers submitted each day of the selected week; missing submissions flagged automatically
+- **Send Reminder**: SES email to carrier contact for any missing submission
+- Download the AGL Carrier Template
+
+**Data** — structured view of all raw carrier submissions stored in DB.
+- Filter by carrier and sheet type (Delivery, Empty Returns, Demurrage, Accessorials, ODY)
+- Shows latest status per container (duplicates collapsed; full history retained)
+- **Backfill** expander: upload the ToteASERs Robotics DBR Tracker.xlsx to populate `inbound_containers` from the AGL-side Delivery Plan sheet
+
+**Carrier Portal URL:**  
+`https://robotics-container-tracker-7uf88f7ez9tga3k44phfjm.streamlit.app/vendor_upload`  
+Carriers authenticate with a per-carrier password set in DBR Dashboard → By Carrier → Carrier Admin.
+
+---
+
+### Tab 7 — DBR Dashboard
+
+Live container lifecycle view sourced from `inbound_containers` table. Updated when carriers submit their daily DBR or when a backfill is run.
+
+**Global filters** (apply across all sub-tabs): Carrier, FC Destination, Status, Date Range (FC Sched Del)
+
+**KPI row:** Total Containers · At Yard · Delivered to FC · Pending FC Delivery · Awaiting Empty Return · Empty Returned
+
+Four sub-tabs:
+
+| Sub-tab | What it shows |
+|---|---|
+| Today / Upcoming | Containers with FC Sched Del = today or tomorrow (excludes delivered/returned) |
+| Late / At Risk | Containers past their FC Sched Del that are not yet delivered — sorted by days late |
+| Empty Returns | Containers with FC Act Del recorded but no Empty Returned to Port date — sorted by days at FC |
+| By Carrier | Full Delivery Plan column set for the selected carrier; on-time %; last DBR receipt date; Carrier Admin (contact info + portal password) |
+
+Column labels match the Delivery Plan sheet exactly: Container #, Port/Region, Yard Sched Del, Yard Act Del, FC Destination, FC Sched Del, FC Act Del, Empty Returned to Port, Date Received, Live/Drop.
+
+---
+
+### Tab 8 — Inbound Forecast
+
+Three panels: **Pipeline Forecast · Allocation Manager · Simulator**
+
+Powered by the `ar_inbound_unified` table — upload the ARVY Inbound report or equivalent to populate.
+
+**Pipeline Forecast** — weekly inbound container volume forecast by FC and carrier, with ocean ETA visibility.  
+**Allocation Manager** — set per-carrier allocation targets by site; track actual vs. target.  
+**Simulator** — model load distribution changes (e.g. shifting allocation % between carriers) and see capacity impact.
+
+---
+
+## Carriers
+
+| SCAC | Carrier | Ops Contact | Email |
+|---|---|---|---|
+| ATMI | Cargomatic | Tyler Domingues | tdomingues@cargomatic.com |
+| ARVY | Arrive Logistics | Tyler Spangler | tspangler@arrivelogistics.com |
+| HDDR – RIC6 | Maersk | Sandji Ruffin | sandji.ruffin@maersk.com |
+| HDDR – ILM1 | Maersk | Jerry Nesbit | jerry.nesbit@maersk.com |
+| HDDR – LAX | Maersk | Desirae Swain / Ailua Osoimalo | desirae.swain@maersk.com |
+| RKNE | RoadOne | Mark Brennan | — |
+| TGHE | Tighe | TBD | — |
+
+**DBR email subjects to expect Thursday EOD:**
+```
+ATMI  : [EXTERNAL] Amazon Robotics - DBR [DATE]
+ARVY  : [EXTERNAL] Robotics DBR [DATE]
+HUDD RIC6 : [EXTERNAL] RIC6 Delivery Plan Update (HUDD)
+HUDD ILM1 : [EXTERNAL] ILM1 Delivery Plan Update / HUDD
+HUDD LAX  : RE: DBR Bridges Report - HUDD - [DATE]
+```
 
 ---
 
@@ -226,29 +232,35 @@ Fully editable before sending. Carrier scorecard and root cause are in the right
 ## Data Architecture
 
 ```
-app.py              Main Streamlit app (8 tabs)
-wbr_engine.py       WBR data parsing + metrics computation
-wbr_pdf.py          PDF slide generator (pixel-faithful to gold standard)
-data_sync.py        S3 sync — pull on startup, push after every write
-utils.py            Container ID normalization helpers
-lambda/             Email ingest + alert Lambdas (deploy separately)
-deploy/SETUP.md     Lambda + SES deployment guide
-tracker.db          SQLite — local + S3-synced
+app.py                Main Streamlit app (8 tabs)
+wbr_engine.py         WBR data parsing + metrics computation
+wbr_pdf.py            PDF slide generator (pixel-faithful to gold standard)
+wbr_pptx.py           PPTX converter
+inbound_forecast.py   Inbound Forecast tab (Pipeline / Allocation / Simulator)
+data_sync.py          S3 sync — pull on startup, push after every write
+utils.py              Container ID normalization + carrier file parsing
+lambda/               Email ingest + alert Lambdas (deploy separately)
+deploy/SETUP.md       Lambda + SES deployment guide
+tracker.db            SQLite — local + S3-synced
 ```
 
 **Key DB tables:**
 
 | Table | Purpose |
 |---|---|
-| `delivery_plan` | All container delivery plan entries |
-| `plan_sites` | Site config (capacity, port, constraints) |
-| `plan_carriers` | Carrier config (contact, email) |
+| `delivery_plan` | Container delivery plan entries (Planning tab) |
+| `plan_sites` | Site config (capacity, port, constraints, site type) |
+| `plan_carriers` | Carrier config |
 | `plan_site_carrier` | Site–carrier mapping (priority time, allocation %) |
 | `plan_week_config` | Per-week active receiving days |
-| `wbr_results` | Historical WBR metrics by week |
+| `wbr_results` | Historical WBR metrics by week (feeds WBR + Business Review) |
 | `wbr_context_notes` | Operational notes per week (auto-injected into bridge) |
-| `carrier_submissions` | All carrier DBR submissions |
+| `carrier_submissions` | All raw carrier DBR file rows |
 | `dbr_receipts` | DBR receipt tracking per carrier per week |
+| `inbound_containers` | Container lifecycle: port → yard → FC → empty return (feeds DBR Dashboard) |
+| `carrier_contacts` | Carrier contact info + portal passwords + reminder toggle |
+| `ar_inbound_unified` | Inbound Forecast source data |
+| `lookup_log` | Container Lookup search history |
 
 **Infrastructure:**
 
@@ -258,3 +270,16 @@ tracker.db          SQLite — local + S3-synced
 | IAM user | `robotics-tracker-reader` — read-only S3 for Streamlit Cloud |
 | Streamlit Cloud | Auto-redeploys on `git push` to `main` (~60s) |
 | Secrets | AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, APP_PASSWORD in Streamlit Cloud secrets |
+
+---
+
+## Local Development
+
+```bash
+pip install -r requirements.txt
+# double-click launch.bat  OR:
+venv\Scripts\streamlit run app.py
+# password: robotics2026
+```
+
+DB syncs from S3 on startup if AWS credentials are set in `.streamlit/secrets.toml`.
